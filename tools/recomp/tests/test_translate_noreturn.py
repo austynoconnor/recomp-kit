@@ -70,3 +70,19 @@ def test_a_popped_jump_goes_only_to_pushed_continuations():
     text = translate(listing)
     assert "L_0040110e:" in text
     assert "00401117" not in text
+
+
+def test_a_call_through_the_import_table_to_exitprocess_ends_the_function():
+    """MSVC's ___crtExitProcess ends on CALL [ExitProcess] with padding after
+    it: nothing falls through into the next function."""
+    image = NoImage()
+    image.iat_names = {0x008fc1f0: "ExitProcess"}
+    tr = T.Translator(image, {FN}, Opts())
+    listing = ("00401100  PUSH dword ptr [ESP + 0x4]\n"
+               "00401104  CALL dword ptr [0x008fc1f0]\n")
+    fn = T.Function(FN, "f", 0xa, T.parse_listing_text(listing))
+    fn.measure(image)
+    tr.prepare(fn)
+    text = "\n".join(tr.translate(fn, ()))
+    assert "recomp_unknown_call(c, 0x40110au); return;" in text
+    assert "recomp_jump" not in text

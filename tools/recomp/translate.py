@@ -1792,11 +1792,25 @@ class Translator(object):
                 break
 
     def never_returns(self, ins):
-        """Is `ins` a direct CALL to a callee the listings show never returning?"""
+        """Is `ins` a CALL that never returns: a direct call to a callee the
+        listings show never returning, or a call through the import table to
+        an import that ends the process or raises (NORETURN_IMPORTS)?"""
         if ins.mnem != "CALL":
             return False
         t = self.branch_target(ins)
-        return t is not None and t in self.noreturn_callees
+        if t is not None:
+            return t in self.noreturn_callees
+        return self.noreturn_import_call(ins)
+
+    def noreturn_import_call(self, ins):
+        """CALL dword ptr [IAT slot] naming ExitProcess, RaiseException and the
+        like. MSVC's CRT ends ___crtExitProcess on CALL [ExitProcess] with
+        padding after it, so the call is the last thing the listing has."""
+        if ins.mnem != "CALL" or not ins.ops:
+            return False
+        m = re.match(r"dword ptr \[(0x[0-9a-fA-F]+)\]$", ins.ops[0].strip())
+        names = getattr(self.image, "iat_names", None) or {}
+        return bool(m) and names.get(int(m.group(1), 16)) in NORETURN_IMPORTS
 
     @staticmethod
     def closed_noreturn_loop(fn):
@@ -3213,6 +3227,11 @@ class Translator(object):
             L.append("recomp_call(c, t_);")
             if RESUMABLE_STACKS:
                 L.append("if (c->eip != %s) return;" % hexlit(nxt))
+            if self.noreturn_import_call(ins):
+                # As for a direct noreturn call: coming back is reported by
+                # address, never run into whatever follows.
+                self.stats["_noreturn_trap"] += 1
+                L.append("recomp_unknown_call(c, %s); return;" % hexlit(nxt))
             self.stats["_call_indirect"] += 1
             return L
 

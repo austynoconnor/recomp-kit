@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-08 — Claude Opus 5.5: the translator treats a call through the
+  import table to an import that never returns (ExitProcess, RaiseException
+  and the rest of NORETURN_IMPORTS) like a direct call that never returns.
+  MSVC 2005's ___crtExitProcess ends on CALL [ExitProcess] with padding
+  after it; translation used to stop with "literal dispatch target is not
+  an entry point" for its fall-through. Coming back from such a call is now
+  reported by address. New test in test_translate_noreturn.py.
+
 - 2026-10-08 — Claude Opus 5.5: imports for 2008-era Visual C++ 2005
   games, first needed by Bully: Scholarship Edition 1.154 (branch
   giggity-bully). The Bully import table goes from 147 to 150 of 200
