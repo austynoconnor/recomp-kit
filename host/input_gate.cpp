@@ -935,6 +935,12 @@ HitResult host_gate_window_pointer(int32_t x, int32_t y, int32_t *dx, int32_t *d
     return hit;
 }
 
+void host_gate_relative_motion(int32_t dx, int32_t dy) {
+    g_pointer_target_valid = false;
+    if (dx || dy)
+        host_input_relative_motion(dx, dy);
+}
+
 bool host_gate_window_motion(int32_t x, int32_t y, double dx, double dy, HitResult *hit) {
     int32_t gx, gy;
     *hit = host_gate_window_pointer(x, y, &gx, &gy);

@@ -257,7 +257,13 @@ class LoadTests(unittest.TestCase):
             cfg = game_config.load(game)
             self.assertEqual(cfg["controls"]["default_layout"], "keys")
             self.assertEqual(cfg["controls"]["pad"], "mapped")
+            self.assertEqual(cfg["controls"]["mouse"], "absolute")
             self.assertEqual(cfg["controls"]["mapped"], game_config.MAPPED_DEFAULTS)
+            (game / "game.toml").write_text(base + '\n[controls]\nmouse = "relative"\n')
+            self.assertEqual(game_config.load(game)["controls"]["mouse"], "relative")
+            (game / "game.toml").write_text(base + '\n[controls]\nmouse = "sideways"\n')
+            with self.assertRaises(ValueError):
+                game_config.load(game)
 
             # The old [touch] keypad knob maps onto default_layout when the
             # game names no default_layout of its own.
