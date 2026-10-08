@@ -590,6 +590,7 @@ void dx_register_shims() {
     d3dcompiler_register();
     d3dx10_register();
     d3d9_register();
+    d3d8_register();
     d3dx9_register();
     dinput_register();
     xinput_register();

@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- 2026-10-08 15:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: Direct3D 8,
+  fixed-function rendering, DirectShow RenderFile and game-named setjmp, the
+  pieces that take Crazy Taxi from the Direct3D 8 wall to its title screen in
+  a headless run. All of it is game-neutral; MGS2 and SWBF2 are expected to use
+  the Direct3D 8 layer and the fixed-function pipeline.
+  - `dx/d3d8.cpp` (new): `d3d8.dll!Direct3DCreate8` and IDirect3D8 (16 slots),
+    IDirect3DDevice8 (97 slots), IDirect3DVertexBuffer8, IndexBuffer8,
+    Surface8 (11 slots), Texture8 and CubeTexture8 as views of the existing
+    Direct3D 9 objects; most methods forward to the D9 shims with rewritten
+    arguments (`shim_forward`). Version 8 differences handled here:
+    D3DPRESENT_PARAMETERS 8 to 9 (MultiSampleQuality inserted), the 8-era
+    caps (first 212 bytes of D3DCAPS9, vs 1.1 / ps 1.4, CANRENDERWINDOWED),
+    an adapter mode list, vertex shader handles (bit 31) against FVFs, D3DVSD
+    declarations converted to D3D9 elements with `dcl` instructions inserted
+    into vs_1_1 code, the sampler states that live in SetTextureStageState in
+    version 8, ZBIAS to DEPTHBIAS, CopyRects and UpdateTexture through locks,
+    and state blocks (Begin/End recorded by difference, Apply, Capture,
+    Create, Delete). static_asserts pin every vtable size.
+  - `dx/d3d9_ffp.{h,cpp}` (new): the fixed-function pipeline as generated
+    vs_2_0/ps_2_0 bytecode, cached by state. Vertex side: world-view-
+    projection, pre-transformed (RHW) positions, normals, up to 8
+    directional/point/spot lights with material and ambient, colour vertex
+    sources, specular, vertex fog (exp, exp2, linear, range-based, or the
+    pre-transformed vertex's own factor; table fog is not done yet), texture
+    coordinate generation and texture transforms. Pixel side: all D3DTOP colour and alpha
+    operations over 8 stages, TFACTOR, per-stage constants, specular add and
+    fog. `d9_fvf_declaration`/`d9_fvf_stride` turn an FVF into elements.
+  - `dx/d3d9.cpp`: a draw without both shaders now goes through the generated
+    pair on the GPU backends and the CPU rasterizer alike (`draw_pipeline`);
+    real Set/Get for transforms (identity by default), MultiplyTransform,
+    material, lights, clip planes, FVF, render/texture-stage/sampler state
+    getters and GetTexture; LockRect honours a sub-rectangle on surfaces,
+    textures and cube faces.
+  - `dx/d3d9_raster.cpp`: the alpha test compares with D3DRS_ALPHAFUNC (it was
+    always "greater or equal").
+  - `dx/dshow.cpp`: CLSID_FilterGraph. A graph a game makes itself plays an MP3
+    given to IGraphBuilder::RenderFile or IMediaControl::RenderFile through
+    the existing minimp3 stream and host channel; the graph owns a hidden
+    stream and frees it with itself.
+  - Translator: `[translate] setjmp` / `longjmp` name the CRT's __setjmp3 and
+    longjmp for the runtime intrinsics (the old constants, Populous's
+    addresses, stay the defaults). Data-pointer entries that land inside a
+    replaced intrinsic body are emitted as `recomp_unmodelled` traps instead
+    of undefined symbols.
+  - Tests: dx_tests "Direct3D 8 fixed-function triangle" (create, clear, FVF
+    draw, read back through the back buffer) and "DirectShow FilterGraph
+    RenderFile"; tests/test_game_config.py covers setjmp/longjmp.
+  - Verified so far only on the CPU rasterizer in a Linux headless run; the
+    GPU backends receive the same generated shaders but were not run.
+
 - 2026-10-08 12:02 CDT (branch giggity-d3d8) — Claude Opus 5.5: Windows shims a
   DirectX 8 game (Crazy Taxi) needs to start, all reusable by other games.
   - DirectSound 8: `DirectSoundCreate8` (DSOUND ordinal 11),
