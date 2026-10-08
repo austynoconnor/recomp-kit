@@ -131,3 +131,7 @@ struct D9Pipeline {
 
 // The record for one device, created on first use and kept for its lifetime.
 D9Pipeline &d9_pipeline(uint32_t device_id);
+
+// The D3DVERTEXELEMENT9 array, ending with D3DDECL_END, that an FVF code
+// stands for. SetFVF binds a declaration made from it.
+std::vector<uint8_t> d9_fvf_declaration(uint32_t fvf);

@@ -27,6 +27,7 @@
 #include "dxtypes.h"
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -135,6 +136,8 @@ enum ComIface : uint16_t {
     IF_D3DINDEXBUFFER9,
     IF_D3DVERTEXDECL9,
     IF_D3DQUERY9,
+    IF_D3DVERTEXSHADER9,
+    IF_D3DPIXELSHADER9,
     // DirectInput 8: the same objects as DirectInput, reached through the
     // version 8 vtables.
     IF_DINPUT8,
@@ -219,6 +222,8 @@ enum ComKind : uint16_t {
     K_D3D9IB,         // an index buffer
     K_D3D9DECL,       // a vertex declaration
     K_D3D9QUERY,      // an occlusion or event query
+    K_D3D9VSHADER,    // a vertex shader made from its bytecode on the device
+    K_D3D9PSHADER,    // a pixel shader, likewise
 };
 
 // A DirectInput joystick axis's DIPROP_RANGE, DIPROP_DEADZONE and
@@ -301,6 +306,11 @@ struct ComObj {
     uint32_t bound_texture = 0;       // Device3 retains its stage-zero texture object.
     uint32_t texture_stage[32] = {0}; // Single advertised texture stage.
     uint32_t render_target = 0;       // surface id
+    // --- K_D3D9VSHADER / K_D3D9PSHADER: the bytecode, shared with the
+    // pipeline record whenever the shader is bound, and its d9sh::code_key.
+    std::shared_ptr<const std::vector<uint8_t>> shader_code;
+    uint64_t shader_key = 0;
+    uint32_t fvf = 0; // K_D3D9DEVICE: the FVF code SetFVF was last given, 0 for none
     uint32_t current_viewport = 0;
     bool in_scene = false;
     std::vector<uint32_t> viewports;

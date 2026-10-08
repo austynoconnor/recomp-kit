@@ -148,4 +148,10 @@ const Program &program_for(const std::vector<uint8_t> &code);
 uint64_t code_key(const uint8_t *code, size_t size);
 const Program &program_for_key(uint64_t key, const uint8_t *code, size_t size);
 
+// The length in bytes of the shader whose version token is at `code`,
+// through its end token, or 0 when no end token comes within `max_bytes` or
+// an instruction is not one load() knows. CreateVertexShader and
+// CreatePixelShader receive only a pointer, so this is how much to keep.
+size_t code_size(const uint8_t *code, size_t max_bytes);
+
 } // namespace d9sh

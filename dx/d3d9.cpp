@@ -60,6 +60,7 @@ static const uint8_t IID_IDirect3DDevice9_[16] =
 static const uint32_t D3D_OK9 = 0u;
 static const uint32_t D3DERR_NOTAVAILABLE = MAKE_D3DHRESULT(2154);
 static const uint32_t D3DERR_INVALIDCALL = MAKE_D3DHRESULT(2156);
+static const uint32_t D3DERR_NOTFOUND9 = MAKE_D3DHRESULT(2150);
 
 // Defined with the resources further down.
 struct ComObj;
@@ -369,8 +370,6 @@ D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
 D9_STUB(GetFrontBufferData, 3)
 D9_STUB(ColorFill, 4)
-D9_STUB(GetRenderTarget, 3)
-D9_STUB(GetTransform, 3)
 D9_STUB(MultiplyTransform, 3)
 D9_STUB(SetMaterial, 2)
 D9_STUB(GetMaterial, 2)
@@ -380,45 +379,27 @@ D9_STUB(LightEnable, 3)
 D9_STUB(GetLightEnable, 3)
 D9_STUB(SetClipPlane, 3)
 D9_STUB(GetClipPlane, 3)
-D9_STUB(GetRenderState, 3)
 D9_STUB(CreateStateBlock, 3)
 D9_STUB(BeginStateBlock, 1)
 D9_STUB(EndStateBlock, 2)
 D9_STUB(SetClipStatus, 2)
 D9_STUB(GetClipStatus, 2)
-D9_STUB(GetTexture, 3)
-D9_STUB(GetTextureStageState, 4)
-D9_STUB(GetSamplerState, 4)
 D9_STUB(ValidateDevice, 2)
 D9_STUB(SetPaletteEntries, 3)
 D9_STUB(GetPaletteEntries, 3)
 D9_STUB(SetCurrentTexturePalette, 2)
 D9_STUB(GetCurrentTexturePalette, 2)
-D9_STUB(GetScissorRect, 2)
 D9_STUB(SetSoftwareVertexProcessing, 2)
 D9_STUB(GetSoftwareVertexProcessing, 1)
 D9_STUB(SetNPatchMode, 2)
 D9_STUB(GetNPatchMode, 1)
 D9_STUB(ProcessVertices, 6)
-D9_STUB(GetVertexDeclaration, 2)
-D9_STUB(SetFVF, 2)
-D9_STUB(GetFVF, 2)
-D9_STUB(CreateVertexShader, 3)
-D9_STUB(SetVertexShader, 2)
-D9_STUB(GetVertexShader, 2)
-D9_STUB(GetVertexShaderConstantF, 4)
 D9_STUB(SetVertexShaderConstantI, 4)
 D9_STUB(GetVertexShaderConstantI, 4)
 D9_STUB(SetVertexShaderConstantB, 4)
 D9_STUB(GetVertexShaderConstantB, 4)
-D9_STUB(GetStreamSource, 5)
 D9_STUB(SetStreamSourceFreq, 3)
 D9_STUB(GetStreamSourceFreq, 3)
-D9_STUB(GetIndices, 2)
-D9_STUB(CreatePixelShader, 3)
-D9_STUB(SetPixelShader, 2)
-D9_STUB(GetPixelShader, 2)
-D9_STUB(GetPixelShaderConstantF, 4)
 D9_STUB(SetPixelShaderConstantI, 4)
 D9_STUB(GetPixelShaderConstantI, 4)
 D9_STUB(SetPixelShaderConstantB, 4)
@@ -1875,7 +1856,6 @@ RES_STUB(Res, FreePrivateData)
 RES_STUB(Res, SetPriority)
 RES_STUB(Res, GetPriority)
 RES_STUB(Res, PreLoad)
-RES_STUB(Res, GetType)
 RES_STUB(Tex, SetLOD)
 RES_STUB(Tex, GetLOD)
 RES_STUB(Tex, SetAutoGenFilterType)
@@ -1911,6 +1891,31 @@ void Surf_GetContainer(X86 *c) {
     com_addref(dev);
     com_out_ptr(out, com_view(dev, IF_D3DDEVICE9));
     com_ret(c, D3D_OK9);
+}
+
+// D3DRESOURCETYPE: SURFACE 1, TEXTURE 3, CUBETEXTURE 5, VERTEXBUFFER 6,
+// INDEXBUFFER 7.
+void Res_GetType(X86 *c) {
+    ComObj *o = com_this_arg(c);
+    uint32_t type = 0;
+    if (o)
+        switch (o->kind) {
+        case K_D3D9SURFACE:
+            type = 1;
+            break;
+        case K_D3D9TEXTURE:
+            type = o->caps ? 5 : 3;
+            break;
+        case K_D3D9VB:
+            type = 6;
+            break;
+        case K_D3D9IB:
+            type = 7;
+            break;
+        default:
+            break;
+        }
+    com_ret(c, type);
 }
 
 void Res_GetDevice(X86 *c) {
@@ -2400,6 +2405,437 @@ void Dev_SetPixelShaderConstantF(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
+// ---------------------------------------------------------------------------
+// The device getters: each one reads back what its setter recorded.
+// ---------------------------------------------------------------------------
+
+// Writes an AddRef'd view of object `id` as `iface` to `out`, or a null
+// pointer when there is no such object, as Direct3D does for an unbound slot.
+static void out_object(uint32_t out, uint32_t id, ComIface iface) {
+    ComObj *o = com_get(id);
+    uint32_t view_ = 0;
+    if (o) {
+        com_addref(o);
+        view_ = com_view(o, iface);
+        if (!view_)
+            com_release(o);
+    }
+    com_out_ptr(out, view_);
+}
+
+// (this, RenderTargetIndex, ppRenderTarget)
+void Dev_GetRenderTarget(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t index = arg(c, 1), out = arg(c, 2);
+    if (!dev || !out || index >= 4) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    D9Pipeline &pl = d9_pipeline(dev->id);
+    uint32_t id = pl.color_target[index];
+    if (!id && index == 0)
+        id = dev->render_target;
+    ComObj *s = com_get(id);
+    if (!s || s->kind != K_D3D9SURFACE) {
+        com_out_ptr(out, 0);
+        com_ret(c, index == 0 ? D3DERR_INVALIDCALL : D3DERR_NOTFOUND9);
+        return;
+    }
+    out_object(out, id, IF_D3DSURFACE9);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, State, pMatrix). A transform never set reads as identity.
+void Dev_GetTransform(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t state = arg(c, 1), m = arg(c, 2);
+    uint32_t slot = state < 256 ? state : (state < 260 ? state - 256 + 24 : 0xffffffffu);
+    if (!dev || !m || slot >= 32) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    const float *t = d9_pipeline(dev->id).transform[slot];
+    bool zero = true;
+    for (int i = 0; i < 16; ++i)
+        zero = zero && t[i] == 0.0f;
+    for (int i = 0; i < 16; ++i) {
+        float v = zero ? (i % 5 == 0 ? 1.0f : 0.0f) : t[i];
+        uint32_t b;
+        memcpy(&b, &v, 4);
+        wr32(m + 4u * (uint32_t)i, b);
+    }
+    com_ret(c, D3D_OK9);
+}
+
+// (this, State, pValue)
+void Dev_GetRenderState(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t state = arg(c, 1), out = arg(c, 2);
+    if (!dev || !out || state >= 256) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(out, d9_pipeline(dev->id).rs[state]);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, Stage, ppTexture)
+void Dev_GetTexture(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t stage = arg(c, 1), out = arg(c, 2);
+    if (!dev || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t id = stage < 16 ? d9_pipeline(dev->id).sampler_tex[stage] : 0;
+    ComObj *t = com_get(id);
+    if (!t || t->kind != K_D3D9TEXTURE) {
+        com_out_ptr(out, 0);
+        com_ret(c, D3D_OK9);
+        return;
+    }
+    out_object(out, id, t->caps ? IF_D3DCUBETEXTURE9 : IF_D3DTEXTURE9);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, Stage, Type, pValue)
+void Dev_GetTextureStageState(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t stage = arg(c, 1), type = arg(c, 2), out = arg(c, 3);
+    if (!dev || !out || stage >= 8 || type >= 33) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(out, d9_pipeline(dev->id).tss[stage][type]);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, Sampler, Type, pValue)
+void Dev_GetSamplerState(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t sampler = arg(c, 1), type = arg(c, 2), out = arg(c, 3);
+    if (!dev || !out || sampler >= 16 || type >= 14) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(out, d9_pipeline(dev->id).sampler_state[sampler][type]);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, pRect)
+void Dev_GetScissorRect(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t r = arg(c, 1);
+    if (!dev || !r) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    for (int i = 0; i < 4; ++i)
+        wr32(r + 4u * (uint32_t)i, (uint32_t)d9_pipeline(dev->id).scissor[i]);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, StreamNumber, ppStreamData, pOffsetInBytes, pStride)
+void Dev_GetStreamSource(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t stream = arg(c, 1), out = arg(c, 2), off = arg(c, 3), stride = arg(c, 4);
+    if (!dev || !out || stream >= 8) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    const D9Pipeline::Stream &st = d9_pipeline(dev->id).stream[stream];
+    out_object(out, st.vb, IF_D3DVERTEXBUFFER9);
+    if (off)
+        wr32(off, st.offset);
+    if (stride)
+        wr32(stride, st.stride);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, ppIndexData)
+void Dev_GetIndices(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t out = arg(c, 1);
+    if (!dev || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    out_object(out, d9_pipeline(dev->id).index_buffer, IF_D3DINDEXBUFFER9);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, ppDecl)
+void Dev_GetVertexDeclaration(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t out = arg(c, 1);
+    if (!dev || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    out_object(out, d9_pipeline(dev->id).declaration, IF_D3DVERTEXDECL9);
+    com_ret(c, D3D_OK9);
+}
+
+// Copies Count four-float vectors from a register table to guest memory.
+static void read_registers(const float (*table)[4], uint32_t limit, uint32_t start, uint32_t data,
+                           uint32_t count) {
+    for (uint32_t i = 0; i < count && start + i < limit && data; ++i)
+        for (uint32_t k = 0; k < 4; ++k) {
+            uint32_t bits;
+            memcpy(&bits, &table[start + i][k], 4);
+            wr32(data + (i * 4 + k) * 4, bits);
+        }
+}
+
+// (this, StartRegister, pConstantData, Vector4fCount)
+void Dev_GetVertexShaderConstantF(X86 *c) {
+    ComObj *dev = this_device9(c);
+    if (dev)
+        read_registers(d9_pipeline(dev->id).vconst, 256, arg(c, 1), arg(c, 2), arg(c, 3));
+    com_ret(c, D3D_OK9);
+}
+void Dev_GetPixelShaderConstantF(X86 *c) {
+    ComObj *dev = this_device9(c);
+    if (dev)
+        read_registers(d9_pipeline(dev->id).pconst, 32, arg(c, 1), arg(c, 2), arg(c, 3));
+    com_ret(c, D3D_OK9);
+}
+
+// ---------------------------------------------------------------------------
+// Flexible vertex formats. SetFVF replaces the vertex declaration, so the
+// device makes the declaration an FVF code stands for, once per device and
+// code, and binds that: the renderer only ever reads declarations.
+// ---------------------------------------------------------------------------
+
+// The D3DVERTEXELEMENT9 array, ending with D3DDECL_END, that `fvf` stands for.
+std::vector<uint8_t> d9_fvf_declaration(uint32_t fvf) {
+    std::vector<uint8_t> out;
+    uint16_t offset = 0;
+    auto add = [&](uint8_t type, uint8_t usage, uint8_t index, uint16_t size) {
+        uint8_t e[8] = {0, 0, (uint8_t)offset, (uint8_t)(offset >> 8), type, 0, usage, index};
+        out.insert(out.end(), e, e + 8);
+        offset = (uint16_t)(offset + size);
+    };
+    enum : uint8_t { FLOAT1, FLOAT2, FLOAT3, FLOAT4, COLOR, UBYTE4 };
+    enum : uint8_t { POSITION, BLENDWEIGHT, BLENDINDICES, NORMAL, PSIZE, TEXCOORD };
+    const uint8_t POSITIONT = 9, USAGE_COLOR = 10;
+    uint32_t pos = fvf & 0x400e;
+    if (pos == 0x2) {
+        add(FLOAT3, POSITION, 0, 12);
+    } else if (pos == 0x4) {
+        add(FLOAT4, POSITIONT, 0, 16);
+    } else if (pos == 0x4002) {
+        add(FLOAT4, POSITION, 0, 16);
+    } else if (pos >= 0x6 && pos <= 0xe) {
+        add(FLOAT3, POSITION, 0, 12);
+        int betas = (int)(pos - 0x4) / 2; // XYZB1 is 6, XYZB5 is 14
+        bool indices = (fvf & 0x1000) || (fvf & 0x8000);
+        int weights = indices ? betas - 1 : betas;
+        if (weights > 0)
+            add((uint8_t)(FLOAT1 + weights - 1), BLENDWEIGHT, 0, (uint16_t)(4 * weights));
+        if (indices)
+            add((fvf & 0x1000) ? UBYTE4 : COLOR, BLENDINDICES, 0, 4);
+    }
+    if (fvf & 0x10)
+        add(FLOAT3, NORMAL, 0, 12);
+    if (fvf & 0x20)
+        add(FLOAT1, PSIZE, 0, 4);
+    if (fvf & 0x40)
+        add(COLOR, USAGE_COLOR, 0, 4);
+    if (fvf & 0x80)
+        add(COLOR, USAGE_COLOR, 1, 4);
+    uint32_t texcount = (fvf >> 8) & 0xf;
+    for (uint32_t i = 0; i < texcount && i < 8; ++i) {
+        static const uint8_t kType[4] = {FLOAT2, FLOAT3, FLOAT4, FLOAT1};
+        static const uint16_t kSize[4] = {8, 12, 16, 4};
+        uint32_t f = (fvf >> (16 + 2 * i)) & 3;
+        add(kType[f], TEXCOORD, (uint8_t)i, kSize[f]);
+    }
+    const uint8_t end[8] = {0xff, 0, 0, 0, 17, 0, 0, 0}; // D3DDECL_END
+    out.insert(out.end(), end, end + 8);
+    return out;
+}
+
+// (this, FVF)
+void Dev_SetFVF(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t fvf = arg(c, 1);
+    if (!dev) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    dev->fvf = fvf;
+    // Each declaration made here lives as long as the program: it holds the
+    // reference com_new gave it.
+    static auto *made = new std::map<std::pair<uint32_t, uint32_t>, uint32_t>();
+    uint32_t id = 0;
+    if (fvf) {
+        auto key = std::make_pair(dev->id, fvf);
+        auto it = made->find(key);
+        if (it != made->end() && com_get(it->second)) {
+            id = it->second;
+        } else if (ComObj *d = com_new(K_D3D9DECL)) {
+            d->dev_d3d = dev->id;
+            d->blob = d9_fvf_declaration(fvf);
+            id = (*made)[key] = d->id;
+        }
+    }
+    dev->current_viewport = id;
+    d9_pipeline(dev->id).declaration = id;
+    com_ret(c, D3D_OK9);
+}
+
+// (this, pFVF)
+void Dev_GetFVF(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t out = arg(c, 1);
+    if (!dev || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    // SetVertexDeclaration replaces the FVF, so it reads 0 once a declaration
+    // other than the one the FVF made is bound.
+    ComObj *d = com_get(d9_pipeline(dev->id).declaration);
+    bool fvf_bound = d && dev->fvf && d->blob == d9_fvf_declaration(dev->fvf);
+    wr32(out, fvf_bound ? dev->fvf : 0);
+    com_ret(c, D3D_OK9);
+}
+
+// ---------------------------------------------------------------------------
+// Shaders. Creating one keeps its bytecode; binding one hands that bytecode
+// to the pipeline record, where the renderer translates it.
+// ---------------------------------------------------------------------------
+
+// (this, pFunction, ppShader), for either kind.
+static void create_shader(X86 *c, ComKind kind, ComIface iface) {
+    ComObj *dev = this_device9(c);
+    uint32_t code = arg(c, 1), out = arg(c, 2);
+    if (!dev || !code || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    // The guest passes no length: walk the tokens to the end token, within
+    // what remains of guest memory and a generous limit.
+    const size_t limit = 1u << 20;
+    size_t room = code < GUEST_SIZE ? (size_t)(GUEST_SIZE - code) : 0;
+    size_t size = d9sh::code_size(gm_ptr(code), room < limit ? room : limit);
+    if (!size) {
+        log_once(kind == K_D3D9VSHADER ? "d3d9.vs.bad" : "d3d9.ps.bad",
+                 "d3d9: a shader passed to CreateVertexShader or CreatePixelShader has no end "
+                 "token, or an instruction this runtime does not know");
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    ComObj *s = com_new(kind);
+    if (!s) {
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    const uint8_t *p = gm_ptr(code);
+    s->dev_d3d = dev->id;
+    s->shader_code = std::make_shared<const std::vector<uint8_t>>(p, p + size);
+    s->shader_key = d9sh::code_key(p, size);
+    uint32_t view_ = com_view(s, iface);
+    if (!view_) {
+        com_release(s);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    com_out_ptr(out, view_);
+    com_ret(c, D3D_OK9);
+}
+void Dev_CreateVertexShader(X86 *c) {
+    create_shader(c, K_D3D9VSHADER, IF_D3DVERTEXSHADER9);
+}
+void Dev_CreatePixelShader(X86 *c) {
+    create_shader(c, K_D3D9PSHADER, IF_D3DPIXELSHADER9);
+}
+
+// The shader object bound to each device, by device id: {vertex, pixel}.
+static std::map<uint32_t, std::pair<uint32_t, uint32_t>> &bound_shaders() {
+    static auto *m = new std::map<uint32_t, std::pair<uint32_t, uint32_t>>();
+    return *m;
+}
+
+// (this, pShader); null unbinds.
+static void set_shader(X86 *c, bool pixel) {
+    ComObj *dev = this_device9(c);
+    ComObj *s = com_this(arg(c, 1));
+    if (!dev) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    if (s && s->kind != (pixel ? K_D3D9PSHADER : K_D3D9VSHADER))
+        s = nullptr;
+    D9Pipeline &pl = d9_pipeline(dev->id);
+    D9ShaderBytes &bytes = pixel ? pl.ps : pl.vs;
+    uint64_t &key = pixel ? pl.ps_key : pl.vs_key;
+    bytes.bytes = s ? s->shader_code : nullptr;
+    key = s ? s->shader_key : 0;
+    if (s)
+        pl.label = nullptr;
+    auto &b = bound_shaders()[dev->id];
+    (pixel ? b.second : b.first) = s ? s->id : 0;
+    com_ret(c, D3D_OK9);
+}
+void Dev_SetVertexShader(X86 *c) {
+    set_shader(c, false);
+}
+void Dev_SetPixelShader(X86 *c) {
+    set_shader(c, true);
+}
+
+// (this, ppShader)
+static void get_shader(X86 *c, bool pixel) {
+    ComObj *dev = this_device9(c);
+    uint32_t out = arg(c, 1);
+    if (!dev || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    auto &b = bound_shaders()[dev->id];
+    out_object(out, pixel ? b.second : b.first, pixel ? IF_D3DPIXELSHADER9 : IF_D3DVERTEXSHADER9);
+    com_ret(c, D3D_OK9);
+}
+void Dev_GetVertexShader(X86 *c) {
+    get_shader(c, false);
+}
+void Dev_GetPixelShader(X86 *c) {
+    get_shader(c, true);
+}
+
+// IDirect3D{Vertex,Pixel}Shader9::GetFunction(this, pData, pSizeOfData):
+// with no buffer it reports the size; otherwise the buffer must hold it all.
+void Shader_GetFunction(X86 *c) {
+    ComObj *s = com_this_arg(c);
+    uint32_t data = arg(c, 1), size_ptr = arg(c, 2);
+    if (!s || !s->shader_code || !size_ptr) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t size = (uint32_t)s->shader_code->size();
+    if (!data) {
+        wr32(size_ptr, size);
+        com_ret(c, D3D_OK9);
+        return;
+    }
+    if (rd32(size_ptr) < size) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    memcpy(gm_ptr(data), s->shader_code->data(), size);
+    wr32(size_ptr, size);
+    com_ret(c, D3D_OK9);
+}
+
+static const ComMethod g_shader9[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"GetDevice", 2, Res_GetDevice},
+    {"GetFunction", 3, Shader_GetFunction},
+};
+
 static const ComMethod g_d3d9[] = {
     {"QueryInterface", 3, com_QueryInterface},
     {"AddRef", 1, com_AddRef},
@@ -2593,6 +3029,12 @@ void d3d9_register() {
     com_bind(IF_D3DINDEXBUFFER9, K_D3D9IB);
     com_bind(IF_D3DVERTEXDECL9, K_D3D9DECL);
     com_bind(IF_D3DQUERY9, K_D3D9QUERY);
+    com_define(IF_D3DVERTEXSHADER9, "d3d9.dll", "IDirect3DVertexShader9", g_shader9,
+               std::size(g_shader9));
+    com_define(IF_D3DPIXELSHADER9, "d3d9.dll", "IDirect3DPixelShader9", g_shader9,
+               std::size(g_shader9));
+    com_bind(IF_D3DVERTEXSHADER9, K_D3D9VSHADER);
+    com_bind(IF_D3DPIXELSHADER9, K_D3D9PSHADER);
     for (ComKind k : {K_D3D9TEXTURE, K_D3D9SURFACE, K_D3D9VB, K_D3D9IB})
         com_set_destructor(k, d3d9_resource_destroy);
     com_set_destructor(K_D3D9QUERY, query_destroy);

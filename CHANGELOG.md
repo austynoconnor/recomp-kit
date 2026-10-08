@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- 2026-10-08 16:10 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: the Direct3D 9 device implements what Star Wars
+  Battlefront II's statically linked D3DX calls directly, where the old
+  stubs returned success and left the out pointer unwritten (the game then
+  called through a null pointer). Getters now read back what the setters
+  stored: `GetRenderTarget` (index 0 falls back to the back buffer;
+  `D3DERR_NOTFOUND` for an unset higher index), `GetTransform` (identity
+  when never set), `GetRenderState`, `GetTexture`, `GetTextureStageState`,
+  `GetSamplerState`, `GetScissorRect`, `GetStreamSource`, `GetIndices`,
+  `GetVertexDeclaration` and `Get{Vertex,Pixel}ShaderConstantF`; each
+  object comes back with a reference, as Direct3D does. New
+  `K_D3D9VSHADER`/`K_D3D9PSHADER` objects (interfaces
+  `IDirect3DVertexShader9`/`IDirect3DPixelShader9` with `GetDevice` and
+  `GetFunction`) keep the bytecode that `Create{Vertex,Pixel}Shader` is
+  given, measured by the new `d9sh::code_size` (a token walk to the end
+  token, rejecting unknown SM1 instructions); `Set{Vertex,Pixel}Shader`
+  put that bytecode and its `code_key` in the pipeline record the renderer
+  reads, the same way the D3DX effect path does, and the matching getters
+  return the bound object. `SetFVF` binds a declaration built from the FVF
+  code by the new `d9_fvf_declaration` (positions including blend weights
+  and indices, normal, point size, both colours and texture coordinate
+  sizes), made once per device and code; `GetFVF` reads it back while that
+  declaration is bound. `Res::GetType` reports surface, texture, cube
+  texture, vertex buffer or index buffer. `dx_tests` case "Direct3D 9
+  device getters and shaders"; `dx_tests` 141,290 checks, 17 failures,
+  all the existing 64-bit "display ABI" layout checks that fail under
+  wasm32.
+
 - 2026-10-08 15:20 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: `GetCommandLineA`/`W` quote the program path when it
   holds a space, as Explorer and shortcuts launch a program, so the CRT's
