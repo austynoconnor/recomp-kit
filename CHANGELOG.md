@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- 2026-10-08 — Claude Opus 5.5: overlapped file reads. ReadFile honours an
+  OVERLAPPED's Offset/OffsetHigh (it read from the current file position),
+  completes the read before returning, fills in Internal and InternalHigh
+  and signals hEvent; at end of file it fails with ERROR_HANDLE_EOF as
+  Windows does for an overlapped read. GetOverlappedResult, previously
+  stub-only, reads that result back.
+
 - 2026-10-08 — Claude Opus 5.5: IDirect3DDevice9::GetRenderTarget returns
   the bound surface with a reference (target 0 falls back to the back
   buffer; an unbound higher index is D3DERR_NOTFOUND with a null surface).

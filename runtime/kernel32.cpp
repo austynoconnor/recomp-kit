@@ -805,9 +805,25 @@ void k_CreateFileA(X86 *c) {
     create_file_named(c, gm_str(arg(c, 0)));
 }
 
+// OVERLAPPED: Internal (status), InternalHigh (bytes), Offset, OffsetHigh,
+// hEvent. An overlapped read here always completes before ReadFile returns:
+// the status and byte count are filled in, the event is signalled, and
+// ReadFile reports TRUE, which Windows also does for a read that completed
+// at once. GetOverlappedResult then reads the same fields back.
+static void overlapped_complete(uint32_t ov, uint32_t status, uint32_t bytes) {
+    if (!ov || !gm_valid(ov, 20))
+        return;
+    wr32(ov + 0, status);
+    wr32(ov + 4, bytes);
+    if (HObj *e = handle_get(rd32(ov + 16), H_EVENT)) {
+        e->signalled = true;
+        sched_wake_all();
+    }
+}
+
 void k_ReadFile(X86 *c) {
     HObj *o = handle_get(arg(c, 0), H_FILE);
-    uint32_t buf = arg(c, 1), want = arg(c, 2), pread = arg(c, 3);
+    uint32_t buf = arg(c, 1), want = arg(c, 2), pread = arg(c, 3), ov = arg(c, 4);
     if (!o) {
         if (handle_get(arg(c, 0), H_STD)) {
             if (pread)
@@ -824,6 +840,9 @@ void k_ReadFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
+    // An overlapped read names its own file offset.
+    if (ov && gm_valid(ov, 20))
+        os_fd_seek(o->fd, (int64_t)rd32(ov + 8) | ((int64_t)rd32(ov + 12) << 32), OS_SEEK_SET);
     int64_t n = os_fd_read(o->fd, g_mem + buf, want);
     if (recomp_env("TRACE_FILES"))
         LOGW("file: read handle=%08x want=%u got=%lld", arg(c, 0), want, (long long)n);
@@ -831,12 +850,42 @@ void k_ReadFile(X86 *c) {
         set_last_error(ERROR_ACCESS_DENIED_);
         if (pread)
             wr32(pread, 0);
+        overlapped_complete(ov, 0xC0000022u, 0); // STATUS_ACCESS_DENIED
         set_eax(c, 0);
         return;
     }
     if (pread)
         wr32(pread, (uint32_t)n);
+    if (ov && n == 0 && want) {
+        // At or past the end of the file an overlapped read fails with
+        // ERROR_HANDLE_EOF, unlike a synchronous one.
+        overlapped_complete(ov, 0xC0000011u, 0); // STATUS_END_OF_FILE
+        set_last_error(38);                      // ERROR_HANDLE_EOF
+        set_eax(c, 0);
+        return;
+    }
+    overlapped_complete(ov, 0, (uint32_t)n);
     set_eax(c, 1);
+}
+
+// GetOverlappedResult(hFile, lpOverlapped, lpNumberOfBytesTransferred, bWait):
+// every overlapped read has already completed (see overlapped_complete).
+void k_GetOverlappedResult(X86 *c) {
+    uint32_t ov = arg(c, 1), pbytes = arg(c, 2);
+    if (!ov || !gm_valid(ov, 20)) {
+        set_last_error(87); // ERROR_INVALID_PARAMETER
+        set_eax(c, 0);
+        return;
+    }
+    uint32_t status = rd32(ov), bytes = rd32(ov + 4);
+    if (pbytes && gm_valid(pbytes, 4))
+        wr32(pbytes, bytes);
+    if (status == 0) {
+        set_eax(c, 1);
+        return;
+    }
+    set_last_error(status == 0xC0000011u ? 38u : ERROR_ACCESS_DENIED_);
+    set_eax(c, 0);
 }
 
 void k_WriteFile(X86 *c) {
@@ -4849,7 +4898,7 @@ const ImportShim g_kernel32_shims[] = {
     {"KERNEL32.dll", "GetTimeFormatA", 6, nullptr},
     {"KERNEL32.dll", "GetDiskFreeSpaceExA", 4, nullptr},
     {"KERNEL32.dll", "GetLongPathNameA", 3, nullptr},
-    {"KERNEL32.dll", "GetOverlappedResult", 4, nullptr},
+    {"KERNEL32.dll", "GetOverlappedResult", 4, k_GetOverlappedResult},
     {"KERNEL32.dll", "HeapValidate", 3, nullptr},
     {"KERNEL32.dll", "QueueUserAPC", 3, nullptr},
     {"KERNEL32.dll", "SetConsoleCtrlHandler", 2, nullptr},
