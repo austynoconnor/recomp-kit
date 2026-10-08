@@ -116,6 +116,13 @@ static void test_user32(X86 *c, uint32_t s) {
           "F1 has no character");
     check(call_import(c, "USER32.dll", "DialogBoxParamA", {IMAGE_BASE, 101, 0, 0, 0}) == 1,
           "dialogs say IDOK");
+    // A message passed through the init parameter is logged, not shown.
+    gm_put_str(s + 0x300, "Fatal error: something failed", 64);
+    gm_put_str(s + 0x3c0, "FATAL", 16);
+    wr32(s + 0x380, s + 0x3c0);
+    wr32(s + 0x384, s + 0x300);
+    check(call_import(c, "USER32.dll", "DialogBoxParamA", {IMAGE_BASE, 102, 0, 0, s + 0x380}) == 1,
+          "a dialog with a message parameter says IDOK too");
     check(call_import(c, "USER32.dll", "EndDialog", {0, 1}) == 1, "EndDialog");
     check(call_import(c, "USER32.dll", "GetDlgItem", {0, 1000}) == 0, "no dialog items");
 }

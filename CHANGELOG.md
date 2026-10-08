@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-08 15:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `DialogBoxParamA`, which shows no dialog, now logs the
+  text the dialog would have shown when its init parameter names a
+  printable string, or else every such string among the first four
+  pointers in it (a title and a message), joined by " | ". A game's fatal error
+  box is often the only report of why it quit. `compat_extra_tests` 185
+  checks, 0 failures.
+
 - 2026-10-08 14:40 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: DirectSound gaps Star Wars Battlefront II reaches before
   its first frame, kept small and next to `giggity-d3d8`'s DirectSound 8

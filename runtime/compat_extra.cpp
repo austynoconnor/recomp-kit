@@ -232,12 +232,45 @@ void get_time_format(X86 *c) {
 
 // No modal dialog can be shown or answered. A game's message box or server
 // panel gets IDOK as though the player had dismissed it.
+// The text a dialog would have shown, when its init parameter leads to some:
+// the parameter itself naming a printable ANSI string, or else every such
+// string among the first four pointers it holds, joined by " | ". Games often pass a fatal error's message this way,
+// and with no dialog on screen the log is the only place it can appear.
+std::string dialog_param_text(uint32_t p) {
+    auto text_at = [](uint32_t a) -> std::string {
+        if (!a || !gm_valid(a, 4))
+            return {};
+        std::string t = gm_str(a, 512);
+        if (t.size() < 4)
+            return {};
+        for (unsigned char ch : t)
+            if (ch < 0x20 && ch != '\n' && ch != '\r' && ch != '\t')
+                return {};
+        return t;
+    };
+    std::string out = text_at(p);
+    if (out.empty() && p && gm_valid(p, 16)) {
+        // Every string the first four pointers lead to, a title and a message.
+        for (uint32_t i = 0; i < 4; ++i) {
+            std::string t = text_at(rd32(p + 4 * i));
+            if (!t.empty())
+                out += (out.empty() ? "" : " | ") + t;
+        }
+    }
+    for (char &ch : out)
+        if (ch == '\n' || ch == '\r')
+            ch = ' ';
+    return out;
+}
+
 void dialog_box_param(X86 *c) {
     uint32_t tmpl = arg(c, 1);
+    std::string text = dialog_param_text(arg(c, 4));
     char key[48];
     snprintf(key, sizeof key, "DialogBoxParamA:%08x", tmpl);
-    log_once(key, "DialogBoxParamA(template %s%u): no dialog is shown; returning IDOK",
-             tmpl < 0x10000 ? "#" : "@", tmpl);
+    log_once(key, "DialogBoxParamA(template %s%u): no dialog is shown; returning IDOK%s%s%s",
+             tmpl < 0x10000 ? "#" : "@", tmpl, text.empty() ? "" : " (it would have said \"",
+             text.c_str(), text.empty() ? "" : "\")");
     set_eax(c, 1); // IDOK
 }
 void get_dlg_item(X86 *c) {
