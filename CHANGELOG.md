@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 2026-10-08 — Claude Opus 5.5: IDirect3DDevice9::GetRenderTarget returns
+  the bound surface with a reference (target 0 falls back to the back
+  buffer; an unbound higher index is D3DERR_NOTFOUND with a null surface).
+  It was a stub that left the out pointer unset, and Gamebryo's
+  NiDX9Renderer::Create called through it.
+
 - 2026-10-08 — Claude Opus 5.5: `[game] upper_heap = true` adds a second
   guest heap region from 0x10000000 to `guest_size`, above the stack, TEB
   and import trampolines, for a game whose start-up reserves more than the

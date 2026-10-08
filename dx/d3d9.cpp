@@ -369,7 +369,6 @@ D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
 D9_STUB(GetFrontBufferData, 3)
 D9_STUB(ColorFill, 4)
-D9_STUB(GetRenderTarget, 3)
 D9_STUB(GetTransform, 3)
 D9_STUB(MultiplyTransform, 3)
 D9_STUB(SetMaterial, 2)
@@ -1350,6 +1349,41 @@ void Dev_SetRenderTarget(X86 *c) {
         pl.scissor[2] = (int32_t)s->width;
         pl.scissor[3] = (int32_t)s->height;
     }
+    com_ret(c, D3D_OK9);
+}
+
+// (this, RenderTargetIndex, ppRenderTarget): the surface bound at the index,
+// with a reference for the caller. Target 0 is never unbound: before the game
+// sets one it is the back buffer. An unbound higher index is D3DERR_NOTFOUND
+// with a null surface, as Direct3D 9 reports it.
+void Dev_GetRenderTarget(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t index = arg(c, 1), out = arg(c, 2);
+    if (!dev || !out || index > 3) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    ComObj *s = nullptr;
+    if (index == 0) {
+        s = com_get(dev->render_target);
+        if (!s || s->kind != K_D3D9SURFACE)
+            s = device_backbuffer(dev);
+    } else {
+        s = com_get(d9_pipeline(dev->id).color_target[index]);
+    }
+    if (!s || s->kind != K_D3D9SURFACE) {
+        com_out_ptr(out, 0);
+        com_ret(c, index == 0 ? D3DERR_INVALIDCALL : 0x88760866u); // D3DERR_NOTFOUND
+        return;
+    }
+    com_addref(s);
+    uint32_t view_ = com_view(s, IF_D3DSURFACE9);
+    if (!view_) {
+        com_release(s);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    com_out_ptr(out, view_);
     com_ret(c, D3D_OK9);
 }
 
