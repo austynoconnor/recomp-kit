@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 2026-10-08 11:55 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `GetDateFormatA` and `GetTimeFormatA` (US English
+  short and long dates, Windows picture strings, `TIME_NOSECONDS`,
+  `TIME_NOTIMEMARKER`, `TIME_FORCE24HOURFORMAT`, the size query and the
+  short-buffer error). New `compat_extra_tests` (label `nogame`) calls each
+  new KERNEL32, USER32, GDI32, Winsock and Bink shim through the import
+  table and checks results and stack cleanup. Ran it, and `gdi_tests`,
+  built with Emscripten 6.0.11 under Node: 142 checks each, 0 failures.
+
 - 2026-10-08 11:30 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: the imports Star Wars Battlefront II (2005) links that no
   shim table covered. New `runtime/compat_extra.cpp`:
