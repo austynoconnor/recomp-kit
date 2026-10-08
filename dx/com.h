@@ -139,6 +139,19 @@ enum ComIface : uint16_t {
     // version 8 vtables.
     IF_DINPUT8,
     IF_DINPUTDEVICE8,
+    // DirectSound 8 (dsound.cpp): the same objects as DirectSound, reached
+    // through the version 8 vtables, which append a few methods.
+    IF_DSOUND8,
+    IF_DSBUFFER8,
+    // Direct3D 8 (d3d8.cpp): views of the Direct3D 9 objects through the
+    // version 8 vtables.
+    IF_D3D8,
+    IF_D3DDEVICE8,
+    IF_D3DTEXTURE8,
+    IF_D3DCUBETEXTURE8,
+    IF_D3DSURFACE8,
+    IF_D3DVERTEXBUFFER8,
+    IF_D3DINDEXBUFFER8,
     IF_COUNT
 };
 

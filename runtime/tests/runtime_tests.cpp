@@ -4037,6 +4037,25 @@ static void test_import_coverage(X86 *c) {
     uint32_t impl = 0, log_only = 0, unknown = 0;
     imports_coverage(&impl, &log_only, &unknown);
     check(impl + log_only == imports_count(), "%u implemented, %u logging-only", impl, log_only);
+    // test_startup_apis registers deliberately ambiguous "abi-test.dll"
+    // decorations; they stay unknown by design and are not real game imports.
+    uint32_t fixtures = 0;
+    if (FILE *scan = tmpfile()) {
+        imports_dump_coverage(scan);
+        rewind(scan);
+        char line[1024];
+        bool names = false;
+        while (fgets(line, sizeof line, scan)) {
+            if (strncmp(line, "imports with an unknown stdcall argument count", 45) == 0)
+                names = true;
+            else if (names && line[0] != ' ')
+                break;
+            else if (names && strncmp(line, "  abi-test.dll!", 15) == 0)
+                ++fixtures;
+        }
+        fclose(scan);
+    }
+    unknown -= std::min(unknown, fixtures);
     check(unknown == 0, "%u imports have an unknown argument count", unknown);
     if (unknown) {
         // Reuse the runtime's classification rather than duplicating its shim
@@ -4055,6 +4074,8 @@ static void test_import_coverage(X86 *c) {
                 } else if (names) {
                     if (line[0] != ' ')
                         break;
+                    if (strncmp(line, "  abi-test.dll!", 15) == 0)
+                        continue;
                     if (printed++ < 40)
                         fputs(line, stdout);
                 }

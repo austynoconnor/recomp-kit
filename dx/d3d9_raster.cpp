@@ -757,7 +757,7 @@ void d9_raster_invalidate(uint32_t surface_id) {
 }
 
 void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &declaration,
-                    const D9DrawCall &call) {
+                    const D9DrawCall &call, const D9Pipeline *pipeline) {
     if (!device || !target)
         return;
     D9SurfaceInfo rt;
@@ -766,7 +766,7 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
         return;
     if (rt.format != 21 && rt.format != 22)
         return; // only 32-bit colour targets are drawn into
-    const D9Pipeline &pl = d9_pipeline(device->id);
+    const D9Pipeline &pl = pipeline ? *pipeline : d9_pipeline(device->id);
     if (pl.vs.empty() || pl.ps.empty()) {
         static uint32_t said = 0;
         if (++said <= 4)
@@ -866,7 +866,31 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
     bool blend = pl.rs_set[27] && pl.rs[27];
     uint32_t src_blend = pl.rs_set[19] ? pl.rs[19] : 2, dst_blend = pl.rs_set[20] ? pl.rs[20] : 1;
     bool alpha_test = pl.rs_set[15] && pl.rs[15];
-    float alpha_ref = (pl.rs[24] & 0xff) / 255.0f;
+    // D3DRS_ALPHAREF / D3DRS_ALPHAFUNC (D3DCMP_*: 1 never .. 8 always; the
+    // default is ALWAYS), compared in 8 bits as the hardware does.
+    uint32_t alpha_ref = pl.rs[24] & 0xff;
+    uint32_t alpha_func = pl.rs_set[25] ? pl.rs[25] : 8;
+    auto alpha_pass = [&](float a) {
+        uint32_t v = (uint32_t)(a * 255.0f + 0.5f);
+        switch (alpha_func) {
+        case 1:
+            return false;
+        case 2:
+            return v < alpha_ref;
+        case 3:
+            return v == alpha_ref;
+        case 4:
+            return v <= alpha_ref;
+        case 5:
+            return v > alpha_ref;
+        case 6:
+            return v != alpha_ref;
+        case 7:
+            return v >= alpha_ref;
+        default:
+            return true;
+        }
+    };
     uint8_t *pixels = rt.data;
 
     uint32_t written = 0;
@@ -931,7 +955,7 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
                 V4 col = ps.major >= 2 ? m.oc[0] : m.r[0];
                 for (int k = 0; k < 4; ++k)
                     col[k] = std::min(std::max(col[k], 0.0f), 1.0f);
-                if (alpha_test && col[3] < alpha_ref)
+                if (alpha_test && !alpha_pass(col[3]))
                     continue;
                 if (!written++)
                     sample_colour = col;

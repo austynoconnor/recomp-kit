@@ -1490,11 +1490,6 @@ uint32_t format_wsprintf(uint32_t out, uint32_t fmt_ptr, uint32_t va) {
 void u_wvsprintfA(X86 *c) {
     set_eax(c, format_wsprintf(arg(c, 0), arg(c, 1), arg(c, 2)));
 }
-// wsprintfA is cdecl with its arguments in place after the format: the
-// caller pops, so the shim's pop count is 0 and va is the third stack slot.
-void u_wsprintfA(X86 *c) {
-    set_eax(c, format_wsprintf(arg(c, 0), arg(c, 1), c->r[4] + 4 + 8));
-}
 void u_MessageBoxExA(X86 *c) {
     u_MessageBoxA(c); // the language argument only picks the button text
 }
@@ -1510,6 +1505,29 @@ void u_GetQueueStatus(X86 *c) {
     uint32_t qs = queue().empty() ? 0u : 0x8u;
     uint32_t mask = arg(c, 0) & 0xffffu;
     set_eax(c, ((qs & mask) << 16) | (qs & mask));
+}
+
+// wsprintfA(lpOut, lpFmt, ...): cdecl, so its arguments follow the format on
+// the guest stack and the caller pops them.
+void u_wsprintfA(X86 *c) {
+    shim_forward(c, u_wvsprintfA, {arg(c, 0), arg(c, 1), c->r[R_ESP] + 12});
+}
+
+// LoadAcceleratorsA(hInstance, lpTableName): a handle for the RT_ACCELERATOR
+// table, which is all a game does with it before handing it to
+// TranslateAccelerator. Keystrokes reach the window procedure as WM_KEYDOWN
+// either way, and no accelerator turns one into WM_COMMAND here, so
+// TranslateAccelerator always reports "not translated".
+void u_LoadAcceleratorsA(X86 *c) {
+    static uint32_t next = 0x00ac0000u;
+    next += 4;
+    set_eax(c, next);
+}
+void u_TranslateAcceleratorA(X86 *c) {
+    set_eax(c, 0);
+}
+void u_DestroyAcceleratorTable(X86 *c) {
+    set_eax(c, 1);
 }
 
 } // namespace user32
@@ -1769,6 +1787,11 @@ const ImportShim g_user32_shims[] = {
     {"USER32.dll", "MessageBoxExA", 5, u_MessageBoxExA},
     {"USER32.dll", "PostThreadMessageA", 4, u_PostThreadMessageA},
     {"USER32.dll", "GetQueueStatus", 1, u_GetQueueStatus},
+    {"USER32.dll", "LoadAcceleratorsA", 2, u_LoadAcceleratorsA},
+    {"USER32.dll", "LoadAcceleratorsW", 2, u_LoadAcceleratorsA},
+    {"USER32.dll", "TranslateAcceleratorA", 3, u_TranslateAcceleratorA},
+    {"USER32.dll", "TranslateAcceleratorW", 3, u_TranslateAcceleratorA},
+    {"USER32.dll", "DestroyAcceleratorTable", 1, u_DestroyAcceleratorTable},
     // Not imported by D3DPopTB.exe, but registered so GetProcAddress and the
     // host layer can reach them.
     {"USER32.dll", "SendMessageA", 4, u_SendMessageA},

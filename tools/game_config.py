@@ -174,9 +174,23 @@ def load(game_dir):
     alignment = translate.setdefault("function_alignment", 16)
     if type(alignment) is not int or alignment <= 0:
         raise ValueError("%s: [translate] function_alignment must be a positive integer" % source)
+    for key in ("setjmp", "longjmp"):
+        if key in translate and (type(translate[key]) is not int or translate[key] <= 0):
+            raise ValueError("%s: [translate] %s must be a guest address" % (source, key))
     tracks = cfg.setdefault("media", {}).setdefault("cd_tracks", [])
     if not isinstance(tracks, list) or not all(isinstance(v, str) for v in tracks):
         raise ValueError("%s: [media] cd_tracks must be a list of strings" % source)
+    # A virtual CD-ROM drive for a game that checks for its disc by volume
+    # label: the drive letter and the label the player's own disc carries.
+    cd = cfg["media"]
+    cd.setdefault("cd_label", "")
+    cd.setdefault("cd_drive", "D")
+    if not isinstance(cd["cd_label"], str) or len(cd["cd_label"]) > 32:
+        raise ValueError("%s: [media] cd_label must be a string of at most 32 characters" % source)
+    if (not isinstance(cd["cd_drive"], str) or len(cd["cd_drive"]) != 1
+            or not cd["cd_drive"].isalpha() or cd["cd_drive"].upper() in "ABC"):
+        raise ValueError("%s: [media] cd_drive must be one letter from D to Z" % source)
+    cd["cd_drive"] = cd["cd_drive"].upper()
     cfg.setdefault("hooks", {})
     cfg.setdefault("bundle", {}).setdefault("exclude", [])
     touch = cfg.setdefault("touch", {})

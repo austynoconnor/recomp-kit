@@ -9,6 +9,7 @@
 #pragma once
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -65,6 +66,18 @@ struct D9Pipeline {
     int32_t scissor[4] = {};       // left, top, right, bottom
     const char *label = nullptr;   // effect/technique/pass that bound the shaders, for diagnostics
 
+    // Fixed-function state (d3d9_ffp.cpp reads it when a shader is not bound).
+    // D3DMATERIAL9: Diffuse, Ambient, Specular, Emissive (RGBA each), Power.
+    float material[17] = {1.0f, 1.0f, 1.0f, 1.0f};
+    // D3DLIGHT9, kept verbatim as 26 dwords, by the game's light index.
+    struct Light {
+        uint32_t raw[26] = {};
+        bool enabled = false;
+    };
+    std::map<uint32_t, Light> lights;
+    uint32_t fvf = 0;            // the FVF SetFVF bound, 0 for a declaration
+    float clip_plane[6][4] = {}; // user clip planes (not applied yet)
+
     // Direct3D 9's documented defaults. ZENABLE also depends on whether the
     // device was made with a depth buffer; CreateDevice and Reset set it.
     D9Pipeline() {
@@ -117,6 +130,8 @@ struct D9Pipeline {
             s[5] = s[6] = 1;        // MAGFILTER, MINFILTER point
             s[10] = 1;              // MAXANISOTROPY
         }
+        for (auto &m : transform) // every transform starts as the identity
+            m[0] = m[5] = m[10] = m[15] = 1.0f;
         for (int i = 0; i < 8; ++i) {
             tss[i][1] = i == 0 ? 4 : 1; // COLOROP modulate / disable
             tss[i][2] = 2;              // COLORARG1 texture

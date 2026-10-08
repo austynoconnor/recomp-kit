@@ -17,7 +17,9 @@
 #include "win32.h"
 #include "native_seam.h"
 #include "loader.h"
+#include "resources.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include "../platform/os.h"
 
@@ -585,6 +587,7 @@ void win32_init(const std::string &exe_dir) {
         g_tls_used[i] = false;
     handles().clear();
     modules().clear();
+    resource_modules_reset();
     vm_regions().clear();
     dir_cache().clear();
     g_next_handle = 0x00010004;
@@ -1331,6 +1334,18 @@ void load_library_named(X86 *c, const std::string &module_name) {
         set_eax(c, m->base);
         return;
     }
+    // A DLL the game ships that the runtime neither shims nor translated, such
+    // as a language DLL of string tables: its resources become readable and
+    // its code is not run.
+    if (!runtime_serves_module(name)) {
+        std::string host = win32_host_path(module_name);
+        if (uint32_t base = host.empty() ? 0 : resource_module_load(host)) {
+            modules()[name] = base;
+            LOGW("LoadLibrary(\"%s\"): resources only, mapped at %08x", module_name.c_str(), base);
+            set_eax(c, base);
+            return;
+        }
+    }
     if (!runtime_serves_module(name)) {
         log_once(("loadlib:" + name).c_str(),
                  "LoadLibrary(\"%s\"): no shims for that module, reporting it as missing",
@@ -2053,7 +2068,17 @@ struct GuestThread {
     double last_yield = 0.0;  // for the bounded scheduling checkpoint
     jmp_buf exit_jmp;
     uint32_t exit_code = 0;
+    // TerminateThread from another thread: this one ends with exit_code the
+    // next time it resumes, as Windows would end it wherever it stood.
+    bool terminate_requested = false;
 };
+// A thread another thread terminated ends here, on its own stack, when it is
+// next scheduled: the same landing pad ExitThread uses.
+void thread_check_terminated() {
+    GuestThread *me = cur_thread();
+    if (me->terminate_requested && !me->is_main)
+        longjmp(me->exit_jmp, 1);
+}
 
 // Scheduling deadlines run on a real monotonic clock, never on host_millis():
 // the guest clock can be pinned (the parity fixture pins it to a constant) and
@@ -2810,6 +2835,7 @@ uint32_t guest_block(const char *why) {
     g_sched_m.unlock();
     if (g_exit_requested)
         thread_finish_exit_process();
+    thread_check_terminated();
     return r;
 }
 
@@ -2844,6 +2870,8 @@ bool guest_yield() {
     g_sched_m.unlock();
     if (moved && g_exit_requested)
         thread_finish_exit_process();
+    if (moved)
+        thread_check_terminated();
     return moved;
 }
 
@@ -3402,6 +3430,48 @@ void k_CreateThread(X86 *c) {
     LOGV("CreateThread(%08x, param=%08x, flags=%08x) -> handle %08x id %u", start, param, flags, h,
          t->id);
     set_eax(c, h);
+}
+
+// TerminateThread(hThread, dwExitCode). The current thread ends at once, like
+// ExitThread. Another thread is parked off the baton, so it is marked, woken
+// from whatever it waits for, and ends the moment it resumes; it runs no more
+// guest code. Its handle then reports the code, and waits on it complete.
+void k_ExitThread(X86 *c);
+void k_TerminateThread(X86 *c) {
+    uint32_t h = arg(c, 0), code = arg(c, 1);
+    GuestThread *target = nullptr;
+    for (GuestThread *t : threads())
+        if (t->handle == h && h)
+            target = t;
+    if (!target) {
+        HObj *o = handle_get(h, H_THREAD);
+        if (!o) {
+            set_last_error(ERROR_INVALID_HANDLE_);
+            set_eax(c, 0);
+            return;
+        }
+        o->exit_code = code; // never started or already finished
+        set_eax(c, 1);
+        return;
+    }
+    if (target == cur_thread()) {
+        shim_forward(c, k_ExitThread, {code});
+        return;
+    }
+    g_sched_m.lock();
+    if (!target->finished && !target->is_main) {
+        target->terminate_requested = true;
+        target->exit_code = code;
+        target->blocked = false;
+        target->wait_kind = W_NONE;
+        target->wait_n = 0;
+        target->has_deadline = false;
+        target->suspend_count = 0;
+        g_sched_cv.notify_all();
+    }
+    g_sched_m.unlock();
+    LOGV("TerminateThread(%08x, %u)", h, code);
+    set_eax(c, 1);
 }
 
 void k_ExitThread(X86 *c) {
@@ -4187,7 +4257,7 @@ void k_SetErrorMode(X86 *c) {
     set_eax(c, prev);
 }
 void k_GetLogicalDrives(X86 *c) {
-    set_eax(c, 0x4);
+    set_eax(c, 0x4u | (virtual_cd_present() ? 1u << (RECOMP_CD_DRIVE - 'A') : 0u));
 }
 
 void k_GlobalMemoryStatus(X86 *c) {
@@ -4701,28 +4771,65 @@ std::string full_path_named(const std::string &name) {
     return full;
 }
 
+// The virtual CD-ROM drive (game.toml [media] cd_label, cd_drive). A game that
+// checks for its disc by volume label sees the player's own disc in this
+// drive. Its files are the game directory's, which holds the installed copy
+// of what the disc carries; a path on the drive resolves like any other
+// absolute path. RECOMP_CD_LABEL in the environment overrides the configured
+// label, so a launcher can pass the label it read from the player's disc.
+const char *virtual_cd_label() {
+    static const std::string label = [] {
+        const char *env = recomp_env("CD_LABEL");
+        return std::string(env ? env : RECOMP_CD_LABEL);
+    }();
+    return label.c_str();
+}
+bool virtual_cd_present() {
+    return virtual_cd_label()[0] != 0;
+}
+// The drive letter a root path names ("D:\", "d:", "D:/x"), upper case; 0
+// for a root that names none, which means the current drive, C:.
+static char root_drive(const std::string &root) {
+    if (root.size() >= 2 && root[1] == ':' && isalpha((unsigned char)root[0]))
+        return (char)toupper((unsigned char)root[0]);
+    return 0;
+}
+static bool root_is_virtual_cd(const std::string &root) {
+    return virtual_cd_present() && root_drive(root) == RECOMP_CD_DRIVE;
+}
+
 void volume_information_named(X86 *c, const std::string &root, bool wide) {
-    (void)root;
     auto put = [wide](uint32_t p, const char *s, uint32_t n) {
         return wide ? gm_put_wstr(p, s, n) : gm_put_str(p, s, n);
     };
-    // No CD check is modelled: report a fixed volume with no label. If the
-    // game turns out to key off the volume name this must come from the trace.
+    char drive = root_drive(root);
+    bool cd = root_is_virtual_cd(root);
+    if (drive && drive != 'C' && !cd) {
+        set_last_error(21); // ERROR_NOT_READY: nothing in that drive
+        set_eax(c, 0);
+        return;
+    }
+    // C: is a fixed volume with no label; the virtual CD is a read-only CDFS
+    // volume with the disc's label.
     uint32_t namebuf = arg(c, 1), namelen = arg(c, 2), pserial = arg(c, 3);
     uint32_t pmaxcomp = arg(c, 4), pflags = arg(c, 5);
     uint32_t fsbuf = arg(c, 6), fslen = arg(c, 7);
     if (namebuf && namelen)
-        put(namebuf, "", namelen);
+        put(namebuf, cd ? virtual_cd_label() : "", namelen);
     if (pserial)
-        wr32(pserial, 0x1a2b3c4d);
+        wr32(pserial, cd ? 0x2002061au : 0x1a2b3c4du);
     if (pmaxcomp)
-        wr32(pmaxcomp, 255);
+        wr32(pmaxcomp, cd ? 110 : 255);
     if (pflags)
-        wr32(pflags, 0);
+        wr32(pflags, cd ? 0x00080004u : 0); // FILE_READ_ONLY_VOLUME | FILE_UNICODE_ON_DISK
     if (fsbuf && fslen)
-        put(fsbuf, "FAT32", fslen);
-    log_once("GetVolumeInformationA",
-             "GetVolumeInformationA: reporting an unlabelled FAT32 volume");
+        put(fsbuf, cd ? "CDFS" : "FAT32", fslen);
+    if (cd)
+        log_once("GetVolumeInformation.cd", "GetVolumeInformation(%c:): the virtual CD-ROM \"%s\"",
+                 RECOMP_CD_DRIVE, virtual_cd_label());
+    else
+        log_once("GetVolumeInformationA",
+                 "GetVolumeInformationA: reporting an unlabelled FAT32 volume");
     set_eax(c, 1);
 }
 
@@ -4742,23 +4849,37 @@ void disk_free_space(X86 *c) {
 }
 
 void drive_type_named(X86 *c, const std::string &root) {
-    (void)root;
-    set_eax(c, 3); // DRIVE_FIXED
+    char drive = root_drive(root);
+    if (root_is_virtual_cd(root))
+        set_eax(c, 5); // DRIVE_CDROM
+    else if (drive && drive != 'C')
+        set_eax(c, 1); // DRIVE_NO_ROOT_DIR
+    else
+        set_eax(c, 3); // DRIVE_FIXED
 }
 
+// "C:\" and, with a virtual CD, its drive's root, each NUL-terminated, then
+// the final NUL.
 void logical_drive_strings(X86 *c, bool wide) {
-    static const char drives[] = "C:\\\0";
+    std::string drives("C:\\", 3);
+    drives.push_back('\0');
+    if (virtual_cd_present()) {
+        drives.push_back(RECOMP_CD_DRIVE);
+        drives += ":\\";
+        drives.push_back('\0');
+    }
     uint32_t len = arg(c, 0), buf = arg(c, 1);
-    uint32_t need = sizeof drives; // includes both NULs
+    uint32_t need = (uint32_t)drives.size() + 1; // includes the final NUL
     if (!buf || len < need) {
         set_eax(c, need);
         return;
     }
-    if (wide) {
-        gm_put_wstr(buf, "C:\\", len);
-        wr16(buf + 8, 0);
-    } else {
-        memcpy(g_mem + buf, drives, need);
+    for (uint32_t i = 0; i < need; ++i) {
+        uint8_t ch = i < drives.size() ? (uint8_t)drives[i] : 0;
+        if (wide)
+            wr16(buf + 2 * i, ch);
+        else
+            g_mem[buf + i] = ch;
     }
     set_eax(c, need - 1);
 }
@@ -5159,7 +5280,7 @@ const ImportShim g_kernel32_shims[] = {
     {"KERNEL32.dll", "HeapValidate", 3, nullptr},
     {"KERNEL32.dll", "QueueUserAPC", 3, nullptr},
     {"KERNEL32.dll", "SetConsoleCtrlHandler", 2, nullptr},
-    {"KERNEL32.dll", "TerminateThread", 2, nullptr},
+    {"KERNEL32.dll", "TerminateThread", 2, k_TerminateThread},
     {"KERNEL32.dll", "GetTimeZoneInformation", 1, k_GetTimeZoneInformation},
     // TLS / interlocked / critical sections
     {"KERNEL32.dll", "TlsAlloc", 0, k_TlsAlloc},

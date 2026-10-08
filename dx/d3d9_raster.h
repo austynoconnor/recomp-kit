@@ -33,9 +33,11 @@ struct D9DrawCall {
     size_t index_bytes = 0;
 };
 
-// Draws into `target` (a 32-bit surface object) with the device's pipeline.
+// Draws into `target` (a 32-bit surface object) with the device's pipeline,
+// or with `pipeline` when given (the fixed-function path's generated one).
+struct D9Pipeline;
 void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &declaration,
-                    const D9DrawCall &call);
+                    const D9DrawCall &call, const D9Pipeline *pipeline = nullptr);
 
 // A texture's pixels changed; any decoded copy of it is stale.
 void d9_raster_invalidate(uint32_t surface_id);

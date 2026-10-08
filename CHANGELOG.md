@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-08 CDT — Claude Opus 5.5: merged `giggity-d3d8` (7c9d7e2:
+  Direct3D 8 over D3D9, fixed-function rendering, DirectSoundCreate8,
+  DirectShow RenderFile) into `giggity-mgs2`. `wsprintfA` now has one
+  definition (the D3D8 branch's, which forwards to `wvsprintfA`); both
+  branches' USER32 table additions are kept. The import-coverage test no
+  longer counts the deliberately ambiguous `abi-test.dll` decorations that
+  the startup-API test registers as real unknown imports.
+
 - 2026-10-08 12:24 CDT — Claude Opus 5.5: groundwork for Metal Gear Solid 2:
   Substance (branch `giggity-mgs2`), independent of the Direct3D 8 work.
   - Translator: packed and scalar SSE floating point that MGS2 uses without
@@ -47,6 +55,86 @@
     version-resource checks for an image without one, and names ordinal
     imports "ordN" as the loader does even where pefile knows the name.
   - Merge note: `giggity-d3d8` also adds `wsprintfA`; keep one entry.
+
+- 2026-10-08 15:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: Direct3D 8,
+  fixed-function rendering, DirectShow RenderFile and game-named setjmp, the
+  pieces that take Crazy Taxi from the Direct3D 8 wall to its title screen in
+  a headless run. All of it is game-neutral; MGS2 and SWBF2 are expected to use
+  the Direct3D 8 layer and the fixed-function pipeline.
+  - `dx/d3d8.cpp` (new): `d3d8.dll!Direct3DCreate8` and IDirect3D8 (16 slots),
+    IDirect3DDevice8 (97 slots), IDirect3DVertexBuffer8, IndexBuffer8,
+    Surface8 (11 slots), Texture8 and CubeTexture8 as views of the existing
+    Direct3D 9 objects; most methods forward to the D9 shims with rewritten
+    arguments (`shim_forward`). Version 8 differences handled here:
+    D3DPRESENT_PARAMETERS 8 to 9 (MultiSampleQuality inserted), the 8-era
+    caps (first 212 bytes of D3DCAPS9, vs 1.1 / ps 1.4, CANRENDERWINDOWED),
+    an adapter mode list, vertex shader handles (bit 31) against FVFs, D3DVSD
+    declarations converted to D3D9 elements with `dcl` instructions inserted
+    into vs_1_1 code, the sampler states that live in SetTextureStageState in
+    version 8, ZBIAS to DEPTHBIAS, CopyRects and UpdateTexture through locks,
+    and state blocks (Begin/End recorded by difference, Apply, Capture,
+    Create, Delete). static_asserts pin every vtable size.
+  - `dx/d3d9_ffp.{h,cpp}` (new): the fixed-function pipeline as generated
+    vs_2_0/ps_2_0 bytecode, cached by state. Vertex side: world-view-
+    projection, pre-transformed (RHW) positions, normals, up to 8
+    directional/point/spot lights with material and ambient, colour vertex
+    sources, specular, vertex fog (exp, exp2, linear, range-based, or the
+    pre-transformed vertex's own factor; table fog is not done yet), texture
+    coordinate generation and texture transforms. Pixel side: all D3DTOP colour and alpha
+    operations over 8 stages, TFACTOR, per-stage constants, specular add and
+    fog. `d9_fvf_declaration`/`d9_fvf_stride` turn an FVF into elements.
+  - `dx/d3d9.cpp`: a draw without both shaders now goes through the generated
+    pair on the GPU backends and the CPU rasterizer alike (`draw_pipeline`);
+    real Set/Get for transforms (identity by default), MultiplyTransform,
+    material, lights, clip planes, FVF, render/texture-stage/sampler state
+    getters and GetTexture; LockRect honours a sub-rectangle on surfaces,
+    textures and cube faces.
+  - `dx/d3d9_raster.cpp`: the alpha test compares with D3DRS_ALPHAFUNC (it was
+    always "greater or equal").
+  - `dx/dshow.cpp`: CLSID_FilterGraph. A graph a game makes itself plays an MP3
+    given to IGraphBuilder::RenderFile or IMediaControl::RenderFile through
+    the existing minimp3 stream and host channel; the graph owns a hidden
+    stream and frees it with itself.
+  - Translator: `[translate] setjmp` / `longjmp` name the CRT's __setjmp3 and
+    longjmp for the runtime intrinsics (the old constants, Populous's
+    addresses, stay the defaults). Data-pointer entries that land inside a
+    replaced intrinsic body are emitted as `recomp_unmodelled` traps instead
+    of undefined symbols.
+  - Tests: dx_tests "Direct3D 8 fixed-function triangle" (create, clear, FVF
+    draw, read back through the back buffer) and "DirectShow FilterGraph
+    RenderFile"; tests/test_game_config.py covers setjmp/longjmp.
+  - Verified so far only on the CPU rasterizer in a Linux headless run; the
+    GPU backends receive the same generated shaders but were not run.
+
+- 2026-10-08 12:02 CDT (branch giggity-d3d8) — Claude Opus 5.5: Windows shims a
+  DirectX 8 game (Crazy Taxi) needs to start, all reusable by other games.
+  - DirectSound 8: `DirectSoundCreate8` (DSOUND ordinal 11),
+    CLSID_DirectSound8, and IDirectSound8 / IDirectSoundBuffer8 views of the
+    existing objects (`IF_DSOUND8`, `IF_DSBUFFER8`). The version 8 vtables are
+    the version 1 slots plus `VerifyCertification`, `SetFX` (clearing works;
+    asking for effects returns DSERR_CONTROLUNAVAIL), `AcquireResources` and
+    `GetObjectInPath`. QueryInterface reaches them from the version 1 objects.
+  - Virtual CD-ROM drive: new `[media] cd_label` / `cd_drive` keys
+    (`RECOMP_CD_LABEL`, `RECOMP_CD_DRIVE`; env `RECOMP_CD_LABEL` overrides).
+    When a label is set, GetLogicalDrives, GetLogicalDriveStrings,
+    GetDriveType (5) and GetVolumeInformation (label, CDFS) show one CD drive,
+    so a disc-label check sees the player's own disc without patching the
+    executable. Other missing drives now report not-ready.
+  - Resource-only DLLs: LoadLibrary of a game DLL the runtime neither shims nor
+    translated maps its headers and sections into the guest heap (never run)
+    so FindResource/LoadResource/SizeofResource/EnumResourceNames and
+    LoadString read its resources (language DLLs). New `LoadStringA`.
+  - `shim_forward(c, fn, {args})` in imports.h calls another shim with
+    rewritten arguments on a scratch frame below ESP (used by the ANSI
+    wrappers here and the coming Direct3D 8 layer).
+  - GDI ANSI text: CreateFontA, CreateFontIndirectA, ExtTextOutA,
+    GetTextExtentPoint32A, Set/GetTextAlign, Set/GetMapMode.
+  - USER32: wsprintfA (cdecl, forwards to wvsprintfA), Load/Translate/Destroy
+    accelerator tables.
+  - KERNEL32: TerminateThread stops another cooperative guest thread at its
+    next block or yield.
+  - Reserved ComIface slots for the Direct3D 8 interfaces.
+  - Tests: tests/test_game_config.py covers the CD keys.
 
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and
