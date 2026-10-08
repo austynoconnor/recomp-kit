@@ -30,6 +30,8 @@
 #include <set>
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <iterator>
 #include <algorithm>
 #include <initializer_list>
@@ -135,25 +137,56 @@ void D9_GetAdapterIdentifier(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
+// The display modes the adapter offers, smallest first, for X8R8G8B8 (22)
+// and X1R5G5B5/R5G6B5 alike. The desktop mode is the largest one offered.
+// RECOMP_DISPLAY_MODE=<w>x<h> caps the list at that size, which is how a
+// game that picks the biggest mode it is offered can be held to a smaller
+// one (Star Wars Battlefront II's autodetect takes the desktop size).
+struct Mode9 {
+    uint32_t w, h;
+};
+const Mode9 kModes9[] = {{640, 480}, {800, 600}, {1024, 768}, {1280, 960}};
+
+static uint32_t mode_count9() {
+    static const uint32_t n = [] {
+        uint32_t cap_w = 0, cap_h = 0;
+        if (const char *s = getenv("RECOMP_DISPLAY_MODE"))
+            if (sscanf(s, "%ux%u", &cap_w, &cap_h) != 2)
+                cap_w = cap_h = 0;
+        uint32_t count = 0;
+        for (const Mode9 &m : kModes9)
+            if (!cap_w || (m.w <= cap_w && m.h <= cap_h))
+                ++count;
+        return count ? count : 1u;
+    }();
+    return n;
+}
+
 void D9_GetAdapterModeCount(X86 *c) {
-    set_eax(c, 1);
+    set_eax(c, mode_count9());
 }
 
 // D3DDISPLAYMODE: width, height, refresh rate, format. X8R8G8B8 is 22.
-static void put_display_mode(uint32_t p) {
+static void put_display_mode(uint32_t p, uint32_t index, uint32_t format) {
     if (!p)
         return;
-    wr32(p + 0, 1280);
-    wr32(p + 4, 960);
+    wr32(p + 0, kModes9[index].w);
+    wr32(p + 4, kModes9[index].h);
     wr32(p + 8, 60);
-    wr32(p + 12, 22);
+    wr32(p + 12, format);
 }
+// (this, Adapter, Format, Mode, pMode)
 void D9_EnumAdapterModes(X86 *c) {
-    put_display_mode(arg(c, 4));
+    uint32_t index = arg(c, 3);
+    if (index >= mode_count9()) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    put_display_mode(arg(c, 4), index, arg(c, 2) ? arg(c, 2) : 22);
     com_ret(c, D3D_OK9);
 }
 void D9_GetAdapterDisplayMode(X86 *c) {
-    put_display_mode(arg(c, 2));
+    put_display_mode(arg(c, 2), mode_count9() - 1, 22);
     com_ret(c, D3D_OK9);
 }
 void D9_CheckDeviceType(X86 *c) {

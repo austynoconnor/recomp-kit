@@ -10872,6 +10872,19 @@ static void test_d3d9_device_getters_and_shaders() {
     };
     uint32_t d3d = call_shim(tramp("d3d9.dll", "Direct3DCreate9"), {32});
     CHECK(d3d != 0);
+    // The adapter offers 640x480 up to the 1280x960 desktop, smallest first.
+    CHECK_EQ(call_method(d3d, 6, {0, 22}), 4u); // GetAdapterModeCount
+    CHECK_EQ(call_method(d3d, 7, {0, 22, 0, sc(0x40)}), 0u); // EnumAdapterModes
+    CHECK_EQ(rd32(sc(0x40)), 640u);
+    CHECK_EQ(rd32(sc(0x44)), 480u);
+    CHECK_EQ(rd32(sc(0x4c)), 22u);
+    CHECK_EQ(call_method(d3d, 7, {0, 23, 3, sc(0x40)}), 0u);
+    CHECK_EQ(rd32(sc(0x40)), 1280u);
+    CHECK_EQ(rd32(sc(0x4c)), 23u);
+    CHECK(call_method(d3d, 7, {0, 22, 4, sc(0x40)}) != 0u);
+    CHECK_EQ(call_method(d3d, 8, {0, sc(0x40)}), 0u); // GetAdapterDisplayMode
+    CHECK_EQ(rd32(sc(0x40)), 1280u);
+    CHECK_EQ(rd32(sc(0x44)), 960u);
     uint32_t pp = sc(0x100);
     for (uint32_t i = 0; i < 14; ++i)
         wr32(pp + 4 * i, 0);

@@ -2,14 +2,25 @@
 
 ## Unreleased
 
-- 2026-10-08 19:20 CDT � Claude Opus 5.5 (Claude Code), branch
+- 2026-10-08 18:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: Direct3D 9 offers four display modes (640x480, 800x600,
+  1024x768 and the 1280x960 desktop, smallest first) in each format the
+  game asks for, where it offered only the desktop size. New
+  `RECOMP_DISPLAY_MODE=<w>x<h>` caps the list (and the desktop mode) at
+  that size, for a game that picks the largest mode offered; Star Wars
+  Battlefront II's autodetect does, which made it render at 1280x960 on
+  the CPU renderer. `EnumAdapterModes` past the end fails as Windows does.
+  dx_tests checks the list. Also corrects this branch's changelog times
+  for 2026-10-08 (two hours fast) and a mis-encoded dash.
+
+- 2026-10-08 17:48 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: `ReleaseSemaphore` now wakes the scheduler, as
   `SetEvent` and `ReleaseMutex` already did, so a thread waiting on the
   semaphore is reconsidered at once instead of sleeping out its timeout.
   Star Wars Battlefront II hands its loader and render threads off through
   semaphores tens of thousands of times while loading.
 
-- 2026-10-08 18:50 CDT — Claude Opus 5.5 (Claude Code), branch
+- 2026-10-08 16:50 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: relative mouse mode for games that aim with the mouse.
   New `[controls] mouse = "absolute" | "relative"` in game.toml (default
   `"absolute"`, so no existing game changes), generated as
@@ -24,7 +35,7 @@
   relative mode. `tests/test_game_config.py` covers the new key; the stub
   game.toml documents it.
 
-- 2026-10-08 18:30 CDT — Claude Opus 5.5 (Claude Code), branch
+- 2026-10-08 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: Direct3D 9 for what stalled Star Wars Battlefront II's
   loading screen. ps_1_x texture-addressing instructions (`texbem`,
   `texbeml`, `texreg2ar`/`gb`/`rgb`, `texm3x2pad`/`tex`/`depth`,
