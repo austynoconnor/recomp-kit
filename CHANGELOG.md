@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- 2026-10-08 10:15 CDT — GPT-6 (Codex): Added an idle browser player shell
+  with explicit Start/Stop and exclusive per-game Web Locks. Runtime documents
+  and owned workers are discarded before session ownership is released;
+  direct runtime-page launches are rejected. Bounded the web viewport to
+  1280×720, disabled automatic high-DPI backing growth and retained only 1,000
+  diagnostic lines. Reduced the web pthread prewarm pool from 24 to eight and
+  initial growable Wasm heap from 1 GiB to 512 MiB. Staged the new runtime page
+  through both CMake and the launcher. Four Chrome lifecycle regressions and
+  45 existing game/launcher/build checks passed. A complete Windows web build
+  and monitored title/menu run confirmed the new pool, heap and backing size;
+  desktop freeze resolution and full gameplay compatibility remain unverified.
+
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and
   removes translated-function DWARF from shipped downloads while preserving

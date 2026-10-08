@@ -1,5 +1,13 @@
 # Testing
 
+The browser player lifecycle has game-free Chrome regressions in
+`tests/test_web_player.py`. Install Playwright in the development environment
+and have Chrome available, then run `python -m pytest -q tests/test_web_player.py`.
+These exercise idle/reloaded pages, duplicate-session exclusion, bounded frame
+layout and worker teardown on Stop. Their worker fixture does not establish
+gameplay performance or GPU stability; those require a separately monitored
+game-backed run.
+
 Run checks appropriate to your change. Every suite's output belongs under ignored
 `build/`; requested tests must report failure rather than silently skip prerequisites.
 

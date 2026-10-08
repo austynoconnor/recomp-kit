@@ -1642,8 +1642,9 @@ int web_main(int argc, char **argv) {
         fprintf(stderr, RECOMP_APP_NAME ": this browser gave the page no WebGPU device\n");
         return 3;
     }
-    g_window = SDL_CreateWindow(RECOMP_GAME_NAME, g_mode_w, g_mode_h,
-                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    // The player's bounded CSS viewport is the web rendering budget. Do not
+    // multiply that budget by the monitor's pixel density on large displays.
+    g_window = SDL_CreateWindow(RECOMP_GAME_NAME, g_mode_w, g_mode_h, SDL_WINDOW_RESIZABLE);
     if (!g_window) {
         fprintf(stderr, RECOMP_APP_NAME ": SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 3;
