@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-08 12:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: the translator models 3DNow!'s `FEMMS` like `EMMS` (every
+  x87 register empty) and SSE3's `FISTTP` (a store that truncates whatever
+  the control word's rounding says, then pops). Star Wars Battlefront II's
+  built-in D3DX contains both on paths the kit's CPUID never selects; they
+  were 99 of the game's 208 trap sites, leaving 109, all bytes Ghidra
+  decoded from data. New `test_femms_and_fisttp_translate`.
+
 - 2026-10-08 11:55 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: `GetDateFormatA` and `GetTimeFormatA` (US English
   short and long dates, Windows picture strings, `TIME_NOSECONDS`,

@@ -1328,7 +1328,7 @@ class Image(object):
     #: x87 mnemonics whose memory operand is an integer or a control/status
     #: word rather than a float, so its width names itself (`word ptr`) instead
     #: of being spelled `float`/`double`/`extended double`.
-    X87_INT = frozenset(("FILD", "FIST", "FISTP", "FIADD", "FISUB", "FISUBR",
+    X87_INT = frozenset(("FILD", "FIST", "FISTP", "FISTTP", "FIADD", "FISUB", "FISUBR",
                          "FIMUL", "FIDIV", "FIDIVR", "FICOM", "FICOMP",
                          "FNSTSW", "FSTSW", "FNSTCW", "FSTCW", "FLDCW",
                          "FNSTENV", "FLDENV", "FNSAVE", "FSAVE", "FRSTOR"))
@@ -3454,9 +3454,12 @@ class Translator(object):
             return L
         if m in ("NOP", "WAIT", "PAUSE"):
             return [";"]
-        if m == "EMMS":
+        if m in ("EMMS", "FEMMS"):
             # Every x87 register empty; TOP and the values are left alone.
-            # Codecs call a bare `emms; ret` whatever CPUID said.
+            # Codecs call a bare `emms; ret` whatever CPUID said. FEMMS is
+            # 3DNow!'s faster spelling, which leaves the MMX values undefined
+            # rather than preserved; keeping them is one of the allowed
+            # outcomes.
             return ["c->fpu_tag = 0xffffu;"]
         if m == "STMXCSR":
             # No translated SSE arithmetic changes MXCSR, so expose its reset value.
@@ -3607,7 +3610,7 @@ class Translator(object):
 
     # ---- x87 -------------------------------------------------------------
 
-    X87_MEM_INT = {"FILD", "FISTP", "FIST", "FIADD", "FISUB", "FISUBR",
+    X87_MEM_INT = {"FILD", "FISTP", "FISTTP", "FIST", "FIADD", "FISUB", "FISUBR",
                    "FIMUL", "FIDIV", "FIDIVR", "FICOM", "FICOMP"}
 
     def x87_mem_value(self, op):
@@ -3717,8 +3720,12 @@ class Translator(object):
                 L.append("fdrop(c);")
             return L
 
-        if m in ("FIST", "FISTP"):
+        if m in ("FIST", "FISTP", "FISTTP"):
             op = ops[0]
+            if m == "FISTTP":
+                # SSE3's store truncates whatever the control word's rounding
+                # says: round toward zero for this one conversion.
+                L.append("{ uint16_t cw_ = c->fpu_cw; c->fpu_cw |= 0x0c00u;")
             if op.size == 16:
                 L.append("wr16(%s, (uint16_t)fist_i16(c));" % addr_expr(op))
             elif op.size == 32:
@@ -3727,7 +3734,9 @@ class Translator(object):
                 L.append("wr64(%s, (uint64_t)fist_i64(c));" % addr_expr(op))
             else:
                 raise TranslateError("bad %s size" % m)
-            if m == "FISTP":
+            if m == "FISTTP":
+                L.append("c->fpu_cw = cw_; }")
+            if m in ("FISTP", "FISTTP"):
                 L.append("fdrop(c);")
             return L
 
