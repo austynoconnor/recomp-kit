@@ -2031,6 +2031,8 @@ const ImportShim g_misc_shims[] = {
     {"SHELL32.dll", "ShellExecuteA", 6, s_ShellExecuteA},
     {"SHELL32.dll", "SHGetSpecialFolderPathA", 4, s_SHGetSpecialFolderPathA},
     {"SHFOLDER.dll", "SHGetFolderPathA", 5, s_SHGetFolderPathA},
+    // SHELL32 exports the same function; games link either DLL.
+    {"SHELL32.dll", "SHGetFolderPathA", 5, s_SHGetFolderPathA},
     // ole32
     {"ole32.dll", "CoInitialize", 1, o_CoInitialize},
     {"ole32.dll", "OleInitialize", 1, o_CoInitialize},

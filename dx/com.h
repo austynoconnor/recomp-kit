@@ -139,6 +139,13 @@ enum ComIface : uint16_t {
     // version 8 vtables.
     IF_DINPUT8,
     IF_DINPUTDEVICE8,
+    // XACT 2 (xact.cpp): a silent engine. Only the engine is a COM object;
+    // the banks, cues and waves are plain C++ interfaces with no IUnknown.
+    IF_XACT_ENGINE,
+    IF_XACT_SOUNDBANK,
+    IF_XACT_WAVEBANK,
+    IF_XACT_CUE,
+    IF_XACT_WAVE,
     IF_COUNT
 };
 
@@ -206,6 +213,7 @@ enum ComKind : uint16_t {
     K_D3D9IB,         // an index buffer
     K_D3D9DECL,       // a vertex declaration
     K_D3D9QUERY,      // an occlusion or event query
+    K_XACT,           // the silent XACT engine and its banks, cues and waves
 };
 
 // A DirectInput joystick axis's DIPROP_RANGE, DIPROP_DEADZONE and

@@ -485,6 +485,16 @@ const ImportShim g_xinput13_exports[] = {
     {"XINPUT1_3.dll", "XInputGetBatteryInformation", 3, XInputGetBatteryInformation_},
     {"XINPUT1_3.dll", "XInputGetKeystroke", 3, XInputGetKeystroke_},
     {"XINPUT1_3.dll", "XInputGetDSoundAudioDeviceGuids", 3, XInputGetDSoundAudioDeviceGuids_},
+    // xinput1_3.dll's export ordinals. A game linked against the import
+    // library by ordinal (Bully: Scholarship Edition imports 2, 3 and 4)
+    // names its slots "ordN"; the loader resolves those as plain names.
+    {"XINPUT1_3.dll", "ord2", 2, XInputGetState_},
+    {"XINPUT1_3.dll", "ord3", 2, XInputSetState_},
+    {"XINPUT1_3.dll", "ord4", 3, XInputGetCapabilities_},
+    {"XINPUT1_3.dll", "ord5", 1, XInputEnable_},
+    {"XINPUT1_3.dll", "ord6", 3, XInputGetDSoundAudioDeviceGuids_},
+    {"XINPUT1_3.dll", "ord7", 3, XInputGetBatteryInformation_},
+    {"XINPUT1_3.dll", "ord8", 3, XInputGetKeystroke_},
 };
 const ImportShim g_xinput14_exports[] = {
     {"XINPUT1_4.dll", "XInputGetState", 2, XInputGetState_},

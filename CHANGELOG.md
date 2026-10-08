@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- 2026-10-08 — Claude Opus 5.5: imports for 2008-era Visual C++ 2005
+  games, first needed by Bully: Scholarship Edition 1.154 (branch
+  giggity-bully). The Bully import table goes from 147 to 150 of 200
+  measured imports covered; the rest are runtime calls that resolve here.
+  - d3dx9_38.dll: the existing D3DX9 table is also served under that name,
+    plus D3DXCreateEffect from memory, D3DXCreateBuffer, D3DXCreateTexture
+    (through the device), shader version, input-semantic and profile
+    queries, and D3DXMatrixReflect. D3DXCompileShader serves a table of
+    known HLSL sources, matched on an exact hash of the source text, as
+    hand-assembled Shader Model 2 bytecode (Bully's five 2D/debug-draw
+    shaders). Any other source, the effect and shader assemblers, and the
+    D3DX file and image loaders fail cleanly and are reported once each.
+  - XINPUT1_3.dll ordinals 2 to 8 (XInputGetState, SetState,
+    GetCapabilities, Enable, GetDSoundAudioDeviceGuids,
+    GetBatteryInformation, GetKeystroke) for games that import by number.
+  - A silent XACT 2 engine (CLSID_XACTEngine and the debug engine): sound
+    banks and wave banks load, cues and waves play and are already finished,
+    and no notification is sent. Audio initialisation succeeds with no sound.
+  - Small imports: console calls fail as they do for a process without a
+    console, ChangeDisplaySettingsA, GetMonitorInfoA, MoveWindow,
+    TranslateAcceleratorA, mouse_event, wsprintfW, dialog-template calls
+    (no dialog is shown), InitCommonControlsEx, CoSetProxyBlanket,
+    SysAllocString, SHELL32 SHGetFolderPathA, and vcomp (OpenMP), whose
+    parallel regions and static loops run on one thread.
+  - Checked with an Emscripten syntax-only compile of every changed file and
+    the portable Python suites (338 passed; the same 4 fail without these
+    changes, from Windows symlink privileges and no native compiler). No
+    native build or native tests were run: this computer has no native
+    C/C++ toolchain.
+
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and
   removes translated-function DWARF from shipped downloads while preserving

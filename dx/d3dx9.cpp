@@ -2063,20 +2063,11 @@ void X_D3DXCreateEffectPool(X86 *c) {
     set_eax(c, D3D_OKX);
 }
 
-// (pDevice, hSrcModule, pSrcResource, pDefines, pInclude, Flags, pPool,
-//  ppEffect, ppCompilationErrors)
-void X_D3DXCreateEffectFromResourceA(X86 *c) {
-    uint32_t device = arg(c, 0), module = arg(c, 1), resource = arg(c, 2);
-    // A null module is the executable itself, as it is for FindResource.
-    if (!module)
-        module = IMAGE_BASE;
-    uint32_t out = arg(c, 7), errors = arg(c, 8);
-    if (!out) {
-        set_eax(c, D3DERR_INVALIDCALLX);
-        return;
-    }
-    if (errors)
-        wr32(errors, 0);
+// Creates an effect object over a compiled fx_2_0 blob (or none, when `blob`
+// is null: the effect still hands out a working, empty object). Shared by
+// D3DXCreateEffectFromResourceA and the d3dx9_38 D3DXCreateEffect.
+void d3dx9_create_effect(X86 *c, uint32_t device, const uint8_t *blob, uint32_t size,
+                         const char *name, uint32_t pool_view, uint32_t out) {
     ComObj *fxo = com_new(K_D3DXEFFECT);
     uint32_t view = fxo ? com_view(fxo, IF_D3DXEFFECT) : 0;
     if (!view) {
@@ -2087,23 +2078,17 @@ void X_D3DXCreateEffectFromResourceA(X86 *c) {
     }
     FxEffect &fx = effects()[fxo->id];
     fx.self = fxo->id;
-    if (ComObj *pool = com_this(arg(c, 6)); pool && pool->kind == K_D3DXEFFECTPOOL)
+    if (ComObj *pool = com_this(pool_view); pool && pool->kind == K_D3DXEFFECTPOOL)
         fx.pool = pool->id;
     ComObj *dev = com_this(device);
     if (dev && dev->kind == K_D3D9DEVICE) {
         fx.device = dev->id;
         fxo->dev_d3d = dev->id;
     }
-    char name[64];
-    if (resource > 0xffffu)
-        snprintf(name, sizeof name, "%s", gm_str(resource, 63).c_str());
-    else
-        snprintf(name, sizeof name, "#%u", resource);
     fx.resource = name;
-    uint32_t addr = 0, size = 0;
-    if (!find_rcdata(module, resource, &addr, &size)) {
-        LOGW("d3dx9: effect %s: no RCDATA resource of that name in module %08x", name, module);
-    } else if (!fx_parse(gm_ptr(addr), size, fx)) {
+    if (!blob) {
+        // The caller has already reported why there is nothing to parse.
+    } else if (!fx_parse(blob, size, fx)) {
         LOGW("d3dx9: effect %s: %u bytes did not parse as fx_2_0", name, size);
     } else {
         size_t passes = 0, shaders = 0;
@@ -2124,6 +2109,34 @@ void X_D3DXCreateEffectFromResourceA(X86 *c) {
     set_eax(c, D3D_OKX);
 }
 
+// (pDevice, hSrcModule, pSrcResource, pDefines, pInclude, Flags, pPool,
+//  ppEffect, ppCompilationErrors)
+void X_D3DXCreateEffectFromResourceA(X86 *c) {
+    uint32_t device = arg(c, 0), module = arg(c, 1), resource = arg(c, 2);
+    // A null module is the executable itself, as it is for FindResource.
+    if (!module)
+        module = IMAGE_BASE;
+    uint32_t out = arg(c, 7), errors = arg(c, 8);
+    if (!out) {
+        set_eax(c, D3DERR_INVALIDCALLX);
+        return;
+    }
+    if (errors)
+        wr32(errors, 0);
+    char name[64];
+    if (resource > 0xffffu)
+        snprintf(name, sizeof name, "%s", gm_str(resource, 63).c_str());
+    else
+        snprintf(name, sizeof name, "#%u", resource);
+    uint32_t addr = 0, size = 0;
+    const uint8_t *blob = nullptr;
+    if (!find_rcdata(module, resource, &addr, &size))
+        LOGW("d3dx9: effect %s: no RCDATA resource of that name in module %08x", name, module);
+    else
+        blob = gm_ptr(addr);
+    d3dx9_create_effect(c, device, blob, size, name, arg(c, 6), out);
+}
+
 static const ImportShim g_d3dx9_exports[] = {
     {"d3dx9_26.dll", "D3DXCreateEffectPool", 1, X_D3DXCreateEffectPool},
     {"d3dx9_26.dll", "D3DXCreateEffectFromResourceA", 9, X_D3DXCreateEffectFromResourceA},
@@ -2139,6 +2152,8 @@ static const ImportShim g_d3dx9_exports[] = {
     {"d3dx9_26.dll", "D3DXVec3TransformCoordArray", 6, X_D3DXVec3TransformCoordArray},
     {"d3dx9_26.dll", "D3DXVec3Normalize", 2, X_D3DXVec3Normalize},
 };
+
+void d3dx9_38_register(const ImportShim *d3dx9_26, size_t count);
 
 void d3dx9_reset() {
     effects().clear();
@@ -2156,4 +2171,5 @@ void d3dx9_register() {
     com_bind(IF_D3DXEFFECT, K_D3DXEFFECT);
     com_set_destructor(K_D3DXEFFECT, fx_destroy);
     imports_register(g_d3dx9_exports, std::size(g_d3dx9_exports));
+    d3dx9_38_register(g_d3dx9_exports, std::size(g_d3dx9_exports));
 }

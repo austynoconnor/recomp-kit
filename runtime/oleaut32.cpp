@@ -303,6 +303,18 @@ uint32_t variant_copy(uint32_t dst, uint32_t src, bool indirect, unsigned depth)
 void o_SysAllocStringLen(X86 *c) {
     set_eax(c, bstr_alloc(arg(c, 0), arg(c, 1)));
 }
+// SysAllocString(psz): a BSTR copy of a NUL-terminated wide string.
+void o_SysAllocString(X86 *c) {
+    uint32_t s = arg(c, 0);
+    if (!s) {
+        set_eax(c, 0);
+        return;
+    }
+    uint32_t n = 0;
+    while (valid(s + 2u * n, 2) && rd16(s + 2u * n))
+        ++n;
+    set_eax(c, bstr_alloc(s, n));
+}
 void o_SysFreeString(X86 *c) {
     bstr_free(arg(c, 0));
     set_eax(c, 0);
@@ -557,6 +569,7 @@ const ImportShim shims[] = {
 #define O(name, n) {"OLEAUT32.dll", #name, n, o_##name}
     O(VariantInit, 1),           O(VariantClear, 1),        O(VariantCopy, 2),
     O(VariantCopyInd, 2),        O(VariantChangeType, 4),   O(SysAllocStringLen, 2),
+    O(SysAllocString, 1),
     O(SysReAllocStringLen, 3),   O(SysFreeString, 1),       O(SafeArrayCreate, 3),
     O(SafeArrayGetLBound, 3),    O(SafeArrayGetUBound, 3),  O(SafeArrayGetElement, 3),
     O(SafeArrayPutElement, 3),   O(SafeArrayPtrOfIndex, 3), O(SafeArrayAccessData, 2),

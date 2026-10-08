@@ -31,6 +31,7 @@ void d3d9_register();
 void d3dx9_register();
 void dsound_register();
 void dshow_register();
+void xact_register();
 void dinput_register();
 void xinput_register();
 void qmixer_register();

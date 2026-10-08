@@ -71,6 +71,7 @@ ImportCallObserver imports_set_call_observer_get(void);
 void imports_init();
 void oleaut32_register();
 void misc_dlls_register();
+void compat_2008_register();
 void comctl32_register();
 void media_foundation_register();
 
