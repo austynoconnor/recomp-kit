@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- 2026-10-08 15:20 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `GetCommandLineA`/`W` quote the program path when it
+  holds a space, as Explorer and shortcuts launch a program, so the CRT's
+  `argv[0]` is the whole path. Unquoted, Star Wars Battlefront II took the
+  words of `C:\Program Files\LucasArts\...` as arguments, read the last
+  one as a mission name and quit with "Could not open
+  MISSION\II\GameData\BattlefrontII.exe.lvl". This changes the command
+  line of every game whose guest root has a space (Most Wanted's too); a
+  game that splits it the standard way now gets one argument where it got
+  several. `runtime_tests` expects the quoted form; `compat_extra_tests`
+  checks it (188 checks, 0 failures under Node).
+
 - 2026-10-08 15:00 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: `DialogBoxParamA`, which shows no dialog, now logs the
   text the dialog would have shown when its init parameter names a

@@ -1440,7 +1440,10 @@ static void test_boot_shims(X86 *c) {
     os_setenv("RECOMP_GUEST_ARGS", "-debugout -nointro");
     win32_reset_command_line_for_test();
     std::string cmdline = gm_str(call_import(c, "KERNEL32.dll", "GetCommandLineA", {}));
-    check(cmdline == std::string(RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE) + " -debugout -nointro",
+    std::string program = RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE;
+    if (program.find(' ') != std::string::npos)
+        program = "\"" + program + "\""; // quoted, as Explorer launches it
+    check(cmdline == program + " -debugout -nointro",
           "GetCommandLineA appends RECOMP_GUEST_ARGS: \"%s\"", cmdline.c_str());
     os_unsetenv("RECOMP_GUEST_ARGS");
     win32_reset_command_line_for_test();

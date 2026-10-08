@@ -1,6 +1,7 @@
 // The small KERNEL32, USER32, GDI32 and Winsock shims in compat_extra.cpp, and
 // the two GDI32 and Bink additions beside them; no game image required.
 #include "../imports.h"
+#include "game_config.h"
 #include "../loader.h"
 #include "../memory.h"
 #include "../win32.h"
@@ -60,6 +61,11 @@ static void test_kernel32(X86 *c, uint32_t s) {
     check(call_import(c, "KERNEL32.dll", "GetWindowsDirectoryA", {s, 4}) == 11,
           "short buffer reports the size");
     check(call_import(c, "KERNEL32.dll", "GetUserDefaultLangID", {}) == 0x0409, "en-US language");
+    // A program path with a space is quoted, as Explorer launches it.
+    std::string line = gm_str(call_import(c, "KERNEL32.dll", "GetCommandLineA", {}));
+    std::string program = std::string(RECOMP_GUEST_ROOT) + "\\" + RECOMP_EXECUTABLE;
+    check(line == (program.find(' ') != std::string::npos ? "\"" + program + "\"" : program),
+          "command line %s", line.c_str());
     check(call_import(c, "KERNEL32.dll", "PeekNamedPipe", {0, 0, 0, 0, 0, 0}) == 0, "no pipes");
     check(call_import(c, "KERNEL32.dll", "GetFileInformationByHandle", {0x1234, s}) == 0,
           "an unknown handle has no file information");

@@ -4764,9 +4764,16 @@ void open_mutex_named(X86 *c, const std::string &name) {
     set_eax(c, 0);
 }
 
+// The program path is quoted when it holds a space, as Explorer and a
+// shortcut launch it, so the CRT's argv[0] is the whole path. Unquoted, a
+// game that reads its arguments takes the words of "C:\Program Files\..."
+// as switches: Star Wars Battlefront II read the last one as a mission name
+// and quit, unable to open MISSION\II\GameData\BattlefrontII.exe.lvl.
 void get_command_line(X86 *c) {
     if (!g_cmdline_addr) {
         std::string line = RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE;
+        if (line.find(' ') != std::string::npos)
+            line = "\"" + line + "\"";
         if (const char *extra = recomp_env("GUEST_ARGS"); extra && *extra)
             line += std::string(" ") + extra;
         g_cmdline_addr = guest_strdup(line.c_str());
