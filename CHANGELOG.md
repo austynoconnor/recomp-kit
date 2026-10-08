@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- 2026-10-08 12:02 CDT (branch giggity-d3d8) — Claude Opus 5.5: Windows shims a
+  DirectX 8 game (Crazy Taxi) needs to start, all reusable by other games.
+  - DirectSound 8: `DirectSoundCreate8` (DSOUND ordinal 11),
+    CLSID_DirectSound8, and IDirectSound8 / IDirectSoundBuffer8 views of the
+    existing objects (`IF_DSOUND8`, `IF_DSBUFFER8`). The version 8 vtables are
+    the version 1 slots plus `VerifyCertification`, `SetFX` (clearing works;
+    asking for effects returns DSERR_CONTROLUNAVAIL), `AcquireResources` and
+    `GetObjectInPath`. QueryInterface reaches them from the version 1 objects.
+  - Virtual CD-ROM drive: new `[media] cd_label` / `cd_drive` keys
+    (`RECOMP_CD_LABEL`, `RECOMP_CD_DRIVE`; env `RECOMP_CD_LABEL` overrides).
+    When a label is set, GetLogicalDrives, GetLogicalDriveStrings,
+    GetDriveType (5) and GetVolumeInformation (label, CDFS) show one CD drive,
+    so a disc-label check sees the player's own disc without patching the
+    executable. Other missing drives now report not-ready.
+  - Resource-only DLLs: LoadLibrary of a game DLL the runtime neither shims nor
+    translated maps its headers and sections into the guest heap (never run)
+    so FindResource/LoadResource/SizeofResource/EnumResourceNames and
+    LoadString read its resources (language DLLs). New `LoadStringA`.
+  - `shim_forward(c, fn, {args})` in imports.h calls another shim with
+    rewritten arguments on a scratch frame below ESP (used by the ANSI
+    wrappers here and the coming Direct3D 8 layer).
+  - GDI ANSI text: CreateFontA, CreateFontIndirectA, ExtTextOutA,
+    GetTextExtentPoint32A, Set/GetTextAlign, Set/GetMapMode.
+  - USER32: wsprintfA (cdecl, forwards to wvsprintfA), Load/Translate/Destroy
+    accelerator tables.
+  - KERNEL32: TerminateThread stops another cooperative guest thread at its
+    next block or yield.
+  - Reserved ComIface slots for the Direct3D 8 interfaces.
+  - Tests: tests/test_game_config.py covers the CD keys.
+
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and
   removes translated-function DWARF from shipped downloads while preserving

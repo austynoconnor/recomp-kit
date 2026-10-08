@@ -35,6 +35,25 @@ class LoadTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "cd_tracks"):
                     game_config.load(game)
 
+    def test_virtual_cd_label_and_drive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            stub = (ROOT / "games/stub/game.toml").read_text()
+            (game / "globals.toml").write_text("")
+            (game / "game.toml").write_text(stub)
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CD_LABEL ""', header)
+            self.assertIn("#define RECOMP_CD_DRIVE 'D'", header)
+            (game / "game.toml").write_text(stub + '\n[media]\ncd_label = "Disc One"\ncd_drive = "e"\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CD_LABEL "Disc One"', header)
+            self.assertIn("#define RECOMP_CD_DRIVE 'E'", header)
+            for bad, key in (('cd_label = 3', "cd_label"), ('cd_label = "' + "x" * 33 + '"', "cd_label"),
+                             ('cd_drive = "C"', "cd_drive"), ('cd_drive = "DE"', "cd_drive")):
+                (game / "game.toml").write_text(stub + '\n[media]\n' + bad + '\n')
+                with self.assertRaisesRegex(ValueError, key):
+                    game_config.load(game)
+
     def test_windows_version_defaults_and_optional_build(self):
         with tempfile.TemporaryDirectory() as tmp:
             game = Path(tmp)
