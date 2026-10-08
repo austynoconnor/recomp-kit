@@ -10988,14 +10988,76 @@ static void test_d3d9_device_getters_and_shaders() {
     CHECK_EQ(call_method(dev, V_GetVertexShaderConstantF, {11, sc(0x800), 1}), 0u);
     CHECK_EQ(rd32(sc(0x800)), 0x3f000004u);
 
-    // GetDisplayMode (slot 8) is the back buffer; CreateVolumeTexture (slot
-    // 24) fails with a null texture.
+    // GetDisplayMode (slot 8) is the back buffer.
     CHECK_EQ(call_method(dev, 8, {0, sc(0x900)}), 0u);
     CHECK_EQ(rd32(sc(0x900)), 640u);
     CHECK_EQ(rd32(sc(0x90c)), 22u);
-    wr32(sc(0x910), 0x1234);
-    CHECK(call_method(dev, 24, {16, 16, 16, 1, 0, 21, 1, sc(0x910), 0}) != 0u);
-    CHECK_EQ(rd32(sc(0x910)), 0u);
+
+    // CreateVolumeTexture (slot 24): 8x4x2 A8R8G8B8, one level. LockBox
+    // (slot 19) hands out rows of 32 bytes and slices of 128; a box starting
+    // at (1, 2, 1) lands 128 + 64 + 4 bytes in, and what is written there
+    // survives UnlockBox (slot 20) and a second lock.
+    CHECK_EQ(call_method(dev, 24, {8, 4, 2, 1, 0, 21, 1, sc(0x910), 0}), 0u);
+    uint32_t vol = rd32(sc(0x910));
+    CHECK(vol != 0);
+    CHECK_EQ(call_method(vol, R_GetType, {}), 4u);      // D3DRTYPE_VOLUMETEXTURE
+    CHECK_EQ(call_method(vol, 17, {0, sc(0x920)}), 0u); // GetLevelDesc
+    CHECK_EQ(rd32(sc(0x920)), 21u);
+    CHECK_EQ(rd32(sc(0x938)), 2u); // depth
+    const uint32_t box[6] = {1, 2, 8, 4, 1, 2};
+    for (uint32_t i = 0; i < 6; ++i)
+        wr32(sc(0x940) + 4 * i, box[i]);
+    CHECK_EQ(call_method(vol, 19, {0, sc(0x960), 0, 0}), 0u);
+    uint32_t whole = rd32(sc(0x968));
+    CHECK_EQ(rd32(sc(0x960)), 32u);
+    CHECK_EQ(rd32(sc(0x964)), 128u);
+    CHECK_EQ(call_method(vol, 20, {0}), 0u);
+    CHECK_EQ(call_method(vol, 19, {0, sc(0x960), sc(0x940), 0}), 0u);
+    uint32_t part = rd32(sc(0x968));
+    CHECK(part != 0);
+    wr32(part, 0xcafef00du);
+    CHECK_EQ(call_method(vol, 20, {0}), 0u);
+    CHECK_EQ(call_method(vol, 19, {0, sc(0x960), 0, 0}), 0u);
+    whole = rd32(sc(0x968));
+    CHECK_EQ(rd32(whole + 128 + 64 + 4), 0xcafef00du);
+    CHECK_EQ(call_method(vol, 20, {0}), 0u);
+    CHECK_EQ(call_method(vol, 18, {0, sc(0x970)}), 0u); // GetVolumeLevel
+    CHECK(rd32(sc(0x970)) != 0);
+
+    // SetGammaRamp (slot 21) is kept for GetGammaRamp (slot 22), which
+    // reads the identity before any is set.
+    CHECK_EQ(call_method(dev, 22, {0, sc(0x1000)}), 0u);
+    CHECK_EQ(rd16(sc(0x1000) + 2 * 255), 0xffffu);
+    wr16(sc(0x1000) + 2, 0x1234);
+    CHECK_EQ(call_method(dev, 21, {0, 0, sc(0x1000)}), 0u);
+    wr16(sc(0x1000) + 2, 0);
+    CHECK_EQ(call_method(dev, 22, {0, sc(0x1000)}), 0u);
+    CHECK_EQ(rd16(sc(0x1000) + 2), 0x1234u);
+}
+
+// ps_1_1 texture addressing: texm3x2pad/texm3x2tex and texbem decode (the
+// D3DX ps_1_1 shaders Battlefront II creates use them), and the code-size
+// walk accepts them.
+static void test_d3d9_ps11_texture_addressing() {
+    // ps_1_1; tex t0; texm3x2pad t1, t0_bx2; texm3x2tex t2, t0_bx2;
+    // texbem t3, t0; mov r0, t2; end
+    const uint32_t ps[] = {0xffff0101u, 0x00000042u, 0xb00f0000u, 0x00000047u,
+                           0xb00f0001u, 0xb4e40000u, 0x00000048u, 0xb00f0002u,
+                           0xb4e40000u, 0x00000043u, 0xb00f0003u, 0xb0e40000u,
+                           0x00000001u, 0x800f0000u, 0xb0e40002u, 0x0000ffffu};
+    std::vector<uint8_t> code(sizeof ps);
+    memcpy(code.data(), ps, sizeof ps);
+    CHECK_EQ(d9sh::code_size(code.data(), code.size()), sizeof ps);
+    const d9sh::Program &p = d9sh::program_for(code);
+    CHECK(p.ok);
+    CHECK_EQ(p.code.size(), 5u);
+    if (p.code.size() == 5) {
+        CHECK_EQ(p.code[1].op, (uint32_t)d9sh::OP_TEXM3X2PAD);
+        CHECK_EQ(p.code[2].op, (uint32_t)d9sh::OP_TEXM3X2TEX);
+        CHECK_EQ(p.code[3].op, (uint32_t)d9sh::OP_TEXBEM);
+    }
+    CHECK(d9sh::samples_destination_stage(d9sh::OP_TEXM3X2TEX));
+    CHECK(!d9sh::samples_destination_stage(d9sh::OP_TEXM3X2PAD));
 }
 
 static void test_dsound_device_exports() {
@@ -13156,6 +13218,7 @@ int main() {
         {"DirectSound primary listener", test_dsound_primary_listener},
         {"DirectSound device exports", test_dsound_device_exports},
         {"Direct3D 9 device getters and shaders", test_d3d9_device_getters_and_shaders},
+        {"Direct3D 9 ps_1_1 texture addressing", test_d3d9_ps11_texture_addressing},
         {"DirectSound streaming", test_dsound_stream},
         {"FMV refill gate", test_dsound_stream_pacing},
         {"QMixer streaming", test_qmixer_streaming},

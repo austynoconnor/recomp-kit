@@ -27,7 +27,24 @@ int operand_count(uint32_t op, uint32_t major, uint32_t minor, bool pixel) {
     case OP_EXPP:
     case OP_LOGP:
     case OP_TEXDP3:
+    case OP_TEXBEM:
+    case OP_TEXBEML:
+    case OP_TEXREG2AR:
+    case OP_TEXREG2GB:
+    case OP_TEXREG2RGB:
+    case OP_TEXM3X2PAD:
+    case OP_TEXM3X2TEX:
+    case OP_TEXM3X3PAD:
+    case OP_TEXM3X3TEX:
+    case OP_TEXM3X3VSPEC:
+    case OP_TEXDP3TEX:
+    case OP_TEXM3X2DEPTH:
         return 2;
+    case OP_TEXDEPTH:
+        return 1;
+    case OP_TEXM3X3SPEC:
+    case OP_BEM:
+        return 3;
     case OP_ADD:
     case OP_SUB:
     case OP_MUL:
@@ -254,6 +271,25 @@ Program load(const std::vector<uint8_t> &code) {
 }
 
 } // namespace
+
+bool samples_destination_stage(uint32_t op) {
+    switch (op) {
+    case OP_TEX:
+    case OP_TEXBEM:
+    case OP_TEXBEML:
+    case OP_TEXREG2AR:
+    case OP_TEXREG2GB:
+    case OP_TEXREG2RGB:
+    case OP_TEXM3X2TEX:
+    case OP_TEXM3X3TEX:
+    case OP_TEXM3X3SPEC:
+    case OP_TEXM3X3VSPEC:
+    case OP_TEXDP3TEX:
+        return true;
+    default:
+        return false;
+    }
+}
 
 size_t code_size(const uint8_t *code, size_t max_bytes) {
     size_t n = max_bytes / 4;

@@ -138,6 +138,8 @@ enum ComIface : uint16_t {
     IF_D3DQUERY9,
     IF_D3DVERTEXSHADER9,
     IF_D3DPIXELSHADER9,
+    IF_D3DVOLUMETEXTURE9,
+    IF_D3DVOLUME9,
     // DirectInput 8: the same objects as DirectInput, reached through the
     // version 8 vtables.
     IF_DINPUT8,
@@ -224,6 +226,8 @@ enum ComKind : uint16_t {
     K_D3D9QUERY,      // an occlusion or event query
     K_D3D9VSHADER,    // a vertex shader made from its bytecode on the device
     K_D3D9PSHADER,    // a pixel shader, likewise
+    K_D3D9VOLTEX,     // a volume texture: its levels are K_D3D9VOLUME objects
+    K_D3D9VOLUME,     // one level of a volume texture
 };
 
 // A DirectInput joystick axis's DIPROP_RANGE, DIPROP_DEADZONE and
@@ -266,7 +270,8 @@ struct ComObj {
     // --- K_SURFACE
     uint32_t caps = 0;
     uint32_t width = 0, height = 0, bpp = 0, pitch = 0;
-    uint32_t pixels = 0; // guest address of the pixel memory
+    uint32_t depth = 0, slice_pitch = 0; // K_D3D9VOLUME / K_D3D9VOLTEX
+    uint32_t pixels = 0;                 // guest address of the pixel memory
     uint32_t pixels_bytes = 0;
     uint32_t rmask = 0, gmask = 0, bmask = 0, amask = 0;
     uint32_t palette_obj = 0;

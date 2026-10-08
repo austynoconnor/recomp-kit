@@ -247,6 +247,8 @@ struct Machine {
     V4 a0;
     V4 opos, ofog, od[2], ot[8], oc[4];
     bool killed = false;
+    float pad[3] = {}; // texm3x2pad/texm3x3pad dot products, in order
+    int npad = 0;
 
     V4 constant(uint32_t i) const {
         auto d = p->defs.find(i);
@@ -374,6 +376,21 @@ struct Machine {
 
     V4 texture_op(uint32_t stage, const V4 &coord) {
         return sample(*pl, stage, coord);
+    }
+
+    // D3DTSS_BUMPENVMAT00..11 (types 7-10) and LSCALE/LOFFSET (22/23) of a
+    // stage, stored as float bits.
+    float tss_float(uint32_t stage, uint32_t type) const {
+        float f;
+        uint32_t b = pl->tss[stage & 7][type];
+        memcpy(&f, &b, 4);
+        return f;
+    }
+
+    // dot(texture coordinate set m, tN), the row product of the texm ops.
+    float row(uint32_t m, const V4 &n) const {
+        const V4 &t = tex[m & 7];
+        return t[0] * n[0] + t[1] * n[1] + t[2] * n[2];
     }
 
     void run() {
@@ -630,6 +647,108 @@ struct Machine {
                     o[k] = d;
                 break;
             }
+            // ps_1_x texture addressing. The tN a texture coordinate set
+            // names is read before this instruction overwrites it: in.dst
+            // is both the coordinate set and the stage.
+            case OP_TEXM3X2PAD:
+            case OP_TEXM3X3PAD:
+                if (npad < 3)
+                    pad[npad++] = row(in.dst.index, read(s[0]));
+                continue;
+            case OP_TEXM3X2TEX: {
+                V4 c;
+                c[0] = npad > 0 ? pad[0] : 0.0f;
+                c[1] = row(in.dst.index, read(s[0]));
+                c[3] = 1.0f;
+                npad = 0;
+                o = texture_op(in.dst.index, c);
+                break;
+            }
+            case OP_TEXM3X2DEPTH:
+                npad = 0;
+                continue;
+            case OP_TEXM3X3TEX:
+            case OP_TEXM3X3SPEC:
+            case OP_TEXM3X3VSPEC: {
+                V4 nrm;
+                nrm[0] = npad > 0 ? pad[0] : 0.0f;
+                nrm[1] = npad > 1 ? pad[1] : 0.0f;
+                nrm[2] = row(in.dst.index, read(s[0]));
+                nrm[3] = 1.0f;
+                npad = 0;
+                if (in.op != OP_TEXM3X3TEX) {
+                    // Reflect the eye vector about the normal:
+                    // 2 N (N.E) / (N.N) - E.
+                    V4 eye;
+                    if (in.op == OP_TEXM3X3SPEC) {
+                        eye = read(s[1]);
+                    } else { // the eye vector is in the w of the three sets
+                        uint32_t m = in.dst.index & 7;
+                        eye[0] = m >= 2 ? tex[m - 2][3] : 0.0f;
+                        eye[1] = m >= 1 ? tex[m - 1][3] : 0.0f;
+                        eye[2] = tex[m][3];
+                    }
+                    float ne = nrm[0] * eye[0] + nrm[1] * eye[1] + nrm[2] * eye[2];
+                    float nn = nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2];
+                    float k = nn != 0.0f ? 2.0f * ne / nn : 0.0f;
+                    for (int i = 0; i < 3; ++i)
+                        nrm[i] = k * nrm[i] - eye[i];
+                }
+                o = texture_op(in.dst.index, nrm);
+                break;
+            }
+            case OP_TEXBEM:
+            case OP_TEXBEML: {
+                uint32_t m = in.dst.index & 7;
+                V4 d = read(s[0]);
+                V4 c = tex[m];
+                c[0] += tss_float(m, 7) * d[0] + tss_float(m, 9) * d[1];
+                c[1] += tss_float(m, 8) * d[0] + tss_float(m, 10) * d[1];
+                o = texture_op(m, c);
+                if (in.op == OP_TEXBEML) {
+                    float l = d[2] * tss_float(m, 22) + tss_float(m, 23);
+                    l = std::min(std::max(l, 0.0f), 1.0f);
+                    for (int k = 0; k < 3; ++k)
+                        o[k] *= l;
+                }
+                break;
+            }
+            case OP_TEXREG2AR:
+            case OP_TEXREG2GB:
+            case OP_TEXREG2RGB: {
+                V4 a = read(s[0]), c;
+                if (in.op == OP_TEXREG2AR) {
+                    c[0] = a[3];
+                    c[1] = a[0];
+                } else if (in.op == OP_TEXREG2GB) {
+                    c[0] = a[1];
+                    c[1] = a[2];
+                } else {
+                    c[0] = a[0];
+                    c[1] = a[1];
+                    c[2] = a[2];
+                }
+                c[3] = 1.0f;
+                o = texture_op(in.dst.index, c);
+                break;
+            }
+            case OP_TEXDP3TEX: {
+                V4 c;
+                c[0] = row(in.dst.index, read(s[0]));
+                c[3] = 1.0f;
+                o = texture_op(in.dst.index, c);
+                break;
+            }
+            case OP_BEM: { // ps_1_4: dst.xy = src0.xy + the stage's bump matrix * src1.xy
+                uint32_t m = in.dst.index & 7;
+                V4 a = read(s[0]), b = read(s[1]);
+                o = a;
+                o[0] = a[0] + tss_float(m, 7) * b[0] + tss_float(m, 9) * b[1];
+                o[1] = a[1] + tss_float(m, 8) * b[0] + tss_float(m, 10) * b[1];
+                break;
+            }
+            case OP_TEXDEPTH:
+                continue;
             default:
                 continue;
             }

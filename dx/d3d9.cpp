@@ -63,7 +63,6 @@ static const uint32_t D3D_OK9 = 0u;
 static const uint32_t D3DERR_NOTAVAILABLE = MAKE_D3DHRESULT(2154);
 static const uint32_t D3DERR_INVALIDCALL = MAKE_D3DHRESULT(2156);
 static const uint32_t D3DERR_NOTFOUND9 = MAKE_D3DHRESULT(2150);
-static const uint32_t D3DERR_OUTOFVIDEOMEMORY9 = MAKE_D3DHRESULT(380);
 
 // Defined with the resources further down.
 struct ComObj;
@@ -364,8 +363,6 @@ D9_STUB(CreateAdditionalSwapChain, 3)
 D9_STUB(GetSwapChain, 3)
 D9_STUB(GetRasterStatus, 3)
 D9_STUB(SetDialogBoxMode, 2)
-D9_STUB(SetGammaRamp, 4)
-D9_STUB(GetGammaRamp, 3)
 D9_STUB(UpdateSurface, 5)
 D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
@@ -1947,6 +1944,9 @@ void Res_GetType(X86 *c) {
         case K_D3D9IB:
             type = 7;
             break;
+        case K_D3D9VOLTEX:
+            type = 4;
+            break;
         default:
             break;
         }
@@ -2980,19 +2980,255 @@ void Dev_GetDisplayMode(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
+// ---------------------------------------------------------------------------
+// Volume textures. Each level is a K_D3D9VOLUME holding its bytes the way a
+// surface does (host memory, staged into the guest heap while locked). The
+// renderers do not sample volume textures yet; the game can create, fill and
+// bind them.
+// ---------------------------------------------------------------------------
+static ComObj *make_volume(ComObj *dev, uint32_t w, uint32_t h, uint32_t d, uint32_t fmt) {
+    ComObj *v = com_new(K_D3D9VOLUME);
+    if (!v)
+        return nullptr;
+    v->dev_d3d = dev ? dev->id : 0;
+    v->width = w ? w : 1;
+    v->height = h ? h : 1;
+    v->depth = d ? d : 1;
+    v->rmask = fmt;
+    uint32_t rows = v->height;
+    if (uint32_t block = dxt_block_bytes(fmt)) {
+        v->bpp = 0;
+        v->pitch = (v->width + 3) / 4 * block;
+        rows = (v->height + 3) / 4;
+    } else {
+        v->bpp = format_bytes(fmt) * 8;
+        v->pitch = v->width * format_bytes(fmt);
+    }
+    v->slice_pitch = v->pitch * rows;
+    resource_alloc(v, v->slice_pitch * v->depth);
+    return v;
+}
+
 // (this, Width, Height, Depth, Levels, Usage, Format, Pool, ppVolumeTexture,
-// pSharedHandle). There are no volume textures yet: say so, with a null out
-// pointer, so a game that checks the result skips the texture rather than
-// locking a texture it was never given.
+// pSharedHandle)
 void Dev_CreateVolumeTexture(X86 *c) {
-    uint32_t out = arg(c, 8);
-    log_once("d3d9.dev.CreateVolumeTexture",
-             "d3d9: CreateVolumeTexture %ux%ux%u: volume textures are not supported, "
-             "answering D3DERR_OUTOFVIDEOMEMORY",
-             arg(c, 1), arg(c, 2), arg(c, 3));
-    if (out)
-        com_out_ptr(out, 0);
-    com_ret(c, D3DERR_OUTOFVIDEOMEMORY9);
+    ComObj *dev = this_device9(c);
+    uint32_t w = arg(c, 1), h = arg(c, 2), d = arg(c, 3), fmt = arg(c, 6), out = arg(c, 8);
+    if (!dev || !out || !w || !h || !d) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t levels = arg(c, 4);
+    if (!levels) {
+        levels = 1;
+        for (uint32_t m = std::max(std::max(w, h), d); m > 1; m >>= 1)
+            ++levels;
+    }
+    ComObj *tex = com_new(K_D3D9VOLTEX);
+    if (!tex) {
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    tex->dev_d3d = dev->id;
+    tex->width = w;
+    tex->height = h;
+    tex->depth = d;
+    tex->rmask = fmt;
+    tex->dev_type = arg(c, 5); // the usage, which D3DVOLUME_DESC reports
+    for (uint32_t l = 0; l < levels && l < 16; ++l) {
+        ComObj *v =
+            make_volume(dev, std::max(w >> l, 1u), std::max(h >> l, 1u), std::max(d >> l, 1u), fmt);
+        if (!v)
+            break;
+        v->front_obj = tex->id;
+        tex->surfaces.push_back(v->id);
+    }
+    uint32_t view_ = tex->surfaces.empty() ? 0 : com_view(tex, IF_D3DVOLUMETEXTURE9);
+    if (!view_) {
+        com_release(tex);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    com_out_ptr(out, view_);
+    com_ret(c, D3D_OK9);
+}
+
+static void volume_texture_destroy(ComObj *o) {
+    for (uint32_t id : o->surfaces)
+        if (ComObj *v = com_get(id))
+            com_release(v);
+    o->surfaces.clear();
+}
+
+static ComObj *volume_level(ComObj *tex, uint32_t level) {
+    if (!tex)
+        return nullptr;
+    if (tex->kind == K_D3D9VOLUME)
+        return tex;
+    if (tex->kind != K_D3D9VOLTEX || level >= tex->surfaces.size())
+        return nullptr;
+    return com_get(tex->surfaces[level]);
+}
+
+// D3DVOLUME_DESC: Format, Type (D3DRTYPE_VOLUME, 2), Usage, Pool, Width,
+// Height, Depth.
+static void write_volume_desc(ComObj *v, uint32_t d) {
+    ComObj *tex = com_get(v->front_obj);
+    wr32(d + 0, v->rmask);
+    wr32(d + 4, 2);
+    wr32(d + 8, tex ? tex->dev_type : 0);
+    wr32(d + 12, 0);
+    wr32(d + 16, v->width);
+    wr32(d + 20, v->height);
+    wr32(d + 24, v->depth);
+}
+
+// D3DLOCKED_BOX is RowPitch, SlicePitch, pBits; D3DBOX is Left, Top, Right,
+// Bottom, Front, Back.
+static void lock_box(X86 *c, ComObj *v, uint32_t out, uint32_t box) {
+    if (!v || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t staged = stage_lock(v);
+    uint32_t off = 0;
+    if (staged && box) {
+        uint32_t left = rd32(box), top = rd32(box + 4), front = rd32(box + 16);
+        if (v->bpp)
+            off = front * v->slice_pitch + top * v->pitch + left * (v->bpp / 8);
+        else // blocks of 4x4 pixels
+            off =
+                front * v->slice_pitch + top / 4 * v->pitch + left / 4 * dxt_block_bytes(v->rmask);
+    }
+    wr32(out, v->pitch);
+    wr32(out + 4, v->slice_pitch);
+    wr32(out + 8, staged ? staged + off : 0);
+    com_ret(c, staged ? D3D_OK9 : E_OUTOFMEMORY);
+}
+
+// IDirect3DVolumeTexture9 (this, Level, ...)
+void VolTex_GetLevelDesc(X86 *c) {
+    ComObj *v = volume_level(com_this_arg(c), arg(c, 1));
+    if (!v || !arg(c, 2)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    write_volume_desc(v, arg(c, 2));
+    com_ret(c, D3D_OK9);
+}
+void VolTex_GetVolumeLevel(X86 *c) {
+    ComObj *v = volume_level(com_this_arg(c), arg(c, 1));
+    uint32_t out = arg(c, 2);
+    if (!v || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    com_addref(v);
+    com_out_ptr(out, com_view(v, IF_D3DVOLUME9));
+    com_ret(c, D3D_OK9);
+}
+void VolTex_LockBox(X86 *c) {
+    lock_box(c, volume_level(com_this_arg(c), arg(c, 1)), arg(c, 2), arg(c, 3));
+}
+void VolTex_UnlockBox(X86 *c) {
+    stage_unlock(volume_level(com_this_arg(c), arg(c, 1)));
+    com_ret(c, D3D_OK9);
+}
+void VolTex_AddDirtyBox(X86 *c) {
+    com_ret(c, D3D_OK9);
+}
+
+// IDirect3DVolume9 (this, ...)
+void Vol_GetContainer(X86 *c) {
+    ComObj *v = com_this_arg(c);
+    ComObj *tex = v ? com_get(v->front_obj) : nullptr;
+    uint32_t out = arg(c, 2);
+    if (!tex || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    com_addref(tex);
+    com_out_ptr(out, com_view(tex, IF_D3DVOLUMETEXTURE9));
+    com_ret(c, D3D_OK9);
+}
+void Vol_GetDesc(X86 *c) {
+    ComObj *v = com_this_arg(c);
+    if (!v || !arg(c, 1)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    write_volume_desc(v, arg(c, 1));
+    com_ret(c, D3D_OK9);
+}
+void Vol_LockBox(X86 *c) {
+    lock_box(c, com_this_arg(c), arg(c, 1), arg(c, 2));
+}
+void Vol_UnlockBox(X86 *c) {
+    stage_unlock(com_this_arg(c));
+    com_ret(c, D3D_OK9);
+}
+
+static const ComMethod g_volumetexture9[] = {
+    RESOURCE_HEAD,
+    {"SetLOD", 2, Tex_SetLOD},
+    {"GetLOD", 1, Tex_GetLOD},
+    {"GetLevelCount", 1, Tex_GetLevelCount},
+    {"SetAutoGenFilterType", 2, Tex_SetAutoGenFilterType},
+    {"GetAutoGenFilterType", 1, Tex_GetAutoGenFilterType},
+    {"GenerateMipSubLevels", 1, Tex_GenerateMipSubLevels},
+    {"GetLevelDesc", 3, VolTex_GetLevelDesc},
+    {"GetVolumeLevel", 3, VolTex_GetVolumeLevel},
+    {"LockBox", 5, VolTex_LockBox},
+    {"UnlockBox", 2, VolTex_UnlockBox},
+    {"AddDirtyBox", 2, VolTex_AddDirtyBox},
+};
+
+static const ComMethod g_volume9[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"GetDevice", 2, Res_GetDevice},
+    {"SetPrivateData", 5, Res_SetPrivateData},
+    {"GetPrivateData", 4, Res_GetPrivateData},
+    {"FreePrivateData", 2, Res_FreePrivateData},
+    {"GetContainer", 3, Vol_GetContainer},
+    {"GetDesc", 2, Vol_GetDesc},
+    {"LockBox", 4, Vol_LockBox},
+    {"UnlockBox", 1, Vol_UnlockBox},
+};
+
+// (this, iSwapChain, Flags, pRamp) and (this, iSwapChain, pRamp):
+// D3DGAMMARAMP is 3 x 256 WORDs. The ramp is kept and read back; the
+// presented frame is not corrected by it.
+static std::map<uint32_t, std::vector<uint8_t>> &gamma_ramps() {
+    static auto *m = new std::map<uint32_t, std::vector<uint8_t>>();
+    return *m;
+}
+void Dev_SetGammaRamp(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t ramp = arg(c, 3);
+    if (dev && ramp && gm_valid(ramp, 1536)) {
+        const uint8_t *p = gm_ptr(ramp);
+        gamma_ramps()[dev->id].assign(p, p + 1536);
+    }
+    com_ret(c, D3D_OK9);
+}
+void Dev_GetGammaRamp(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t ramp = arg(c, 2);
+    if (!dev || !ramp || !gm_valid(ramp, 1536)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    auto it = gamma_ramps().find(dev->id);
+    if (it != gamma_ramps().end()) {
+        memcpy(gm_ptr(ramp), it->second.data(), 1536);
+    } else { // the identity ramp
+        for (uint32_t ch = 0; ch < 3; ++ch)
+            for (uint32_t i = 0; i < 256; ++i)
+                wr16(ramp + (ch * 256 + i) * 2, (uint16_t)(i * 257));
+    }
+    com_ret(c, D3D_OK9);
 }
 
 static const ComMethod g_d3d9[] = {
@@ -3194,6 +3430,13 @@ void d3d9_register() {
                std::size(g_shader9));
     com_bind(IF_D3DVERTEXSHADER9, K_D3D9VSHADER);
     com_bind(IF_D3DPIXELSHADER9, K_D3D9PSHADER);
+    com_define(IF_D3DVOLUMETEXTURE9, "d3d9.dll", "IDirect3DVolumeTexture9", g_volumetexture9,
+               std::size(g_volumetexture9));
+    com_define(IF_D3DVOLUME9, "d3d9.dll", "IDirect3DVolume9", g_volume9, std::size(g_volume9));
+    com_bind(IF_D3DVOLUMETEXTURE9, K_D3D9VOLTEX);
+    com_bind(IF_D3DVOLUME9, K_D3D9VOLUME);
+    com_set_destructor(K_D3D9VOLUME, d3d9_resource_destroy);
+    com_set_destructor(K_D3D9VOLTEX, volume_texture_destroy);
     for (ComKind k : {K_D3D9TEXTURE, K_D3D9SURFACE, K_D3D9VB, K_D3D9IB})
         com_set_destructor(k, d3d9_resource_destroy);
     com_set_destructor(K_D3D9QUERY, query_destroy);

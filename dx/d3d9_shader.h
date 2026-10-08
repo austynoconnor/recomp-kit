@@ -87,6 +87,22 @@ enum Op : uint32_t {
     OP_CND = 80,
     OP_DEF = 81,
     OP_TEXDP3 = 85,
+    // ps_1_x texture addressing (and ps_1_4's bem).
+    OP_TEXBEM = 67,
+    OP_TEXBEML = 68,
+    OP_TEXREG2AR = 69,
+    OP_TEXREG2GB = 70,
+    OP_TEXM3X2PAD = 71,
+    OP_TEXM3X2TEX = 72,
+    OP_TEXM3X3PAD = 73,
+    OP_TEXM3X3TEX = 74,
+    OP_TEXM3X3SPEC = 76,
+    OP_TEXM3X3VSPEC = 77,
+    OP_TEXREG2RGB = 83,
+    OP_TEXDP3TEX = 84,
+    OP_TEXM3X2DEPTH = 86,
+    OP_TEXDEPTH = 87,
+    OP_BEM = 89,
     OP_CMP = 88,
     OP_DP2ADD = 90,
     OP_PHASE = 0xfffd,
@@ -140,6 +156,10 @@ struct Program {
     mutable int64_t sampler_mask = -1;
     mutable uint32_t cube_samplers = 0;
 };
+
+// True for a ps_1_x texture-addressing instruction that samples the stage
+// its destination tN names (tex, texbem, texm3x2tex, texm3x3tex, ...).
+bool samples_destination_stage(uint32_t op);
 
 // A decoded program, cached by its bytes.
 const Program &program_for(const std::vector<uint8_t> &code);

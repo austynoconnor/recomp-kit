@@ -162,8 +162,10 @@ struct Gen {
     uint32_t color_outputs = 0;
     bool writes_depth = false;
     PixelVariant variant;
-    int depth = 0;      // open loops and ifs
-    int loop_depth = 0; // open rep/loop blocks, for break
+    int depth = 0;                 // open loops and ifs
+    int loop_depth = 0;            // open rep/loop blocks, for break
+    std::vector<std::string> pads; // texm3x2pad/texm3x3pad row products, in order
+    int temps = 0;                 // texm3x3spec/vspec temporaries named so far
     std::string indent() const {
         return std::string(4 + 4 * (size_t)depth, ' ');
     }
@@ -789,10 +791,98 @@ struct Gen {
             write(in.dst, F4 + "(dot((" + S(0) + ").xyz, (" + std::string(buf) + ").xyz))");
             return;
         }
+        // ps_1_x texture addressing. Each row product dots texture
+        // coordinate set m (the destination's index) with the source.
+        case OP_TEXM3X2PAD:
+        case OP_TEXM3X3PAD:
+            pads.push_back(row(in.dst.index, S(0)));
+            return;
+        case OP_TEXM3X2DEPTH:
+        case OP_TEXDEPTH:
+            pads.clear();
+            return;
+        case OP_TEXM3X2TEX: {
+            std::string u = pads.empty() ? "0.0" : pads[0];
+            pads.clear();
+            write(in.dst, sample(in.dst.index,
+                                 F4 + "(" + u + ", " + row(in.dst.index, S(0)) + ", 0.0, 1.0)",
+                                 false, false));
+            return;
+        }
+        case OP_TEXM3X3TEX:
+        case OP_TEXM3X3SPEC:
+        case OP_TEXM3X3VSPEC: {
+            std::string u = pads.size() > 0 ? pads[0] : "0.0";
+            std::string v = pads.size() > 1 ? pads[1] : "0.0";
+            pads.clear();
+            std::string n = F4 + "(" + u + ", " + v + ", " + row(in.dst.index, S(0)) + ", 1.0)";
+            if (in.op != OP_TEXM3X3TEX) {
+                uint32_t m = in.dst.index & 7;
+                std::string eye;
+                if (in.op == OP_TEXM3X3SPEC) {
+                    eye = S(1);
+                } else {
+                    char buf[96];
+                    snprintf(buf, sizeof buf, "(tc[%u].w), (tc[%u].w), (tc[%u].w), 0.0)",
+                             m >= 2 ? m - 2 : m, m >= 1 ? m - 1 : m, m);
+                    eye = F4 + "(" + buf;
+                }
+                std::string nn = "texm_n" + std::to_string(temps),
+                            ee = "texm_e" + std::to_string(temps);
+                ++temps;
+                body += indent() + declare(nn) + " = " + n + ";\n";
+                body += indent() + declare(ee) + " = " + eye + ";\n";
+                n = F4 + "((2.0 * dot(" + nn + ".xyz, " + ee + ".xyz) / max(dot(" + nn + ".xyz, " +
+                    nn + ".xyz), 1e-20)) * " + nn + ".xyz - " + ee + ".xyz, 1.0)";
+            }
+            write(in.dst, sample(in.dst.index, n, false, false));
+            return;
+        }
+        case OP_TEXBEM:
+        case OP_TEXBEML: {
+            // The bump matrix lives in texture stage state, which the GPU
+            // program does not receive yet: sample unperturbed.
+            char buf[32];
+            snprintf(buf, sizeof buf, "tc[%u]", in.dst.index & 7);
+            write(in.dst, sample(in.dst.index, buf, false, false));
+            return;
+        }
+        case OP_TEXREG2AR:
+            write(in.dst,
+                  sample(in.dst.index, F4 + "((" + S(0) + ").w, (" + S(0) + ").x, 0.0, 1.0)", false,
+                         false));
+            return;
+        case OP_TEXREG2GB:
+            write(in.dst,
+                  sample(in.dst.index, F4 + "((" + S(0) + ").y, (" + S(0) + ").z, 0.0, 1.0)", false,
+                         false));
+            return;
+        case OP_TEXREG2RGB:
+            write(in.dst, sample(in.dst.index, F4 + "((" + S(0) + ").xyz, 1.0)", false, false));
+            return;
+        case OP_TEXDP3TEX:
+            write(in.dst,
+                  sample(in.dst.index, F4 + "(" + row(in.dst.index, S(0)) + ", 0.0, 0.0, 1.0)",
+                         false, false));
+            return;
+        case OP_BEM: // the bump matrix is not available here either (see texbem)
+            write(in.dst, S(0));
+            return;
         default:
             fail("instruction " + std::to_string(in.op));
             return;
         }
+    }
+
+    // dot(texture coordinate set m, src).xyz, as a float expression.
+    std::string row(uint32_t m, const std::string &src) const {
+        char buf[32];
+        snprintf(buf, sizeof buf, "tc[%u]", m & 7);
+        return "dot(" + std::string(buf) + ".xyz, (" + src + ").xyz)";
+    }
+    // The start of a local four-float declaration named `name`.
+    std::string declare(const std::string &name) const {
+        return wgsl() ? "let " + name : F4 + " " + name;
     }
 };
 
@@ -955,7 +1045,8 @@ bool pixel_source(const Program &p, const PixelVariant &v, std::string *out, std
 uint32_t pixel_sampler_mask(const Program &p) {
     uint32_t mask = 0;
     for (const Inst &in : p.code)
-        if (in.op == OP_TEX || in.op == OP_TEXLDL) {
+        if (in.op == OP_TEXLDL || (in.op == OP_TEX && p.major >= 2) ||
+            (p.major < 2 && samples_destination_stage(in.op))) {
             if (p.major >= 2)
                 mask |= 1u << (in.src[1].index & 15);
             else

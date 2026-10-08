@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- 2026-10-08 18:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: Direct3D 9 for what stalled Star Wars Battlefront II's
+  loading screen. ps_1_x texture-addressing instructions (`texbem`,
+  `texbeml`, `texreg2ar`/`gb`/`rgb`, `texm3x2pad`/`tex`/`depth`,
+  `texm3x3pad`/`tex`/`spec`/`vspec`, `texdp3tex`, `texdepth`, and
+  ps_1_4's `bem`) now decode, so `CreatePixelShader` accepts the game's
+  `ps_1_1` shaders that use them. The CPU renderer runs them all (bump
+  mapping reads the stage's `BUMPENVMAT`/`LSCALE`/`LOFFSET`); the GPU
+  shader generator runs the matrix, register and dot-product forms and
+  samples `texbem`/`texbeml` unperturbed and passes `bem` through, because
+  texture stage state does not reach GPU programs yet. New
+  `d9sh::samples_destination_stage` marks which of them sample a stage.
+  Volume textures are real now: `CreateVolumeTexture` makes an
+  `IDirect3DVolumeTexture9` whose levels are `IDirect3DVolume9` objects
+  with `LockBox`/`UnlockBox` (row and slice pitch, boxes, DXT blocks),
+  `GetLevelDesc`, `GetVolumeLevel`, `GetContainer` and `GetDesc`;
+  `Res::GetType` reports `D3DRTYPE_VOLUMETEXTURE`. Neither renderer
+  samples them yet. `SetGammaRamp` keeps the ramp and `GetGammaRamp`
+  returns it (the identity before one is set); presented frames are not
+  corrected by it. `dx_tests` cases "Direct3D 9 device getters and
+  shaders" (extended) and "Direct3D 9 ps_1_1 texture addressing";
+  `dx_tests` 141,404 checks, 17 failures (the known wasm32 layout checks).
+
 - 2026-10-08 17:40 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: a shader that `CreateVertexShader` or
   `CreatePixelShader` refuses is now reported with its version token and
