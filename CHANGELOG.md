@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
+  non-Debug Emscripten application linking. This runs release optimization and
+  removes translated-function DWARF from shipped downloads while preserving
+  Debug builds. Verified a complete Windows web rebuild; the test game's Wasm
+  fell from 561,984,703 to 136,609,730 bytes. Browser gameplay checks are separate
+  from this size and build verification.
+
 - Allow native game adapters to place their own cursors at absolute touch
   positions in logical game pixels. Placement can discard pending DirectInput
   X/Y movement without losing button, wheel or keyboard input.

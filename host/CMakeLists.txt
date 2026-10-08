@@ -278,6 +278,11 @@ if(TARGET recomp_gen)
     set(TITLE ${RECOMP_GAME_NAME})
     configure_file(${POP_ROOT}/web/player/index.html ${POP_OUT}/index.html @ONLY)
     target_link_options(recomp_app PRIVATE
+      # Emscripten also optimizes at link time. Release's per-target compile
+      # flags do not reach this step; without -g0 every translated function's
+      # DWARF is shipped in the download, greatly inflating large translations.
+      $<$<NOT:$<CONFIG:Debug>>:-O2>
+      $<$<NOT:$<CONFIG:Debug>>:-g0>
       -pthread -sPTHREAD_POOL_SIZE=24 -sWASMFS
       -sINITIAL_MEMORY=1073741824 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296
       -sSTACK_SIZE=8388608 -sDEFAULT_PTHREAD_STACK_SIZE=16777216
