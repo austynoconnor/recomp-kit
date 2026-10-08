@@ -27,6 +27,7 @@
 #include "host_d9.h"
 #include <unordered_map>
 #include <map>
+#include <set>
 
 #include <string.h>
 #include <iterator>
@@ -2843,9 +2844,12 @@ static void create_shader(X86 *c, ComKind kind, ComIface iface) {
     size_t room = code < GUEST_SIZE ? (size_t)(GUEST_SIZE - code) : 0;
     size_t size = d9sh::code_size(gm_ptr(code), room < limit ? room : limit);
     if (!size) {
-        log_once(kind == K_D3D9VSHADER ? "d3d9.vs.bad" : "d3d9.ps.bad",
-                 "d3d9: a shader passed to CreateVertexShader or CreatePixelShader has no end "
-                 "token, or an instruction this runtime does not know");
+        // Reported once per version token, so a game that retries does not flood the log.
+        static auto *reported = new std::set<uint32_t>();
+        if (reported->insert(rd32(code)).second)
+            LOGW("d3d9: Create%sShader refused shader version token %08x at %08x: no end token "
+                 "within the limit, or an instruction this runtime does not know",
+                 kind == K_D3D9VSHADER ? "Vertex" : "Pixel", rd32(code), code);
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }

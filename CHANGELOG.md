@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 2026-10-08 17:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: a shader that `CreateVertexShader` or
+  `CreatePixelShader` refuses is now reported with its version token and
+  guest address, once per version token, so the refused shader can be
+  found. Star Wars Battlefront II, which now reaches its loading screen
+  under the headless host, has one such pixel shader. `dx_tests` 141,363
+  checks, 17 failures (the existing 64-bit "display ABI" checks under
+  wasm32); `ctest -L nogame` 17 of 21 (the same four environmental
+  failures as before the merge: `platform_tests`, `seh_tests` and
+  `interp_tests` need child processes or C++ exceptions, which this
+  wasm32 build lacks, and `dx_tests` exits non-zero for the ABI checks);
+  the Python suite 341 passed, 76 skipped, 4 failed (symlink privilege,
+  no C compiler, and the Linux desktop-package check on Windows).
+
 - 2026-10-08 17:00 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: merged `giggity-d3d8` at `7c9d7e2` (Direct3D 8,
   fixed-function rendering, DirectShow `RenderFile`). Both branches had
