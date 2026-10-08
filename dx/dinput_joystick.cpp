@@ -17,8 +17,10 @@
 
 #include "../runtime/memory.h"
 #include "../runtime/win32.h"
+#include "../platform/os.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -631,6 +633,27 @@ bool joy_set_property(ComObj *d, uint32_t prop, uint32_t ph, uint32_t *hr) {
 
 // The caller has checked the device is acquired. The size must be the one
 // SetDataFormat set; a custom format writes only its own fields.
+// RECOMP_TRACE_PAD=1 prints the state a joystick read hands the guest each
+// time it differs from the previous read: the evidence for whether a game
+// that ignores the pad is being given its presses at all.
+static void trace_joy_state(uint32_t size, uint32_t out) {
+    static const bool on = recomp_env("TRACE_PAD") != nullptr;
+    if (!on || size > JOY_DIJOYSTATE2_SIZE)
+        return;
+    static uint8_t last[JOY_DIJOYSTATE2_SIZE];
+    static uint32_t last_size;
+    const uint8_t *now = (const uint8_t *)gm_ptr(out);
+    if (size == last_size && !memcmp(last, now, size))
+        return;
+    memcpy(last, now, size);
+    last_size = size;
+    fprintf(stderr, "[recomp] dinput: joystick read (%u bytes):", size);
+    for (uint32_t i = 0; i < size; ++i)
+        if (now[i])
+            fprintf(stderr, " %u=%02x", i, now[i]);
+    fprintf(stderr, "\n");
+}
+
 uint32_t joy_get_device_state(ComObj *d, uint32_t size, uint32_t out) {
     if (size != d->data_format_size)
         return DIERR_INVALIDPARAM;
@@ -639,6 +662,7 @@ uint32_t joy_get_device_state(ComObj *d, uint32_t size, uint32_t out) {
     host_pad_state(&s);
     if (d->joy_format.empty()) {
         joy_write_state(out, size, s, d->joy_ranges);
+        trace_joy_state(size, out);
         return DI_OK;
     }
     uint8_t buf[JOY_DIJOYSTATE2_SIZE];
@@ -648,6 +672,7 @@ uint32_t joy_get_device_state(ComObj *d, uint32_t size, uint32_t out) {
         const JoyObject &o = objs[slot.object];
         memcpy(gm_ptr(out + slot.ofs), buf + o.ofs, object_width(o));
     }
+    trace_joy_state(size, out);
     return DI_OK;
 }
 
