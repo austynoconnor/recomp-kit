@@ -95,6 +95,11 @@ static void post_geometry(uint32_t hwnd, const Window *w, bool moved, bool sized
                           ((uint32_t)(uint16_t)w->h << 16) | (uint16_t)w->w);
 }
 
+// Provenance stays on the host: preserve the guest's exact Win32 MSG layout.
+// Track each delivered buffer separately so nested message loops do not cause
+// TranslateMessage to emit text the input gate has already delivered.
+static std::map<uint32_t, Msg> translated_keys;
+
 void store_msg(uint32_t p, const Msg &m) {
     if (!p)
         return;
@@ -105,6 +110,12 @@ void store_msg(uint32_t p, const Msg &m) {
     wr32(p + 16, m.time);
     wr32(p + 20, m.ptx);
     wr32(p + 24, m.pty);
+    translated_keys.erase(p);
+    if (m.character_posted) {
+        if (translated_keys.size() >= 128)
+            translated_keys.clear();
+        translated_keys.emplace(p, m);
+    }
 }
 
 } // namespace user32
@@ -912,6 +923,15 @@ void u_TranslateMessage(X86 *c) {
     }
     uint32_t msg = rd32(p + 4), vk = rd32(p + 8), lparam = rd32(p + 12);
     if (msg == 0x0100 || msg == 0x0104) { // WM_KEYDOWN / WM_SYSKEYDOWN
+        auto posted = translated_keys.find(p);
+        if (posted != translated_keys.end()) {
+            const Msg &m = posted->second;
+            if (m.hwnd == rd32(p) && m.message == msg && m.wparam == vk && m.lparam == lparam &&
+                m.time == rd32(p + 16)) {
+                set_eax(c, 1);
+                return;
+            }
+        }
         uint32_t ch = 0;
         if (vk >= 0x30 && vk <= 0x5a)
             ch = vk; // digits and letters

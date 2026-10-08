@@ -2382,6 +2382,20 @@ static void test_windows(X86 *c) {
               rd32(msg + 4) == 0x0102 && rd32(msg + 8) == 'a',
           "the WM_CHAR carries 'a'");
 
+    // Host text already accompanies keydown. TranslateMessage must acknowledge
+    // it without adding a second character, even across a nested message read.
+    host_post_key_message(0x0100, 0x4a, 1, true);
+    host_post_key_message(0x0102, 'J', 1);
+    call_import(c, "USER32.dll", "PeekMessageA", {msg, 0, 0, 0, 1});
+    uint32_t nested_msg = scratch_block(28);
+    call_import(c, "USER32.dll", "PeekMessageA", {nested_msg, 0, 0, 0, 0});
+    check(call_import(c, "USER32.dll", "TranslateMessage", {msg}) == 1,
+          "TranslateMessage accepts host-translated keydown");
+    call_import(c, "USER32.dll", "PeekMessageA", {msg, 0, 0, 0, 1});
+    check(rd32(msg + 4) == 0x0102 && rd32(msg + 8) == 'J', "host text preserves uppercase J");
+    check(call_import(c, "USER32.dll", "PeekMessageA", {msg, 0, 0, 0, 1}) == 0,
+          "host-translated text is delivered exactly once");
+
     // Message filters, and an empty queue reports the documented error rather
     // than a message the system never sent.
     host_post_message(hwnd, 0x0201, 0, 0);

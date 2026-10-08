@@ -82,6 +82,62 @@
   - Reserved ComIface slots for the Direct3D 8 interfaces.
   - Tests: tests/test_game_config.py covers the CD keys.
 
+- 2026-10-08 11:32 CDT — GPT-6 (Codex): Corrected duplicated carriage
+  returns introduced while recording the streaming release notes on Windows.
+  No runtime behavior changed.
+
+- 2026-10-08 11:30 CDT — GPT-6 (Codex): Added opt-in streamed browser assets. Startup
+  verifies and caches only the executable, then constructs a read-only FetchFS
+  directory catalogue on the guest worker; profiles remain in OPFS and existing
+  fully imported games keep their local read path. Hosted asset routes support
+  sized HEAD responses and exact HTTP byte ranges, suffix reads, EOF clipping
+  and 416 failures. Added a FetchFS bridge with a shared 64 MiB LRU and at most
+  1 MiB per request instead of retaining every read chunk indefinitely. Range,
+  startup-only imports, cache reuse, cross-chunk reads, eviction and incomplete
+  responses are covered by tests. The release web engine built and an empty
+  OPFS profile reached the actual title using range requests; its OPFS held
+  only the 6,029,312-byte executable, catalogue and import metadata. Long default
+  browser probes were stopped by the external resource watchdog near 4 GiB or
+  below 2 GiB system headroom. Career, saved alias round trips and race completion
+  remain unverified for this path. Streamed ranges are session memory, not a
+  persistent offline installation. No public asset hosting was deployed.
+
+- 2026-10-08 10:58 CDT — GPT-6 (Codex): Prevented duplicate keyboard text
+  from host WM_CHAR delivery followed by TranslateMessage. Host-only provenance
+  follows each delivered MSG buffer, including nested message reads, while the
+  guest MSG layout is unchanged. SDL text retains keyboard Shift/Caps Lock.
+  Added a native regression for one uppercase character across a nested read;
+  the web application rebuild and real alias-entry check succeeded (James and
+  Backspace/retyping). Added adaptive browser menu hints for keyboard, Xbox,
+  PlayStation, Nintendo and generic controllers, preferring newly active input
+  and falling back on disconnect. 53 combined browser/config/build checks pass.
+  Hosted manifest fetches now bypass browser caches so a same-second retry
+  cannot reuse obsolete download metadata. Physical controller gameplay and
+  the standalone native regression suite were not exercised on this host.
+
+- 2026-10-08 10:29 CDT — GPT-6 (Codex): Added optional hosted game assets to
+  the local web server (--asset-dir ID=DIR) with pinned-executable validation,
+  bundle exclusions and explicit file routes. The player automatically populates
+  missing OPFS data from the hosted source with progress before engine startup;
+  valid cached imports still work. Network sources stream one file at a time,
+  reject truncated content and use the existing resume/stamp validation. Import
+  source failures now abort their file writer. Added browser regressions for
+  first downloads, cached offline-source visits and short-download retry, plus
+  route/exclusion/hash checks. 52 combined game/launcher/build/player tests pass.
+  Generic configurations without hosted assets retain their import workflow.
+
+- 2026-10-08 10:15 CDT — GPT-6 (Codex): Added an idle browser player shell
+  with explicit Start/Stop and exclusive per-game Web Locks. Runtime documents
+  and owned workers are discarded before session ownership is released;
+  direct runtime-page launches are rejected. Bounded the web viewport to
+  1280×720, disabled automatic high-DPI backing growth and retained only 1,000
+  diagnostic lines. Reduced the web pthread prewarm pool from 24 to eight and
+  initial growable Wasm heap from 1 GiB to 512 MiB. Staged the new runtime page
+  through both CMake and the launcher. Four Chrome lifecycle regressions and
+  45 existing game/launcher/build checks passed. A complete Windows web build
+  and monitored title/menu run confirmed the new pool, heap and backing size;
+  desktop freeze resolution and full gameplay compatibility remain unverified.
+
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and
   removes translated-function DWARF from shipped downloads while preserving
