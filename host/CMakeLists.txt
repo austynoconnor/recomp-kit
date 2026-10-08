@@ -278,6 +278,7 @@ if(TARGET recomp_gen)
     set(TITLE ${RECOMP_GAME_NAME})
     configure_file(${POP_ROOT}/web/player/index.html ${POP_OUT}/index.html @ONLY)
     configure_file(${POP_ROOT}/web/player/runtime.html ${POP_OUT}/runtime.html @ONLY)
+    configure_file(${POP_ROOT}/web/player/input-hints.js ${POP_OUT}/input-hints.js COPYONLY)
     target_link_options(recomp_app PRIVATE
       # Emscripten also optimizes at link time. Release's per-target compile
       # flags do not reach this step; without -g0 every translated function's

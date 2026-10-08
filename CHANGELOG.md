@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 2026-10-08 10:58 CDT — GPT-6 (Codex): Prevented duplicate keyboard text
+  from host WM_CHAR delivery followed by TranslateMessage. Host-only provenance
+  follows each delivered MSG buffer, including nested message reads, while the
+  guest MSG layout is unchanged. SDL text retains keyboard Shift/Caps Lock.
+  Added a native regression for one uppercase character across a nested read;
+  the web application rebuild and real alias-entry check succeeded (James and
+  Backspace/retyping). Added adaptive browser menu hints for keyboard, Xbox,
+  PlayStation, Nintendo and generic controllers, preferring newly active input
+  and falling back on disconnect. 53 combined browser/config/build checks pass.
+  Hosted manifest fetches now bypass browser caches so a same-second retry
+  cannot reuse obsolete download metadata. Physical controller gameplay and
+  the standalone native regression suite were not exercised on this host.
+
 - 2026-10-08 10:29 CDT — GPT-6 (Codex): Added optional hosted game assets to
   the local web server (--asset-dir ID=DIR) with pinned-executable validation,
   bundle exclusions and explicit file routes. The player automatically populates

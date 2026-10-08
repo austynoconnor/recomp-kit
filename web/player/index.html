@@ -16,11 +16,12 @@
   button.primary { background: #6f93ff; color: #0b1020; border-color: #6f93ff; font-weight: 600; }
   button:disabled { opacity: .5; cursor: default; }
   button:focus-visible, a:focus-visible { outline: 2px solid #9eb8ff; outline-offset: 4px; }
-  main { min-height: calc(100vh - 64px); display: grid; place-items: center; padding: 24px; }
+  main { min-height: calc(100vh - 64px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; }
   .card { width: min(100%, 480px); padding: 32px; border: 1px solid #2c313d; border-radius: 16px; background: #1b1e26; }
   h1 { font-size: 24px; line-height: 1.25; margin: 0 0 12px; }
   p { color: #aeb7c7; margin: 0 0 24px; }
   #message { margin: 16px 0 0; font-size: 14px; }
+  #input-hints { color: #aeb7c7; font-size: 13px; text-align: center; margin: 12px 0 0; max-width: 900px; }
   iframe { display: block; border: 0; background: #000; width: min(1280px, calc(100vw - 48px), calc((100vh - 112px) * 16 / 9)); aspect-ratio: 16 / 9; }
   [hidden] { display: none !important; }
   @media (max-width: 600px) { header { padding: 0 12px; gap: 12px; } main { padding: 12px; } .card { padding: 24px; } iframe { width: min(calc(100vw - 24px), calc((100vh - 88px) * 16 / 9)); } }
@@ -37,6 +38,7 @@
     <p id="message" role="status" aria-live="polite"></p>
   </section>
   <div id="stage" hidden></div>
+  <p id="input-hints" role="status" aria-live="polite" hidden></p>
 </main>
 <script>
 "use strict";
@@ -45,6 +47,7 @@ const stopButton = document.getElementById("stop");
 const welcome = document.getElementById("welcome");
 const stage = document.getElementById("stage");
 const message = document.getElementById("message");
+const hints = document.getElementById("input-hints");
 let frame = null;
 let releaseSession = null;
 let pending = false;
@@ -76,6 +79,7 @@ startButton.addEventListener("click", async () => {
         stage.hidden = false;
         welcome.hidden = true;
         stopButton.hidden = false;
+        hints.hidden = false;
         stopButton.focus();
       });
     });
@@ -96,6 +100,8 @@ function stopGame() {
   stage.hidden = true;
   welcome.hidden = false;
   stopButton.hidden = true;
+  hints.hidden = true;
+  hints.textContent = "";
   releaseSession?.();
   releaseSession = null;
   message.textContent = "Game stopped. Cached files and saves are kept.";
@@ -103,6 +109,10 @@ function stopGame() {
 }
 stopButton.addEventListener("click", stopGame);
 window.addEventListener("pagehide", stopGame);
+window.addEventListener("message", event => {
+  if (event.origin === location.origin && event.source === frame?.contentWindow &&
+      event.data?.type === "recomp-input-hints") hints.textContent = event.data.text;
+});
 </script>
 </body>
 </html>

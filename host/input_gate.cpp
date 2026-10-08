@@ -41,14 +41,14 @@ bool g_phys_mod[256];
 // Shift 1, control 2, alt 4, counting only modifiers the guest was told about.
 uint8_t g_guest_modifiers;
 
-void post(uint32_t msg, uint32_t wparam, uint32_t lparam) {
+void post(uint32_t msg, uint32_t wparam, uint32_t lparam, bool character_posted = false) {
     // Keyboard input is addressed to the focus, not to a window the host
     // picked: the runtime knows which window has it, and in a VCL application
     // the first window created is the invisible application one, which does
     // nothing with a keystroke. Mouse messages from this path carry a guest
     // position, so they are routed by it.
     if (msg >= 0x0100 && msg <= 0x0109) {
-        host_post_key_message(msg, wparam, lparam);
+        host_post_key_message(msg, wparam, lparam, character_posted);
         return;
     }
     if (msg >= 0x0200 && msg <= 0x0209) {
@@ -72,13 +72,14 @@ void post_key(HostKeyMapping m, bool down, bool sys, bool context, uint32_t char
     bool was_down = g_guest_key[m.vk];
     g_guest_key[m.vk] = down;
     uint32_t lparam = host_key_lparam(m, down, context, down ? was_down : true);
+    const bool text = down && !sys && character &&
+                      ((character >= 0x20 && character < 0x7f) || character == 0x0d ||
+                       character == 0x1b || character == 0x09 || character == 0x08);
     post(down ? (sys ? WM_SYSKEYDOWN_ : WM_KEYDOWN_) : (sys ? WM_SYSKEYUP_ : WM_KEYUP_), m.vk,
-         lparam);
+         lparam, text);
     // Printable characters, and the four control characters Win32 also
     // delivers as WM_CHAR.
-    if (down && !sys && character &&
-        ((character >= 0x20 && character < 0x7f) || character == 0x0d || character == 0x1b ||
-         character == 0x09 || character == 0x08))
+    if (text)
         post(WM_CHAR_, character, lparam);
 }
 

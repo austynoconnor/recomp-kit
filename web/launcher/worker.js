@@ -122,7 +122,7 @@ async function zipSource(file) {
 // Download one file at a time as a stream, using the existing resumable OPFS
 // importer. A large game never needs a single multi-gigabyte memory buffer.
 async function hostedSource(manifestUrl, signal) {
-  const response = await fetch(manifestUrl, { signal });
+  const response = await fetch(manifestUrl, { signal, cache: "no-store" });
   if (!response.ok) throw new Error("Game download list is unavailable.");
   const manifest = await response.json();
   return {

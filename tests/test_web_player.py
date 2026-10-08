@@ -167,6 +167,31 @@ class WebPlayerTests(unittest.TestCase):
         page.wait_for_function("window.result !== undefined")
         self.assertEqual(page.evaluate("window.result"), "ready")
 
+    def test_hints_follow_active_device_and_controller_disconnect(self):
+        root = Path(self.temp.name) / "stub"
+        shutil.copy(ROOT / "web/player/input-hints.js", root / "input-hints.js")
+        (root / "hints.html").write_text('''<p id="hints"></p><script type="module">
+          import { startInputHints } from './input-hints.js';
+          window.pads = [];
+          startInputHints(text => document.querySelector('#hints').textContent = text, () => window.pads);
+        </script>''')
+        page = self.context.new_page()
+        page.goto(self.url + "hints.html")
+        page.wait_for_function("document.querySelector('#hints').textContent.startsWith('Keyboard')")
+        page.evaluate("window.pads = [{id:'Xbox Controller',index:0,connected:true,buttons:[{pressed:true}],axes:[0]}]")
+        page.wait_for_function("document.querySelector('#hints').textContent.startsWith('Xbox')")
+        page.keyboard.press("a")
+        page.wait_for_function("document.querySelector('#hints').textContent.startsWith('Keyboard')")
+        page.wait_for_timeout(350)
+        self.assertTrue(page.locator("#hints").inner_text().startswith("Keyboard"))
+        page.evaluate("window.pads[0].id='DualSense Sony'; window.pads[0].buttons[0].pressed=false")
+        page.wait_for_timeout(200)
+        page.evaluate("window.pads[0].buttons[0].pressed=true")
+        page.wait_for_function("document.querySelector('#hints').textContent.includes('PlayStation')")
+        self.assertIn("✕: confirm", page.locator("#hints").inner_text())
+        page.evaluate("window.pads=[]")
+        page.wait_for_function("document.querySelector('#hints').textContent.startsWith('Keyboard')")
+
 
 if __name__ == "__main__":
     unittest.main()

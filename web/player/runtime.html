@@ -153,5 +153,9 @@ canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("click", () => canvas.focus());
 start().catch((e) => status(e.message, true));
 </script>
+<script type="module">
+import { startInputHints } from "./input-hints.js";
+startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin));
+</script>
 </body>
 </html>

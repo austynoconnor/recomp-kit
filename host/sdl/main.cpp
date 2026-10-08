@@ -715,9 +715,9 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
     e.kind = PendingInput::KEY;
     e.key = key;
     e.down = down;
-    // The character the key produces with no modifier held, which is what a
-    // WM_CHAR for it carries; keycodes above the Unicode range are not characters.
-    const SDL_Keycode plain = SDL_GetKeyFromScancode(event.scancode, SDL_KMOD_NONE, false);
+    // Keep the keyboard layout and Shift/Caps Lock when producing text.
+    // Keycodes above the Unicode range are not characters.
+    const SDL_Keycode plain = SDL_GetKeyFromScancode(event.scancode, event.mod, false);
     e.character = plain < 0x40000000 && plain >= 0x20 ? (uint32_t)plain : 0u;
     e.flags = host_modifier_flags_from_sdl(event.mod);
     queue_or_apply(e);
