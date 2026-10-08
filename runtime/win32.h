@@ -30,10 +30,15 @@ void win32_forget_scrollbars(uint32_t hwnd);
 
 // Process-wide state
 // ---------------------------------------------------------------------------
-// Called by the loader once the image is mapped. `game_dir` is the host
-// directory that backs the guest root RECOMP_GUEST_ROOT (the directory holding the
-// loaded EXE).
-void win32_init(const std::string &game_dir);
+// Called by the loader once the image is mapped with the directory holding
+// the loaded EXE. The guest root RECOMP_GUEST_ROOT is backed by that
+// directory, or by the one RECOMP_EXECUTABLE_DIR ([game] executable_dir)
+// places it under, so the executable is <root>\<executable_dir>\<exe>.
+void win32_init(const std::string &exe_dir);
+// The guest folder holding the executable: GetModuleFileNameA's folder and
+// the starting current directory. The guest root itself unless the loaded
+// executable really is in RECOMP_EXECUTABLE_DIR.
+std::string win32_guest_exe_dir();
 const std::string &win32_game_dir();
 // Guest spelling shared by shell folder APIs; creation uses the write overlay.
 std::string shell_folder_guest_path(uint32_t csidl, bool create);

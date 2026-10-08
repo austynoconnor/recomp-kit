@@ -105,6 +105,27 @@ class LoadTests(unittest.TestCase):
                 game_config.validate_heap_base(bad)
         self.assertEqual(game_config.validate_heap_base(0x01400000), 0x01400000)
 
+    def test_executable_dir_defaults_to_the_root_and_is_validated(self):
+        """[game] executable_dir places the executable in a folder under the
+        install root (Metal Gear Solid 2's bin\\, which reads ..\\cdrom.img)."""
+        cfg = game_config.load(ROOT / "games/stub")
+        self.assertEqual(cfg["game"]["executable_dir"], "")
+        self.assertIn('#define RECOMP_EXECUTABLE_DIR ""', gen_game_config.render_header(cfg))
+        self.assertEqual(game_config.validate_executable_dir("bin", "t"), "bin")
+        self.assertEqual(game_config.validate_executable_dir("a/b\\", "t"), "a\\b")
+        for bad in ("..", "bin/../x", "/bin", "\\bin", "C:\\bin", 3):
+            with self.assertRaises(ValueError):
+                game_config.validate_executable_dir(bad, "t")
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp) / "g"
+            game.mkdir()
+            text = (ROOT / "games/stub/game.toml").read_text()
+            text = text.replace('guest_root = ', 'executable_dir = "bin"\nguest_root = ', 1)
+            (game / "game.toml").write_text(text)
+            (game / "globals.toml").write_text((ROOT / "games/stub/globals.toml").read_text())
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_EXECUTABLE_DIR "bin"', header)
+
     def test_the_stub_game_loads_with_every_required_key(self):
         cfg = game_config.load(ROOT / "games/stub")
         self.assertEqual(cfg["game"]["id"], "stub")

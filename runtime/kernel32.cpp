@@ -536,11 +536,45 @@ namespace {
 void kernel32_reset_apcs(); // defined with ReadFileEx below
 } // namespace
 
-void win32_init(const std::string &game_dir) {
+// True when the loaded executable sits in RECOMP_EXECUTABLE_DIR under the
+// directory backing the guest root, as an installed copy does.
+static bool g_exe_in_subdir = false;
+
+std::string win32_guest_exe_dir() {
+    std::string dir = RECOMP_GUEST_ROOT;
+    if (g_exe_in_subdir)
+        dir += std::string("\\") + RECOMP_EXECUTABLE_DIR;
+    return dir;
+}
+
+// The install root for an executable in RECOMP_EXECUTABLE_DIR: one parent per
+// component, each of which must be the folder the configuration names (in
+// any case). A directory that is not laid out that way (a test's temporary
+// folder, a copy of the executable alone) is its own root, and the guest then
+// sees the executable at the root, so its relative paths still resolve there.
+static std::string install_root(const std::string &exe_dir, bool *in_subdir) {
+    *in_subdir = false;
+    std::string root = exe_dir;
+    std::vector<std::string> parts = split_path(RECOMP_EXECUTABLE_DIR);
+    for (size_t i = parts.size(); i-- > 0;) {
+        while (root.size() > 1 && (root.back() == '/' || root.back() == '\\'))
+            root.pop_back();
+        size_t slash = root.find_last_of("/\\");
+        std::string last = slash == std::string::npos ? root : root.substr(slash + 1);
+        if (lower(last) != lower(parts[i]))
+            return exe_dir;
+        root = slash == std::string::npos ? std::string(".") : slash == 0 ? "/" : root.substr(0, slash);
+    }
+    *in_subdir = !parts.empty();
+    return root;
+}
+
+void win32_init(const std::string &exe_dir) {
     kernel32_wide_reset();
     kernel32_reset_apcs();
-    g_game_dir = game_dir.empty() ? std::string(".") : game_dir;
-    g_cur_dir = RECOMP_GUEST_ROOT;
+    g_exe_in_subdir = false;
+    g_game_dir = exe_dir.empty() ? std::string(".") : install_root(exe_dir, &g_exe_in_subdir);
+    g_cur_dir = win32_guest_exe_dir();
     g_last_error = 0;
     g_exited = false;
     g_exit_code = 0;
@@ -1177,7 +1211,7 @@ void k_SetCurrentDirectoryA(X86 *c) {
 
 // Both encodings expose the same guest path, never a host filesystem path.
 std::string module_file_name(uint32_t hmod) {
-    std::string path = RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE;
+    std::string path = win32_guest_exe_dir() + "\\" RECOMP_EXECUTABLE;
     if (hmod && hmod != IMAGE_BASE) {
         for (const auto &kv : modules())
             if (kv.second == hmod) {
@@ -4811,7 +4845,7 @@ void open_mutex_named(X86 *c, const std::string &name) {
 
 void get_command_line(X86 *c) {
     if (!g_cmdline_addr) {
-        std::string line = RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE;
+        std::string line = win32_guest_exe_dir() + "\\" RECOMP_EXECUTABLE;
         if (const char *extra = recomp_env("GUEST_ARGS"); extra && *extra)
             line += std::string(" ") + extra;
         g_cmdline_addr = guest_strdup(line.c_str());

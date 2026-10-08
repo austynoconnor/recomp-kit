@@ -71,6 +71,20 @@ def windows_version(value):
     return major, minor, build, 2 if major >= 5 else 1
 
 
+def validate_executable_dir(value, source):
+    r"""[game] executable_dir: the folder under the install root that holds the
+    executable, for a game that keeps it in a subfolder (Metal Gear Solid 2's
+    bin\, which reads its data from ..\cdrom.img). Empty means the root.
+    Stored with backslashes, as the guest spells it."""
+    if not isinstance(value, str):
+        raise ValueError("%s: [game] executable_dir must be a string" % source)
+    parts = [p for p in value.replace("/", "\\").split("\\") if p]
+    if value[:1] in ("/", "\\") or ":" in value or any(p in (".", "..") for p in parts):
+        raise ValueError("%s: [game] executable_dir must be a relative folder below the install "
+                         "root, not %r" % (source, value))
+    return "\\".join(parts)
+
+
 def validate_heap_base(value):
     """The heap arena start: page aligned, above the image base, below the arena end."""
     if value % 0x1000 or not (0x00400000 < value < HEAP_END):
@@ -152,6 +166,7 @@ def load(game_dir):
         raise ValueError("%s: missing [game] keys: %s" % (source, ", ".join(missing)))
     game["heap_base"] = validate_heap_base(int(game.get("heap_base", HEAP_BASE_DEFAULT)))
     windows_version(game.setdefault("windows_version", "4.10"))
+    game["executable_dir"] = validate_executable_dir(game.get("executable_dir", ""), source)
     translate = cfg.setdefault("translate", {})
     resumable = translate.setdefault("resumable_stacks", False)
     if not isinstance(resumable, bool):

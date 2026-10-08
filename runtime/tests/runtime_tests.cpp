@@ -1254,9 +1254,33 @@ static bool image_has_version_resource() {
     return false;
 }
 
+// Where the guest sees its own executable: <root>\<executable_dir>\<exe>.
+static std::string guest_exe_path() {
+    return win32_guest_exe_dir() + "\\" RECOMP_EXECUTABLE;
+}
+
+// The file-seam sections name their files relative to the guest root. A game
+// whose executable is in a subfolder ([game] executable_dir) starts in that
+// folder, so they move to the root for their duration.
+static void cd_guest_root(X86 *c) {
+    call_import(c, "KERNEL32.dll", "SetCurrentDirectoryA", {put_str(RECOMP_GUEST_ROOT)});
+}
+static void cd_exe_dir(X86 *c) {
+    call_import(c, "KERNEL32.dll", "SetCurrentDirectoryA", {put_str(win32_guest_exe_dir().c_str())});
+}
+struct AtGuestRoot {
+    X86 *c;
+    explicit AtGuestRoot(X86 *cpu) : c(cpu) {
+        cd_guest_root(c);
+    }
+    ~AtGuestRoot() {
+        cd_exe_dir(c);
+    }
+};
+
 static void test_version_resource(X86 *c) {
     section("VERSION.dll");
-    uint32_t name = put_str(RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE);
+    uint32_t name = put_str(guest_exe_path().c_str());
     uint32_t handle = scratch_block(4);
     uint32_t size = call_import(c, "VERSION.dll", "GetFileVersionInfoSizeA", {name, handle});
     if (!image_has_version_resource()) {
@@ -1383,20 +1407,20 @@ static void test_files(X86 *c) {
     // Guest-visible paths.
     uint32_t pathbuf = scratch_block(300);
     uint32_t n = call_import(c, "KERNEL32.dll", "GetModuleFileNameA", {0, pathbuf, 260});
-    check(gm_str(pathbuf) == RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE,
-          "GetModuleFileNameA -> \"%s\" (%u chars)", gm_str(pathbuf).c_str(), n);
+    check(gm_str(pathbuf) == guest_exe_path(), "GetModuleFileNameA -> \"%s\" (%u chars)",
+          gm_str(pathbuf).c_str(), n);
     call_import(c, "KERNEL32.dll", "GetCurrentDirectoryA", {260, pathbuf});
-    check(gm_str(pathbuf) == RECOMP_GUEST_ROOT, "GetCurrentDirectoryA -> \"%s\"",
+    check(gm_str(pathbuf) == win32_guest_exe_dir(), "GetCurrentDirectoryA -> \"%s\"",
           gm_str(pathbuf).c_str());
 
     // The path GetModuleFileNameA hands out must open, whatever the guest
     // root's shape: a game installed under C:\GOG Games\<name> spells its
     // own files through two root components, not one.
-    uint32_t absolute = put_str(RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE);
+    uint32_t absolute = put_str(guest_exe_path().c_str());
     uint32_t ah =
         call_import(c, "KERNEL32.dll", "CreateFileA", {absolute, 0x80000000u, 1, 0, 3, 0x80, 0});
     check(ah != 0xffffffffu, "an absolute path through the whole guest root opens: \"%s\"",
-          RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE);
+          guest_exe_path().c_str());
     if (ah != 0xffffffffu)
         call_import(c, "KERNEL32.dll", "CloseHandle", {ah});
 }
@@ -1442,7 +1466,7 @@ static void test_boot_shims(X86 *c) {
     os_setenv("RECOMP_GUEST_ARGS", "-debugout -nointro");
     win32_reset_command_line_for_test();
     std::string cmdline = gm_str(call_import(c, "KERNEL32.dll", "GetCommandLineA", {}));
-    check(cmdline == std::string(RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE) + " -debugout -nointro",
+    check(cmdline == guest_exe_path() + " -debugout -nointro",
           "GetCommandLineA appends RECOMP_GUEST_ARGS: \"%s\"", cmdline.c_str());
     os_unsetenv("RECOMP_GUEST_ARGS");
     win32_reset_command_line_for_test();
@@ -4163,6 +4187,7 @@ static void test_exit_process_stops_workers(X86 *c) {
 
 static void test_mod_seams(X86 *c) {
     section("mod seams");
+    AtGuestRoot at_root(c);
 
     // The weak defaults are no-ops that report "nothing installed".
     check(mods_load_all(), "mods_load_all defaults to success with no module");
@@ -4947,6 +4972,7 @@ static void test_kernel32_wide() {
     check(call_import(&c, "KERNEL32.dll", "QueryDosDeviceW", {s, fd, 128}) > 0 &&
               !gm_wstr(fd).empty(),
           "QueryDosDeviceW(C:)");
+    cd_guest_root(&c); // the write-tier fixture names root-relative files
     remove_tree(g_wide_root);
     mkdir_p(g_wide_root);
     win32_set_file_ops(wide_resolver, nullptr);
@@ -5033,6 +5059,7 @@ static void test_kernel32_wide() {
           "GetPrivateProfileIntA reads a negative number");
     win32_set_file_ops(nullptr, nullptr);
     remove_tree(g_wide_root);
+    cd_exe_dir(&c);
 
     section("kernel32 wide synchronisation and mappings");
     gm_put_wstr(s, "wide-event", 64);
@@ -5823,6 +5850,7 @@ static void test_delphi_controls() {
     check(bmp_file && fwrite(g_mem + s, 1, 74, bmp_file) == 74, "write isolated BMP fixture");
     if (bmp_file)
         fclose(bmp_file);
+    cd_guest_root(&c); // the overlay fixture is root-relative
     win32_set_file_ops(test_resolver, nullptr);
     gm_put_wstr(s + 512, "gap.bmp", 64);
     uint32_t file_list = call_import(&c, "COMCTL32.dll", "ImageList_LoadImageW",
@@ -5835,6 +5863,7 @@ static void test_delphi_controls() {
           "ImageList_LoadImageW honors BMP pixel offset through file overlay");
     call_import(&c, "COMCTL32.dll", "ImageList_Destroy", {file_list});
     win32_set_file_ops(nullptr, nullptr);
+    cd_exe_dir(&c);
     remove_tree(g_seam_root);
     g_seam_root = saved_seam_root;
     check(call_import(&c, "COMCTL32.dll", "InitializeFlatSB", {1}) == 1, "InitializeFlatSB");

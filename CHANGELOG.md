@@ -10,10 +10,19 @@
     predicates as all-ones masks, UNPCKLPS/UNPCKHPS, MOVHLPS/MOVLHPS,
     MOVMSKPS/MOVMSKPD, CVTSS2SI/CVTSD2SI, the MMX-register conversions
     (CVTPI2PS, CVTPS2PI, CVTTPS2PI) and CVTDQ2PS/CVTPS2DQ/CVTTPS2DQ.
-    LDMXCSR is accepted and ignored (round-to-nearest is assumed), and
-    3DNow!'s FEMMS is EMMS (D3DX8's AMD paths). Each form
+    LDMXCSR is accepted and ignored (round-to-nearest is assumed). Each form
     is checked against Unicorn in `test_translate_insns.py`. RCP/RSQRT give
-    exact results rather than the CPU's 12-bit approximation.
+    exact results rather than the CPU's 12-bit approximation. 3DNow!'s
+    FEMMS (D3DX8's AMD paths) is translated as EMMS; Unicorn has no 3DNow!,
+    so its test checks the emitted code.
+  - `[game] executable_dir`: a game whose executable sits in a folder under
+    its install root (MGS2's `bin\`, which opens `..\cdrom.img\` beside it).
+    The guest root is then the install folder; `GetModuleFileNameA`,
+    `GetCommandLineA` and the starting current directory name
+    `<root>\<executable_dir>\<exe>`. An executable loaded from any other
+    layout (a test's folder, a lone copy) keeps its own folder as the root.
+    Rendered as `RECOMP_EXECUTABLE_DIR`; empty by default. Desktop and
+    browser staging of such a layout is not done yet.
   - MSACM32: `acmStreamOpen/Close/Size/PrepareHeader/UnprepareHeader/
     Convert` and `acmFormatSuggest`, decoding IMA ADPCM, Microsoft ADPCM and
     8/16-bit PCM to 16-bit PCM in the runtime (no system codecs).
