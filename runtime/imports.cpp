@@ -583,6 +583,7 @@ void imports_init() {
     kernel32_wide_register();
     oleaut32_register();
     misc_dlls_register();
+    compat_extra_register();
     comctl32_register();
     media_foundation_register();
     imports_register(g_user32_shims, g_user32_shim_count);

@@ -683,6 +683,52 @@ void BinkDDSurfaceType(X86 *c) {
     set_eax(c, type);
 }
 
+// The Direct3D 9 form of DDSurfaceType. A D3D9 surface keeps its D3DFORMAT
+// where a DirectDraw surface keeps its red mask (see Surf_GetDesc in d3d9.cpp).
+void BinkDX9SurfaceType(X86 *c) {
+    ComObj *s = com_this_arg(c);
+    uint32_t type = 0;
+    if (s && s->kind == K_D3D9SURFACE) {
+        switch (s->rmask ? s->rmask : 22) {
+        case 21: // D3DFMT_A8R8G8B8
+        case 22: // D3DFMT_X8R8G8B8
+            type = VIDEO_XRGB8888;
+            break;
+        case 23: // D3DFMT_R5G6B5
+            type = VIDEO_RGB565;
+            break;
+        case 24: // D3DFMT_X1R5G5B5
+        case 25: // D3DFMT_A1R5G5B5
+            type = VIDEO_RGB555;
+            break;
+        default:
+            break;
+        }
+    }
+    set_eax(c, type);
+}
+
+// Bink's I/O and memory hooks. A game may install its own file reader
+// (BinkSetIO) and allocator (BinkSetMemory) before BinkOpen; the host's
+// decoder reads the file itself, so these are recorded and otherwise ignored.
+// BinkOpen still resolves the name or the file handle (and its offset) the
+// game passes, which is how a video inside a container is found.
+void BinkSetIO(X86 *c) {
+    if (arg(c, 0))
+        LOGV("bink: custom I/O %08x ignored; the host reads the file", arg(c, 0));
+    ret0(c);
+}
+void BinkSetIOSize(X86 *c) {
+    ret0(c);
+}
+void BinkSetMemory(X86 *c) {
+    ret0(c);
+}
+// Volume is per track, 0..65536 with 32768 as unity; the host mixes at unity.
+void BinkSetVolume(X86 *c) {
+    ret0(c);
+}
+
 void BinkGetError(X86 *c) {
     if (!g_error_string)
         g_error_string = heap_alloc(sizeof g_error, true, 16);
@@ -702,6 +748,11 @@ const ImportShim g_video_shims[] = {
     BINK(OpenMiles, 4, ret0),
     BINK(SetSoundSystem, 8, ret1),
     BINK(DDSurfaceType, 4, BinkDDSurfaceType),
+    BINK(DX9SurfaceType, 4, BinkDX9SurfaceType),
+    BINK(SetIO, 4, BinkSetIO),
+    BINK(SetIOSize, 4, BinkSetIOSize),
+    BINK(SetMemory, 8, BinkSetMemory),
+    BINK(SetVolume, 12, BinkSetVolume),
     BINK(DoFrame, 4, BinkDoFrame),
     BINK(NextFrame, 4, BinkNextFrame),
     BINK(Wait, 4, BinkWait),

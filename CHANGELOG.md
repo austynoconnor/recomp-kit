@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- 2026-10-08 11:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: the imports Star Wars Battlefront II (2005) links that no
+  shim table covered. New `runtime/compat_extra.cpp`:
+  `GetWindowsDirectoryA`, `IsProcessorFeaturePresent` (agrees with
+  `recomp_cpuid`: only RDTSC, so D3DX and the CRT keep their x87 paths),
+  `PeekNamedPipe` (fails), `GetFileInformationByHandle`,
+  `GetUserDefaultLangID`/`GetSystemDefaultLangID`, `DialogBoxParamA` (no
+  dialog; IDOK), `GetDlgItem`, `EndDialog`, `ToAscii` and `ToUnicode` (US
+  layout), `DrawTextA` (through the wide text path), `SetMapMode`,
+  `SetICMMode`, `GetDeviceGammaRamp` (identity), and Winsock by name: real
+  `htons`/`htonl`/`ntohs`/`ntohl`/`inet_addr`/`inet_ntoa`, while every socket
+  call now fails with WSAENETDOWN instead of returning 0. That last change
+  also reaches other games that link WS2_32 (Most Wanted): their sockets
+  now fail as a disconnected machine's would. `CreateFontIndirectA` widens a
+  LOGFONTA into the existing font object. Bink gains `DX9SurfaceType`
+  (from the D3D9 surface's format) and accepts `SetIO`, `SetIOSize`,
+  `SetMemory` and `SetVolume`; the host decoder keeps reading the file
+  itself. Checked by compiling the changed files with Emscripten's clang
+  (`-Wall -Wextra -Werror`); no native compiler is installed on this machine.
+
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and
   removes translated-function DWARF from shipped downloads while preserving
