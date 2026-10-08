@@ -54,6 +54,22 @@ if(POP_HAVE_GEN)
     message(STATUS "Native overrides: ${RECOMP_OVERRIDE_HEADER}")
   endif()
   pop_optimize(recomp_gen 2)
+  # A chunk holding a few enormous straight-line functions (a game's class
+  # registration, tens of thousands of lines each) can keep clang's -O2 busy
+  # for over an hour. Such chunks compile at RECOMP_GEN_LARGE_CHUNK_OPT
+  # instead; they are start-up code, so the lower level costs nothing that
+  # matters. The source option comes after the target's -O2, so it wins.
+  set(RECOMP_GEN_LARGE_CHUNK_BYTES 8000000 CACHE STRING
+      "Generated chunks larger than this many bytes compile at RECOMP_GEN_LARGE_CHUNK_OPT")
+  set(RECOMP_GEN_LARGE_CHUNK_OPT 1 CACHE STRING "Optimization level for large generated chunks")
+  foreach(src ${POP_GEN_SOURCES})
+    file(SIZE ${src} _chunk_bytes)
+    if(_chunk_bytes GREATER RECOMP_GEN_LARGE_CHUNK_BYTES)
+      set_property(SOURCE ${src} APPEND PROPERTY COMPILE_OPTIONS
+                   $<$<NOT:$<CONFIG:Debug>>:-O${RECOMP_GEN_LARGE_CHUNK_OPT}>)
+      message(STATUS "Translation: ${src} (${_chunk_bytes} bytes) compiles at -O${RECOMP_GEN_LARGE_CHUNK_OPT}")
+    endif()
+  endforeach()
   # Auxiliary modules (game.toml [modules.aux.<key>]) are translated into
   # gen/aux-<key>/ with their own funcs.h and prefixed tables, so each is its
   # own library; their table.c registers with the runtime's module registry.
