@@ -3136,6 +3136,141 @@ static void test_lock_diff_partial_records_and_payload() {
 // A DirectSound object made through CoCreateInstance is not initialised
 // until the game calls Initialize on it, which must therefore succeed; the
 // class is the only one the runtime registers.
+// DirectSoundEnumerateA/W name one device, the default output, with a NULL
+// GUID; the callback is stdcall (guid, description, module, context).
+static unsigned g_ds_enum_hits;
+static bool g_ds_enum_wide;
+static void ds_enum_callback(X86 *c) {
+    ++g_ds_enum_hits;
+    CHECK_EQ(arg(c, 0), 0u);
+    const char *expected[] = {"Primary Sound Driver", ""};
+    for (unsigned n = 0; n < 2; ++n) {
+        uint32_t str = arg(c, n + 1);
+        for (unsigned j = 0; j <= strlen(expected[n]); ++j)
+            CHECK_EQ(g_ds_enum_wide ? rd16(str + j * 2) : rd8(str + j), (uint8_t)expected[n][j]);
+    }
+    CHECK_EQ(arg(c, 3), 0x5150u);
+    set_eax(c, 1);
+}
+
+static void test_directsound_enumeration() {
+    cpu_reset();
+    uint32_t cb = imports_alloc_trampoline("TEST", "DsEnum", ds_enum_callback, 4);
+    const char *names[] = {"DirectSoundEnumerateA", "DirectSoundEnumerateW", "ord2", "ord3"};
+    for (unsigned n = 0; n < 4; ++n) {
+        uint32_t target = tramp("DSOUND.dll", names[n]);
+        CHECK(target != 0);
+        if (!target)
+            continue;
+        g_ds_enum_wide = n & 1;
+        g_ds_enum_hits = 0;
+        CHECK_EQ(call_shim(target, {cb, 0x5150u}), 0u);
+        CHECK_EQ(g_ds_enum_hits, 1u);
+    }
+    CHECK_EQ(call_shim(tramp("DSOUND.dll", "DirectSoundEnumerateA"), {0, 0}), 0x80070057u);
+}
+
+// The ACM stream decodes PCM, IMA ADPCM and Microsoft ADPCM to 16-bit PCM.
+// The expected samples are worked by hand from each codec's step tables.
+static void acm_wfx(uint32_t p, uint16_t tag, uint16_t align, uint16_t bits, uint16_t extra,
+                    uint16_t samples) {
+    gm_zero(p, 64);
+    wr16(p + 0, tag);
+    wr16(p + 2, 1);
+    wr32(p + 4, 22050);
+    wr32(p + 8, 22050u * align);
+    wr16(p + 12, align);
+    wr16(p + 14, bits);
+    wr16(p + 16, extra);
+    if (extra)
+        wr16(p + 18, samples);
+}
+
+static uint32_t acm_convert(uint32_t has, uint32_t src, uint32_t src_len, uint32_t dst,
+                            uint32_t dst_len, uint32_t hdr) {
+    gm_zero(hdr, 84);
+    wr32(hdr + 0, 84);
+    wr32(hdr + 12, src);
+    wr32(hdr + 16, src_len);
+    wr32(hdr + 28, dst);
+    wr32(hdr + 32, dst_len);
+    CHECK_EQ(call_shim(tramp("MSACM32.dll", "acmStreamPrepareHeader"), {has, hdr, 0}), 0u);
+    uint32_t hr = call_shim(tramp("MSACM32.dll", "acmStreamConvert"), {has, hdr, 0});
+    CHECK((rd32(hdr + 4) & 0x00010000u) != 0); // ACMSTREAMHEADER_STATUSF_DONE
+    CHECK_EQ(call_shim(tramp("MSACM32.dll", "acmStreamUnprepareHeader"), {has, hdr, 0}), 0u);
+    return hr;
+}
+
+static void test_acm_stream() {
+    cpu_reset();
+    const uint32_t src = sc(0), dst = sc(0x100), pcm = sc(0x200), hdr = sc(0x300), wfx = sc(0x400),
+                   phas = sc(0x480), size = sc(0x484);
+    uint32_t open = tramp("MSACM32.dll", "acmStreamOpen"),
+             close = tramp("MSACM32.dll", "acmStreamClose");
+    acm_wfx(pcm, 1, 2, 16, 0, 0);
+
+    // IMA ADPCM, mono: predictor 0, step index 0, then nibbles 4,0,0,...
+    acm_wfx(wfx, 0x11, 8, 4, 2, 9);
+    gm_zero(src, 8);
+    wr8(src + 4, 0x04);
+    CHECK_EQ(call_shim(open, {phas, 0, wfx, pcm, 0, 0, 0, 0}), 0u);
+    uint32_t has = rd32(phas);
+    CHECK_EQ(call_shim(tramp("MSACM32.dll", "acmStreamSize"), {has, 20, size, 0}), 0u);
+    CHECK_EQ(rd32(size), 36u); // two whole 8-byte blocks of 9 samples
+    CHECK_EQ(call_shim(tramp("MSACM32.dll", "acmStreamSize"), {has, 18, size, 1}), 0u);
+    CHECK_EQ(rd32(size), 8u);
+    CHECK_EQ(acm_convert(has, src, 10, dst, 64, hdr), 0u);
+    CHECK_EQ(rd32(hdr + 20), 8u); // the partial second block is left
+    CHECK_EQ(rd32(hdr + 36), 18u);
+    const int16_t ima[9] = {0, 7, 8, 9, 9, 9, 9, 9, 9};
+    for (unsigned i = 0; i < 9; ++i)
+        CHECK_EQ((int16_t)rd16(dst + 2 * i), ima[i]);
+    CHECK_EQ(call_shim(close, {has, 0}), 0u);
+    CHECK_EQ(call_shim(close, {has, 0}), 5u); // MMSYSERR_INVALHANDLE
+
+    // Microsoft ADPCM, mono, default coefficients: predictor 0, delta 16,
+    // sample1 100, sample2 50, then nibbles +1 and -1.
+    acm_wfx(wfx, 0x2, 8, 4, 2, 4);
+    const uint8_t ms[8] = {0, 16, 0, 100, 0, 50, 0, 0x1f};
+    for (unsigned i = 0; i < 8; ++i)
+        wr8(src + i, ms[i]);
+    CHECK_EQ(call_shim(open, {phas, 0, wfx, pcm, 0, 0, 0, 0}), 0u);
+    has = rd32(phas);
+    CHECK_EQ(acm_convert(has, src, 8, dst, 64, hdr), 0u);
+    CHECK_EQ(rd32(hdr + 36), 8u);
+    const int16_t msout[4] = {50, 100, 116, 100};
+    for (unsigned i = 0; i < 4; ++i)
+        CHECK_EQ((int16_t)rd16(dst + 2 * i), msout[i]);
+    call_shim(close, {has, 0});
+
+    // 8-bit PCM widens to 16-bit.
+    acm_wfx(wfx, 1, 1, 8, 0, 0);
+    wr8(src + 0, 0x80);
+    wr8(src + 1, 0xff);
+    wr8(src + 2, 0x00);
+    CHECK_EQ(call_shim(open, {phas, 0, wfx, pcm, 0, 0, 0, 0}), 0u);
+    has = rd32(phas);
+    CHECK_EQ(acm_convert(has, src, 3, dst, 64, hdr), 0u);
+    CHECK_EQ(rd32(hdr + 36), 6u);
+    CHECK_EQ((int16_t)rd16(dst + 0), 0);
+    CHECK_EQ((int16_t)rd16(dst + 2), 0x7f00);
+    CHECK_EQ((int16_t)rd16(dst + 4), -32768);
+    call_shim(close, {has, 0});
+
+    // A format with no codec here is refused; a query opens nothing.
+    acm_wfx(wfx, 0x55 /* MPEG layer 3 */, 1, 0, 0, 0);
+    CHECK_EQ(call_shim(open, {phas, 0, wfx, pcm, 0, 0, 0, 0}), 512u); // ACMERR_NOTPOSSIBLE
+    acm_wfx(wfx, 0x11, 8, 4, 2, 9);
+    CHECK_EQ(call_shim(open, {0, 0, wfx, pcm, 0, 0, 0, 1}), 0u);
+
+    // acmFormatSuggest names 16-bit PCM at the source's rate.
+    gm_zero(dst, 18);
+    CHECK_EQ(call_shim(tramp("MSACM32.dll", "acmFormatSuggest"), {0, wfx, dst, 18, 0}), 0u);
+    CHECK_EQ(rd16(dst + 0), 1u);
+    CHECK_EQ(rd32(dst + 4), 22050u);
+    CHECK_EQ(rd16(dst + 14), 16u);
+}
+
 static void test_cocreate_directsound() {
     static const uint8_t clsid_dsound[16] = {0x46, 0xd9, 0xd4, 0x47, 0xe8, 0x62, 0xcf, 0x11,
                                              0x93, 0xbc, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00};
@@ -12726,6 +12861,8 @@ int main() {
         {"QueryInterface", test_query_interface},
         {"display modes", test_enum_display_modes},
         {"DirectDraw enumeration", test_directdraw_enumeration},
+        {"DirectSound enumeration", test_directsound_enumeration},
+        {"ACM stream decoding", test_acm_stream},
         {"exclusive DirectDraw window mode", test_exclusive_ddraw_notifies_window_mode},
         {"release restores desktop", test_release_restores_desktop_mode},
         {"configurable modes", test_configurable_display_modes},

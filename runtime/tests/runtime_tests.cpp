@@ -169,6 +169,8 @@ static bool pefile_sections(ExpectedImage &out, std::string &err) {
 #else
 #define POP_VENV_PYTHON ".venv/bin/python"
 #endif
+    // An import by ordinal is "ordN", as the loader names it, even where pefile
+    // knows the export's name (it does for OLEAUT32 and WSOCK32).
     // The interpreter that configured the build (CTest passes RECOMP_PYTHON), else
     // the checkout's venv relative to the working directory.
     const char *python = recomp_env("PYTHON");
@@ -182,7 +184,7 @@ static bool pefile_sections(ExpectedImage &out, std::string &err) {
         "s.Misc_VirtualSize, s.SizeOfRawData, s.PointerToRawData, s.Characteristics)) for s in "
         "pe.sections];"
         "[print('IMPORT %x %s %s' % (i.address, d.dll.decode(), "
-        "i.name.decode() if i.name else 'ord%d' % i.ordinal)) "
+        "'ord%d' % i.ordinal if i.import_by_ordinal or not i.name else i.name.decode())) "
         "for d in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', []) for i in d.imports]"
         "\" 2>/dev/null";
     const char *cmd = cmd_s.c_str();
@@ -1843,6 +1845,109 @@ static void test_misc_shims(X86 *c) {
           "GetSystemDirectoryA");
     check(call_import(c, "KERNEL32.dll", "GetSystemDirectoryA", {sysdir, 4}) == 20,
           "GetSystemDirectoryA reports the size needed when the buffer is short");
+}
+
+// ReadFileEx's completion routine (error, bytes, overlapped) is stdcall with
+// three arguments; the test records what it was handed.
+static uint32_t g_apc_hits, g_apc_args[3];
+static void fake_completion(X86 *c) {
+    ++g_apc_hits;
+    for (int i = 0; i < 3; ++i)
+        g_apc_args[i] = arg(c, i);
+}
+
+// Imports that disc-streaming games add: overlapped and completion-routine
+// reads, and the small kernel32/user32/ole32 helpers their start-up calls.
+static void test_streaming_and_startup_helpers(X86 *c) {
+    section("overlapped reads and completion routines");
+    uint32_t name = put_str(RECOMP_EXECUTABLE);
+    uint32_t h = call_import(c, "KERNEL32.dll", "CreateFileA",
+                             {name, 0x80000000u, 1, 0, 3, 0x40000080u /*OVERLAPPED*/, 0});
+    check(h != 0xffffffffu, "CreateFileA with FILE_FLAG_OVERLAPPED");
+    FILE *f = fopen(RECOMP_DEVELOPER_EXE, "rb");
+    uint8_t host[96] = {};
+    size_t host_n = f ? fread(host, 1, sizeof host, f) : 0;
+    if (f)
+        fclose(f);
+    uint32_t ovl = scratch_block(32), buf = scratch_block(64), got = scratch_block(4);
+    memset(g_mem + ovl, 0, 32);
+    wr32(ovl + 8, 32); // Offset
+    uint32_t event = call_import(c, "KERNEL32.dll", "CreateEventA", {0, 1, 0, 0});
+    wr32(ovl + 16, event);
+    check(call_import(c, "KERNEL32.dll", "ReadFile", {h, buf, 16, got, ovl}) == 1 &&
+              rd32(got) == 16 && host_n == sizeof host && memcmp(g_mem + buf, host + 32, 16) == 0,
+          "an OVERLAPPED ReadFile reads at the offset it names");
+    check(rd32(ovl) == 0 && rd32(ovl + 4) == 16, "OVERLAPPED records status 0 and 16 bytes");
+    check(call_import(c, "KERNEL32.dll", "WaitForSingleObject", {event, 0}) == 0,
+          "the OVERLAPPED event is signalled");
+    wr32(got, 0);
+    check(call_import(c, "KERNEL32.dll", "GetOverlappedResult", {h, ovl, got, 1}) == 1 &&
+              rd32(got) == 16,
+          "GetOverlappedResult reports the 16 bytes");
+
+    uint32_t done = imports_alloc_trampoline("test", "fake_completion", fake_completion, 3);
+    g_apc_hits = 0;
+    memset(g_mem + ovl, 0, 32);
+    wr32(ovl + 8, 64);
+    check(call_import(c, "KERNEL32.dll", "ReadFileEx", {h, buf, 24, ovl, done}) == 1 &&
+              memcmp(g_mem + buf, host + 64, 24) == 0,
+          "ReadFileEx reads at offset 64");
+    check(g_apc_hits == 0, "the completion routine waits for an alertable wait");
+    check(call_import(c, "KERNEL32.dll", "SleepEx", {0, 0}) == 0 && g_apc_hits == 0,
+          "a non-alertable SleepEx does not run it");
+    check(call_import(c, "KERNEL32.dll", "SleepEx", {0, 1}) == 0xC0 && g_apc_hits == 1,
+          "an alertable SleepEx runs it and returns WAIT_IO_COMPLETION");
+    check(g_apc_args[0] == 0 && g_apc_args[1] == 24 && g_apc_args[2] == ovl,
+          "the routine gets (0, 24, overlapped)");
+    check(call_import(c, "KERNEL32.dll", "SleepEx", {0, 1}) == 0 && g_apc_hits == 1,
+          "each completion runs once");
+
+    memset(g_mem + ovl, 0, 32);
+    wr32(ovl + 8, 0x7fffffffu);
+    check(call_import(c, "KERNEL32.dll", "ReadFileEx", {h, buf, 8, ovl, done}) == 0 &&
+              call_import(c, "KERNEL32.dll", "GetLastError", {}) == 38,
+          "ReadFileEx past the end fails with ERROR_HANDLE_EOF");
+    check(call_import(c, "KERNEL32.dll", "GetOverlappedResult", {h, ovl, got, 0}) == 0 &&
+              rd32(got) == 0,
+          "GetOverlappedResult reports the end of file");
+    call_import(c, "KERNEL32.dll", "CloseHandle", {event});
+    call_import(c, "KERNEL32.dll", "CloseHandle", {h});
+
+    section("start-up helpers");
+    check(call_import(c, "KERNEL32.dll", "lstrcmpiA", {put_str("Hello"), put_str("hELLO")}) == 0 &&
+              call_import(c, "KERNEL32.dll", "lstrcmpiA", {put_str("abc"), put_str("ABD")}) ==
+                  0xffffffffu,
+          "lstrcmpiA ignores case");
+    check(call_import(c, "KERNEL32.dll", "IsProcessorFeaturePresent", {8}) == 1 &&
+              call_import(c, "KERNEL32.dll", "IsProcessorFeaturePresent", {6}) == 0,
+          "IsProcessorFeaturePresent agrees with CPUID: RDTSC yes, SSE no");
+    check(call_import(c, "KERNEL32.dll", "GetUserDefaultLangID", {}) == 0x409,
+          "GetUserDefaultLangID is en-US");
+    uint32_t tmp = scratch_block(300);
+    uint32_t n = call_import(c, "KERNEL32.dll", "GetTempPathA", {300, tmp});
+    check(n > 0 && gm_str(tmp) == RECOMP_GUEST_ROOT "\\", "GetTempPathA -> \"%s\"",
+          gm_str(tmp).c_str());
+    uint32_t free3 = scratch_block(24);
+    check(call_import(c, "KERNEL32.dll", "GetDiskFreeSpaceExA",
+                      {0, free3, free3 + 8, free3 + 16}) == 1 &&
+              rd32(free3 + 4) == 1 && rd32(free3 + 12) == 2,
+          "GetDiskFreeSpaceExA reports 4 GB free of 8 GB");
+
+    uint32_t out = scratch_block(128);
+    uint32_t fmt = put_str("%s=%d/%04X");
+    uint32_t len = call_import(c, "USER32.dll", "wsprintfA", {out, fmt, put_str("lives"), 3, 0xbe});
+    check(gm_str(out) == "lives=3/00BE" && len == 12, "wsprintfA (cdecl varargs) -> \"%s\"",
+          gm_str(out).c_str());
+
+    uint32_t guid = scratch_block(16), text = scratch_block(128);
+    gm_put_wstr(text, "{12345678-9ABC-DEF0-1122-334455667788}", 64);
+    check(call_import(c, "ole32.dll", "CLSIDFromString", {text, guid}) == 0 &&
+              rd32(guid) == 0x12345678 && rd16(guid + 4) == 0x9abc && rd16(guid + 6) == 0xdef0 &&
+              g_mem[guid + 8] == 0x11 && g_mem[guid + 15] == 0x88,
+          "CLSIDFromString parses a braced GUID");
+    gm_put_wstr(text, "not a guid", 64);
+    check(call_import(c, "ole32.dll", "CLSIDFromString", {text, guid}) == 0x800401F3u,
+          "CLSIDFromString rejects other text with CO_E_CLASSSTRING");
 }
 
 // What a C++ throw looks like from the runtime: the MSVC exception record
@@ -4768,6 +4873,7 @@ static void resource_enum_callback(X86 *c) {
     g_resource_names.push_back(name <= 0xffff ? "#" + std::to_string(name) : gm_wstr(name));
     set_eax(c, g_resource_stop ? 0 : 1);
 }
+
 static void test_kernel32_wide() {
     X86 c;
     loader_init_context(&c);
@@ -4902,6 +5008,29 @@ static void test_kernel32_wide() {
     n = call_import(&c, "KERNEL32.dll", "GetPrivateProfileStringW",
                     {s, s + 128, s + 512, s + 0x800, 64, s + 384});
     check(n == 1 && gm_wstr(s + 0x800) == "0", "missing profile key uses the default");
+    section("kernel32 ANSI profile strings and numbers");
+    gm_put_str(s, "Sound", 64);
+    gm_put_str(s + 128, "Volume", 64);
+    gm_put_str(s + 256, "0x1F", 64);
+    gm_put_str(s + 384, "ansi-test.ini", 64);
+    check(call_import(&c, "KERNEL32.dll", "WritePrivateProfileStringA",
+                      {s, s + 128, s + 256, s + 384}) == 1,
+          "WritePrivateProfileStringA");
+    gm_put_str(s + 512, "", 64);
+    n = call_import(&c, "KERNEL32.dll", "GetPrivateProfileStringA",
+                    {s, s + 128, s + 512, s + 0x800, 64, s + 384});
+    check(n == 4 && gm_str(s + 0x800) == "0x1F", "GetPrivateProfileStringA reads it back");
+    check(call_import(&c, "KERNEL32.dll", "GetPrivateProfileIntA", {s, s + 128, 7, s + 384}) == 31,
+          "GetPrivateProfileIntA reads a hex value");
+    gm_put_str(s + 128, "Missing", 64);
+    check(call_import(&c, "KERNEL32.dll", "GetPrivateProfileIntA", {s, s + 128, 7, s + 384}) == 7,
+          "GetPrivateProfileIntA falls back to the default");
+    gm_put_str(s + 256, "-12", 64);
+    check(call_import(&c, "KERNEL32.dll", "WritePrivateProfileStringA",
+                      {s, s + 128, s + 256, s + 384}) == 1 &&
+              call_import(&c, "KERNEL32.dll", "GetPrivateProfileIntA", {s, s + 128, 7, s + 384}) ==
+                  0xfffffff4u,
+          "GetPrivateProfileIntA reads a negative number");
     win32_set_file_ops(nullptr, nullptr);
     remove_tree(g_wide_root);
 
@@ -5103,40 +5232,54 @@ static void test_kernel32_wide() {
           "WaitForMultipleObjectsEx uses the existing wait body");
     call_import(&c, "KERNEL32.dll", "CloseHandle", {event});
     section("kernel32 wide resources");
+    // Some images carry no version resource (Metal Gear Solid 2's GOG build
+    // has only a manifest); the checks that read one need it.
+    const bool has_version = image_has_version_resource();
     uint32_t r = call_import(&c, "KERNEL32.dll", "FindResourceW", {0, 1, 16});
-    check(r != 0, "FindResourceW(VS_VERSION_INFO)");
-    uint32_t size = call_import(&c, "KERNEL32.dll", "SizeofResource", {0, r});
-    uint32_t data = call_import(&c, "KERNEL32.dll", "LoadResource", {0, r});
-    check(size > 0x34 && data != 0 && gm_valid(data, size) && rd32(data + 40) == 0xfeef04bdu,
-          "the loaded resource is a VS_VERSIONINFO (size %u)", size);
+    if (has_version) {
+        check(r != 0, "FindResourceW(VS_VERSION_INFO)");
+        uint32_t size = call_import(&c, "KERNEL32.dll", "SizeofResource", {0, r});
+        uint32_t data = call_import(&c, "KERNEL32.dll", "LoadResource", {0, r});
+        check(size > 0x34 && data != 0 && gm_valid(data, size) && rd32(data + 40) == 0xfeef04bdu,
+              "the loaded resource is a VS_VERSIONINFO (size %u)", size);
 
-    check(call_import(&c, "KERNEL32.dll", "LockResource", {data}) == data,
-          "LockResource preserves the guest address");
-    check(call_import(&c, "KERNEL32.dll", "FreeResource", {data}) == 0,
-          "FreeResource leaves image-backed resources loaded");
-    gm_put_wstr(s, "#16", 64);
-    gm_put_wstr(s + 128, "#1", 64);
-    check(r && call_import(&c, "KERNEL32.dll", "FindResourceW",
-                           {loader_image_base(), s + 128, s}) == r,
-          "resource integer strings resolve like IDs");
+        check(call_import(&c, "KERNEL32.dll", "LockResource", {data}) == data,
+              "LockResource preserves the guest address");
+        check(call_import(&c, "KERNEL32.dll", "FreeResource", {data}) == 0,
+              "FreeResource leaves image-backed resources loaded");
+        gm_put_wstr(s, "#16", 64);
+        gm_put_wstr(s + 128, "#1", 64);
+        check(r && call_import(&c, "KERNEL32.dll", "FindResourceW",
+                               {loader_image_base(), s + 128, s}) == r,
+              "resource integer strings resolve like IDs");
+    } else {
+        check(r == 0, "FindResourceW finds no VS_VERSION_INFO in an image without one");
+        printf("  [SKIP] the image has no version resource\n");
+        ++g_skips;
+    }
     check(call_import(&c, "KERNEL32.dll", "FindResourceW", {0, 0xffff, 16}) == 0,
           "missing resource returns zero");
     uint32_t resource_cb =
         imports_alloc_trampoline("test", "resource_enum", resource_enum_callback, 4);
     g_resource_names.clear();
-    check(call_import(&c, "KERNEL32.dll", "EnumResourceNamesW", {0, 16, resource_cb, 0x1234}) ==
-                  1 &&
-              std::find(g_resource_names.begin(), g_resource_names.end(), "#1") !=
-                  g_resource_names.end() &&
-              g_resource_type == 16 && g_resource_param == 0x1234,
-          "EnumResourceNamesW passes names, type and caller data to the guest");
+    if (has_version)
+        check(call_import(&c, "KERNEL32.dll", "EnumResourceNamesW", {0, 16, resource_cb, 0x1234}) ==
+                      1 &&
+                  std::find(g_resource_names.begin(), g_resource_names.end(), "#1") !=
+                      g_resource_names.end() &&
+                  g_resource_type == 16 && g_resource_param == 0x1234,
+              "EnumResourceNamesW passes names, type and caller data to the guest");
     // Replace only guest-memory directory bytes temporarily, then restore them.
     // The real image stays pinned on disk; this fixture exercises names and
     // corrupt offsets that need not occur in a particular game's resources.
     uint32_t image = loader_image_base(), opt = image + rd32(image + 0x3c) + 24;
     uint32_t root = image + rd32(opt + 112), directory_size = rd32(opt + 116);
-    if (check(directory_size >= 0x300 && gm_valid(root, directory_size),
-              "resource directory can hold the synthetic fixture")) {
+    if (directory_size < 0x300) {
+        printf("  [SKIP] the resource directory (%u bytes) is too small for the fixture\n",
+               directory_size);
+        ++g_skips;
+    } else if (check(gm_valid(root, directory_size),
+                     "resource directory can hold the synthetic fixture")) {
         std::vector<uint8_t> saved(g_mem + root, g_mem + root + 0x300);
         memset(g_mem + root, 0, 0x300);
         wr16(root + 12, 1);
@@ -6570,17 +6713,23 @@ static void test_delphi_dlls() {
                       {hk, s + 0x500, 0, 0, s + 0x700, s + 0x600}) == 0 &&
               gm_str(s + 0x700) == "value",
           "RegQueryValueExA reads what RegSetValueExW wrote");
-    // version.dll W over the image's own resource.
+    // version.dll W over the image's own resource, when it has one.
     gm_put_wstr(s, RECOMP_EXECUTABLE, 128);
     uint32_t size = call_import(&c, "VERSION.dll", "GetFileVersionInfoSizeW", {s, 0});
-    check(size > 0, "GetFileVersionInfoSizeW = %u", size);
-    check(call_import(&c, "VERSION.dll", "GetFileVersionInfoW", {s, 0, size, s + 0x1000}) == 1,
-          "GetFileVersionInfoW");
-    gm_put_wstr(s + 0x800, "\\", 8);
-    check(call_import(&c, "VERSION.dll", "VerQueryValueW",
-                      {s + 0x1000, s + 0x800, s + 0x900, s + 0x904}) == 1 &&
-              rd32(rd32(s + 0x900)) == 0xfeef04bdu,
-          "VerQueryValueW(\\) finds VS_FIXEDFILEINFO");
+    if (image_has_version_resource()) {
+        check(size > 0, "GetFileVersionInfoSizeW = %u", size);
+        check(call_import(&c, "VERSION.dll", "GetFileVersionInfoW", {s, 0, size, s + 0x1000}) == 1,
+              "GetFileVersionInfoW");
+        gm_put_wstr(s + 0x800, "\\", 8);
+        check(call_import(&c, "VERSION.dll", "VerQueryValueW",
+                          {s + 0x1000, s + 0x800, s + 0x900, s + 0x904}) == 1 &&
+                  rd32(rd32(s + 0x900)) == 0xfeef04bdu,
+              "VerQueryValueW(\\) finds VS_FIXEDFILEINFO");
+    } else {
+        check(size == 0, "GetFileVersionInfoSizeW is 0 for an image without version info");
+        printf("  [SKIP] the image has no version resource\n");
+        ++g_skips;
+    }
     // The rest answer as documented for a machine with nothing attached.
     wr32(s + 0xa00, 0);
     check(call_import(&c, "WINSPOOL.DRV", "EnumPrintersW", {2, 0, 2, 0, 0, s + 0xa04, s + 0xa00}) ==
@@ -6725,6 +6874,7 @@ int main(int argc, char **argv) {
     test_pinned_clock(c);
     test_cadence_trace(c);
     test_misc_shims(c);
+    test_streaming_and_startup_helpers(c);
     test_windows_version(c);
     test_boot_shims(c);
     test_gdi_and_com(c);

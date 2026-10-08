@@ -606,6 +606,8 @@ void dx_register_shims() {
     bink_register();
     weanetr_register();
     mf_register();
+    acm_register();
+    dsound_enum_register();
     // The audio shims need a tick on the main guest thread: the game drives
     // neither QMixer's stream refills nor DirectSound's notification
     // positions, and both need to call back into guest code, which only a

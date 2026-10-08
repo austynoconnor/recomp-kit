@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- 2026-10-08 12:24 CDT — Claude Opus 5.5: groundwork for Metal Gear Solid 2:
+  Substance (branch `giggity-mgs2`), independent of the Direct3D 8 work.
+  - Translator: packed and scalar SSE floating point that MGS2 uses without
+    a CPUID check. ADDPS/SUBPS/MULPS/DIVPS (and the PD forms), MINPS/MAXPS,
+    SQRTPS/SQRTPD, RCPPS/RSQRTPS/RCPSS/RSQRTSS, all eight CMPccPS/SS/PD
+    predicates as all-ones masks, UNPCKLPS/UNPCKHPS, MOVHLPS/MOVLHPS,
+    MOVMSKPS/MOVMSKPD, CVTSS2SI/CVTSD2SI, the MMX-register conversions
+    (CVTPI2PS, CVTPS2PI, CVTTPS2PI) and CVTDQ2PS/CVTPS2DQ/CVTTPS2DQ.
+    LDMXCSR is accepted and ignored (round-to-nearest is assumed). Each form
+    is checked against Unicorn in `test_translate_insns.py`. RCP/RSQRT give
+    exact results rather than the CPU's 12-bit approximation.
+  - MSACM32: `acmStreamOpen/Close/Size/PrepareHeader/UnprepareHeader/
+    Convert` and `acmFormatSuggest`, decoding IMA ADPCM, Microsoft ADPCM and
+    8/16-bit PCM to 16-bit PCM in the runtime (no system codecs).
+  - DSOUND: `DirectSoundEnumerateA/W` (and ordinals 2/3) report the one
+    output, "Primary Sound Driver", with a NULL GUID.
+  - kernel32: overlapped `ReadFile`, `ReadFileEx` with completion routines
+    delivered at the issuing thread's next alertable `SleepEx` (returning
+    WAIT_IO_COMPLETION), `GetOverlappedResult`, end-of-file as
+    ERROR_HANDLE_EOF. ANSI `GetPrivateProfileStringA`,
+    `WritePrivateProfileStringA`, `GetPrivateProfileIntA/W` (decimal, hex,
+    negative) and `GetProfileIntA`. Small start-up helpers: `lstrcmpiA`,
+    `GetUserDefaultLangID`, `IsProcessorFeaturePresent` (agrees with CPUID),
+    `GetDiskFreeSpaceExA`, `GetTempPathA`, `GetTempFileNameA`,
+    `FormatMessageA`, `AllocConsole`, `SetConsoleTitleA`, `DebugBreak`,
+    `FatalAppExitA`, and refusing `WinExec`, `CreateProcessA`, `OpenProcess`.
+  - user32: `wsprintfA` (cdecl varargs), `MessageBoxExA`,
+    `PostThreadMessageA`, `GetQueueStatus`, `RegisterWindowMessageA`.
+  - ole32/oleaut32: `CLSIDFromString`, `CoFreeUnusedLibraries`, and
+    `SysFreeString` imported by ordinal 6.
+  - Tests: runtime checks for all of the above; dx checks for ACM decoding
+    and DirectSound enumeration. The game-backed runtime suite now skips the
+    version-resource checks for an image without one, and names ordinal
+    imports "ordN" as the loader does even where pefile knows the name.
+  - Merge note: `giggity-d3d8` also adds `wsprintfA`; keep one entry.
+
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and
   removes translated-function DWARF from shipped downloads while preserving

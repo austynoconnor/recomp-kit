@@ -1039,8 +1039,7 @@ void insert_menu(X86 *c) {
 bool clipboard_open = false;
 std::map<uint32_t, uint32_t> clipboard;
 std::map<std::string, uint32_t> clipboard_formats, window_messages;
-uint32_t register_name(std::map<std::string, uint32_t> &names, uint32_t p) {
-    std::string name = gm_wstr(p);
+uint32_t register_name(std::map<std::string, uint32_t> &names, std::string name) {
     if (name.empty())
         return 0;
     for (char &ch : name)
@@ -1055,10 +1054,14 @@ uint32_t register_name(std::map<std::string, uint32_t> &names, uint32_t p) {
     return id;
 }
 void register_clipboard(X86 *c) {
-    set_eax(c, register_name(clipboard_formats, arg(c, 0)));
+    set_eax(c, register_name(clipboard_formats, gm_wstr(arg(c, 0))));
 }
 void register_message(X86 *c) {
-    set_eax(c, register_name(window_messages, arg(c, 0)));
+    set_eax(c, register_name(window_messages, gm_wstr(arg(c, 0))));
+}
+// The ANSI form shares the table, so either spelling of a name gets one id.
+void register_message_a(X86 *c) {
+    set_eax(c, register_name(window_messages, gm_str(arg(c, 0))));
 }
 void open_clipboard(X86 *c) {
     bool ok = !clipboard_open;
@@ -1459,6 +1462,7 @@ const ImportShim shims[] = {
     U("SetClipboardData", 2, set_clipboard),
     U("RegisterClipboardFormatW", 1, register_clipboard),
     U("RegisterWindowMessageW", 1, register_message),
+    U("RegisterWindowMessageA", 1, register_message_a),
     U("SetWindowsHookExW", 4, set_hook),
     U("UnhookWindowsHookEx", 1, unhook),
     U("CallNextHookEx", 4, zero),

@@ -976,6 +976,32 @@ void o_IsEqualGUID(X86 *c) {
     uint32_t a = arg(c, 0), b = arg(c, 1);
     set_eax(c, a && b && gm_valid(a, 16) && gm_valid(b, 16) && !memcmp(g_mem + a, g_mem + b, 16));
 }
+// CLSIDFromString(L"{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}", &clsid). Only the
+// braced GUID form; a ProgID would need the registry's class table, which
+// this runtime does not keep, and fails with CO_E_CLASSSTRING.
+void o_CLSIDFromString(X86 *c) {
+    std::string text = gm_wstr(arg(c, 0), 64);
+    uint32_t out = arg(c, 1);
+    unsigned v[11];
+    int used = 0;
+    if (!out || !gm_valid(out, 16) || text.size() != 38 ||
+        sscanf(text.c_str(), "{%8x-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x}%n", &v[0], &v[1], &v[2],
+               &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &used) != 11 ||
+        used != 38) {
+        set_eax(c, 0x800401f3u); // CO_E_CLASSSTRING
+        return;
+    }
+    wr32(out, v[0]);
+    wr16(out + 4, (uint16_t)v[1]);
+    wr16(out + 6, (uint16_t)v[2]);
+    for (int i = 0; i < 8; ++i)
+        wr8(out + 8 + i, (uint8_t)v[3 + i]);
+    set_eax(c, 0);
+}
+// Nothing is loaded as a real DLL, so there is nothing to unload.
+void o_CoFreeUnusedLibraries(X86 *c) {
+    set_eax(c, 0);
+}
 
 // PROPVARIANT is sixteen bytes on x86: a two-byte VARTYPE, six reserved, and
 // an eight-byte union. Clearing one means releasing whatever the union owns
@@ -2039,6 +2065,8 @@ const ImportShim g_misc_shims[] = {
     {"ole32.dll", "CoTaskMemAlloc", 1, o_CoTaskMemAlloc},
     {"ole32.dll", "CoTaskMemFree", 1, o_CoTaskMemFree},
     {"ole32.dll", "IsEqualGUID", 2, o_IsEqualGUID},
+    {"ole32.dll", "CLSIDFromString", 2, o_CLSIDFromString},
+    {"ole32.dll", "CoFreeUnusedLibraries", 0, o_CoFreeUnusedLibraries},
     {"ole32.dll", "CoUninitialize", 0, o_CoUninitialize},
     {"ole32.dll", "PropVariantClear", 1, o_PropVariantClear},
     {"ole32.dll", "PropVariantCopy", 2, o_PropVariantCopy},

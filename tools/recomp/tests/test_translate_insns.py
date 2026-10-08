@@ -40,7 +40,7 @@ import translate as T  # noqa: E402
 # Guest layout shared by both engines.  The code lives in its own page range,
 # the stack and scratch are zeroed before every run, and the cave holds the
 # return address a RET lands on, which is where emulation stops.
-CODE_BASE, CODE_SIZE = 0x0D010000, 0x00020000
+CODE_BASE, CODE_SIZE = 0x0D010000, 0x00030000
 STACK_BASE, STACK_SIZE = 0x0EF00000, 0x00100000
 ESP_INIT = 0x0EFFFF00
 SCRATCH, SCRATCH_SIZE = 0x0E100000, 0x00010000
@@ -637,6 +637,97 @@ CASES += [
         ("FDIV", "d8f1", "ST0"), ("FDIV", "dcf9", "ST1"),
         ("FDIVR", "d8f9", "ST0"), ("FDIVR", "dcf1", "ST1"),
         ("FMUL", "66dcc9", "ST1 with prefix")])
+]
+
+
+# Packed SSE float arithmetic, compares and conversions: what an SSE build
+# (Metal Gear Solid 2's mgs2_sse.exe) runs without asking CPUID. Every form
+# runs twice, register and memory source, over random lanes.
+def sse_packed_setup(rng, positive=False, nan=False):
+    def value():
+        v = rng.choice([rng.uniform(-1e4, 1e4), rng.uniform(-2.0, 2.0),
+                        float(rng.randrange(-50, 50)) + 0.5])
+        return abs(v) + 0.25 if positive else v
+    lanes = [value() for _ in range(8)]
+    if not positive:
+        lanes[5] = lanes[1]            # an equal pair for the compares
+    raw = struct.pack("<8f", *lanes)
+    if nan:
+        raw = raw[:24] + struct.pack("<I", 0x7fc00000) + raw[28:]
+    return {"regs": dict(rand_regs(rng), ESI=SCRATCH + 0x300, EDI=SCRATCH + 0x100),
+            "mem": [(SCRATCH + 0x300, raw), (SCRATCH + 0x100, b"\x00" * 0x100)]}
+
+
+def sse_packed_case(i, name, prefix, opcode, mem_ptr="xmmword", imm=None, setup=sse_packed_setup):
+    reg = prefix + "0f" + opcode + "d1" + ("%02x" % imm if imm is not None else "")
+    mem = prefix + "0f" + opcode + "5e10" + ("%02x" % imm if imm is not None else "")
+    k = len(bytes.fromhex(reg))
+    tail = ",0x%x" % imm if imm is not None and name in ("CMPPS",) else ""
+    return Case("SSE packed %s" % name, 0x0D030000 + i * 0x40,
+                [(0, "MOVUPS XMM0,xmmword ptr [ESI]"),
+                 (3, "MOVUPS XMM1,xmmword ptr [ESI + 0x10]"),
+                 (7, "MOVAPS XMM2,XMM0"),
+                 (10, "%s XMM2,XMM1%s" % (name, tail)),
+                 (10 + k, "MOVUPS xmmword ptr [EDI],XMM2"),
+                 (13 + k, "MOVAPS XMM3,XMM0"),
+                 (16 + k, "%s XMM3,%s ptr [ESI + 0x10]%s" % (name, mem_ptr, tail)),
+                 (17 + 2 * k, "MOVUPS xmmword ptr [EDI + 0x10],XMM3"),
+                 (21 + 2 * k, "RET")],
+                "0f1006 0f104e10 0f28d0 " + reg + " 0f1117 0f28d8 " + mem + " 0f115f10 c3",
+                setup)
+
+
+SSE_PACKED = [
+    ("ADDPS", "", "58"), ("SUBPS", "", "5c"), ("MULPS", "", "59"), ("DIVPS", "", "5e"),
+    ("MINPS", "", "5d"), ("MAXPS", "", "5f"), ("UNPCKLPS", "", "14"), ("UNPCKHPS", "", "15"),
+    ("ADDPD", "66", "58"), ("SUBPD", "66", "5c"), ("MULPD", "66", "59"), ("DIVPD", "66", "5e"),
+    ("CVTDQ2PS", "", "5b"), ("CVTPS2DQ", "66", "5b"), ("CVTTPS2DQ", "f3", "5b"),
+]
+CASES += [sse_packed_case(i, *form) for i, form in enumerate(SSE_PACKED)]
+CASES += [
+    sse_packed_case(16 + i, name, prefix, opcode, ptr,
+                    setup=lambda rng: sse_packed_setup(rng, positive=True))
+    for i, (name, prefix, opcode, ptr) in enumerate([
+        ("SQRTPS", "", "51", "xmmword"), ("RCPPS", "", "53", "xmmword"),
+        ("RSQRTPS", "", "52", "xmmword"), ("SQRTPD", "66", "51", "xmmword"),
+        ("RCPSS", "f3", "53", "dword"), ("RSQRTSS", "f3", "52", "dword")])
+]
+CASES += [
+    sse_packed_case(22 + 3 * p + j, "CMP%s%s" % (pred, kind), prefix, "c2", ptr, imm=p,
+                    setup=lambda rng: sse_packed_setup(rng, nan=True))
+    for p, pred in enumerate(["EQ", "LT", "LE", "UNORD", "NEQ", "NLT", "NLE", "ORD"])
+    for j, (kind, prefix, ptr) in enumerate([("PS", "", "xmmword"), ("SS", "f3", "dword"),
+                                             ("PD", "66", "xmmword")])
+]
+CASES += [
+    Case("SSE MOVHLPS, MOVLHPS, MOVMSKPS and the MMX conversions", 0x0D030E00,
+         [(0, "MOVUPS XMM0,xmmword ptr [ESI]"),
+          (3, "MOVUPS XMM1,xmmword ptr [ESI + 0x10]"),
+          (7, "MOVAPS XMM2,XMM0"),
+          (10, "MOVHLPS XMM2,XMM1"),
+          (13, "MOVUPS xmmword ptr [EDI],XMM2"),
+          (16, "MOVAPS XMM3,XMM0"),
+          (19, "MOVLHPS XMM3,XMM1"),
+          (22, "MOVUPS xmmword ptr [EDI + 0x10],XMM3"),
+          (26, "MOVQ MM0,qword ptr [ESI + 0x20]"),
+          (30, "MOVAPS XMM4,XMM1"),
+          (33, "CVTPI2PS XMM4,MM0"),
+          (36, "MOVUPS xmmword ptr [EDI + 0x20],XMM4"),
+          (40, "CVTPS2PI MM1,XMM0"),
+          (43, "CVTTPS2PI MM2,XMM1"),
+          (46, "MOVQ qword ptr [EDI + 0x30],MM1"),
+          (50, "MOVQ qword ptr [EDI + 0x38],MM2"),
+          (54, "MOVMSKPS EAX,XMM0"),
+          (57, "CVTSS2SI ECX,XMM1"),
+          (61, "CVTSS2SI EDX,dword ptr [ESI + 0x14]"),
+          (66, "EMMS"),
+          (68, "RET")],
+         "0f1006 0f104e10 0f28d0 0f12d1 0f1117 0f28d8 0f16d9 0f115f10 "
+         "0f6f4620 0f28e1 0f2ae0 0f116720 0f2dc8 0f2cd1 0f7f4f30 0f7f5738 "
+         "0f50c0 f30f2dc9 f30f2d5614 0f77 c3",
+         lambda rng: dict(sse_packed_setup(rng), mem=sse_packed_setup(rng)["mem"] + [
+             (SCRATCH + 0x320, struct.pack("<2i", rng.randrange(-10 ** 6, 10 ** 6),
+                                           rng.randrange(-10 ** 6, 10 ** 6)))])),
 ]
 
 

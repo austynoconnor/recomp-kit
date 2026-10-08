@@ -1415,10 +1415,8 @@ void u_MessageBoxW(X86 *c) {
 
 // wvsprintfA: the Win32 subset (%s %c %d %i %u %x %X %% with width/precision
 // and the l/h size prefixes). `va` points at the guest argument array.
-void u_wvsprintfA(X86 *c) {
-    uint32_t out = arg(c, 0);
-    std::string fmt = gm_str(arg(c, 1), 4096);
-    uint32_t va = arg(c, 2);
+uint32_t format_wsprintf(uint32_t out, uint32_t fmt_ptr, uint32_t va) {
+    std::string fmt = gm_str(fmt_ptr, 4096);
     std::string res;
     size_t i = 0;
     while (i < fmt.size()) {
@@ -1487,7 +1485,31 @@ void u_wvsprintfA(X86 *c) {
     }
     if (out)
         memcpy(g_mem + out, res.c_str(), res.size() + 1);
-    set_eax(c, (uint32_t)res.size());
+    return (uint32_t)res.size();
+}
+void u_wvsprintfA(X86 *c) {
+    set_eax(c, format_wsprintf(arg(c, 0), arg(c, 1), arg(c, 2)));
+}
+// wsprintfA is cdecl with its arguments in place after the format: the
+// caller pops, so the shim's pop count is 0 and va is the third stack slot.
+void u_wsprintfA(X86 *c) {
+    set_eax(c, format_wsprintf(arg(c, 0), arg(c, 1), c->r[4] + 4 + 8));
+}
+void u_MessageBoxExA(X86 *c) {
+    u_MessageBoxA(c); // the language argument only picks the button text
+}
+// Thread messages share the one queue this runtime keeps (as PostMessage with
+// no window does); the target thread id is not distinguished.
+void u_PostThreadMessageA(X86 *c) {
+    host_post_message(0, arg(c, 1), arg(c, 2), arg(c, 3));
+    set_eax(c, 1);
+}
+// GetQueueStatus(flags): QS_POSTMESSAGE (0x8) while anything is queued, in
+// both the "current" (high) and "new" (low) words, masked by flags.
+void u_GetQueueStatus(X86 *c) {
+    uint32_t qs = queue().empty() ? 0u : 0x8u;
+    uint32_t mask = arg(c, 0) & 0xffffu;
+    set_eax(c, ((qs & mask) << 16) | (qs & mask));
 }
 
 } // namespace user32
@@ -1743,6 +1765,10 @@ const ImportShim g_user32_shims[] = {
     {"USER32.dll", "MessageBoxA", 4, u_MessageBoxA},
     {"USER32.dll", "MessageBoxW", 4, u_MessageBoxW},
     {"USER32.dll", "wvsprintfA", 3, u_wvsprintfA},
+    {"USER32.dll", "wsprintfA", ARGC_CDECL, u_wsprintfA},
+    {"USER32.dll", "MessageBoxExA", 5, u_MessageBoxExA},
+    {"USER32.dll", "PostThreadMessageA", 4, u_PostThreadMessageA},
+    {"USER32.dll", "GetQueueStatus", 1, u_GetQueueStatus},
     // Not imported by D3DPopTB.exe, but registered so GetProcAddress and the
     // host layer can reach them.
     {"USER32.dll", "SendMessageA", 4, u_SendMessageA},
@@ -1762,7 +1788,6 @@ const ImportShim g_user32_shims[] = {
     {"USER32.dll", "MapVirtualKeyExA", 3, u_MapVirtualKeyA},
     {"USER32.dll", "ToUnicode", 6, nullptr},
     {"USER32.dll", "SendInput", 3, nullptr},
-    {"USER32.dll", "PostThreadMessageA", 4, nullptr},
     {"USER32.dll", "GetForegroundWindow", 0, u_GetForegroundWindow},
     {"USER32.dll", "WaitMessage", 0, u_WaitMessage},
     {"USER32.dll", "GetActiveWindow", 0, u_GetActiveWindow},

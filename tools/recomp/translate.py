@@ -453,6 +453,20 @@ VECTOR_MNEM = frozenset((
 ))
 
 
+#: Packed SSE/SSE2 float forms emit_sse_packed_float models. Ghidra spells a
+#: compare with its predicate in the mnemonic (CMPLTPS); the CMPPS form with
+#: an immediate is accepted too.
+SSE_PACKED_MATH = {"ADDPS": "+", "SUBPS": "-", "MULPS": "*", "DIVPS": "/",
+                   "ADDPD": "+", "SUBPD": "-", "MULPD": "*", "DIVPD": "/"}
+SSE_PACKED_FORMS = frozenset(list(SSE_PACKED_MATH) + [
+    "MINPS", "MAXPS", "SQRTPS", "SQRTPD", "RCPPS", "RSQRTPS", "RCPSS", "RSQRTSS",
+    "UNPCKLPS", "UNPCKHPS", "MOVHLPS", "MOVLHPS", "MOVMSKPS", "MOVMSKPD",
+    "CVTSS2SI", "CVTSD2SI", "CVTPI2PS", "CVTPS2PI", "CVTTPS2PI", "CVTDQ2PS",
+    "CVTPS2DQ", "CVTTPS2DQ", "LDMXCSR"])
+SSE_CMP_PRED = {"EQ": 0, "LT": 1, "LE": 2, "UNORD": 3, "NEQ": 4, "NLT": 5, "NLE": 6, "ORD": 7}
+SSE_CMP_RE = re.compile(r"^CMP(EQ|LT|LE|UNORD|NEQ|NLT|NLE|ORD)(PS|PD|SS|SD)$")
+
+
 def is_vector_insn(mnem, ops):
     """True for an MMX/SSE/SSE2 instruction (see VECTOR_REG_RE).
 
@@ -3242,6 +3256,9 @@ class Translator(object):
         # so the SSE2 path below still takes every xmm form of MOVQ/MOVD.
         if is_mmx_insn(m, ins.ops):
             return self.emit_mmx(ins, m)
+        packed = self.emit_sse_packed_float(ins, m, ops)
+        if packed is not None:
+            return packed
         # Lane-wise integer, logical and unpack forms. Every one of them has
         # the same shape: both operands are read in full before either lane of
         # the destination is written, because a destination is commonly also
@@ -3627,6 +3644,154 @@ class Translator(object):
         if op.size in (16, 32, 64):
             return "(int%d_t)rd%d(%s)" % (op.size, op.size, addr_expr(op))
         raise TranslateError("bad x87 integer size %r" % op.size)
+
+    def emit_sse_packed_float(self, ins, m, ops):
+        """Packed and scalar SSE/SSE2 float arithmetic, compares and the
+        float<->integer conversions, or None for anything else.
+
+        A game built for SSE (Metal Gear Solid 2's mgs2_sse.exe) runs these
+        unconditionally, without asking CPUID, so a trap is not an option.
+        Lanes are dwords in c->xmm; every source lane is read into a
+        temporary before any destination lane is written, because the
+        destination is commonly also a source. RCPPS and RSQRTPS return the
+        exact quotient rather than the hardware's 12-bit estimate, which is
+        within the architected error and what Unicorn (QEMU) computes too.
+        MXCSR is not modelled: rounding is the host's round-to-nearest and no
+        exception is raised, as with the scalar forms above."""
+        cmp = SSE_CMP_RE.match(m)
+        if cmp:
+            pred, kind = SSE_CMP_PRED[cmp.group(1)], cmp.group(2)
+        elif m in ("CMPPS", "CMPPD", "CMPSS") or (m == "CMPSD" and names_an_xmm(ins)):
+            pred, kind = parse_imm(ins.ops[2]) & 7, m[3:]
+        elif m in SSE_PACKED_FORMS:
+            pred, kind = None, None
+        else:
+            return None
+        if m == "LDMXCSR":
+            # Rounding and flush-to-zero settings are not modelled; STMXCSR
+            # keeps reporting the reset value.
+            return [";"]
+        dst, src = ops[0], ops[1]
+
+        def lane(op, i):
+            if op.kind == "xmm":
+                return "c->xmm[%d][%d]" % (op.reg, i)
+            return "rd32(%s + %du)" % (addr_expr(op), 4 * i)
+
+        def put(op, i, value):
+            if op.kind == "xmm":
+                return "c->xmm[%d][%d] = %s;" % (op.reg, i, value)
+            return "wr32(%s + %du, %s);" % (addr_expr(op), 4 * i, value)
+
+        def f32(name):
+            return "recomp_bits_f32(%s)" % name
+
+        def f64(lo, hi):
+            return "recomp_bits_f64((uint64_t)%s | ((uint64_t)%s << 32))" % (lo, hi)
+
+        def put64(op, i, value):
+            """Write a 64-bit lane i (0 or 1) from a uint64_t expression."""
+            return "{ uint64_t q_ = %s; %s %s }" % (value, put(op, 2 * i, "(uint32_t)q_"),
+                                                     put(op, 2 * i + 1, "(uint32_t)(q_ >> 32)"))
+
+        L = []
+        # How many source dwords each form reads: a scalar or 64-bit memory
+        # operand must not be read past its end.
+        scalar = kind in ("SS",) or m in ("RCPSS", "RSQRTSS", "CVTSS2SI")
+        if kind == "SD" or m == "CVTSD2SI":
+            n_src = 2
+        elif scalar:
+            n_src = 1
+        elif m in ("CVTPI2PS", "CVTPS2PI", "CVTTPS2PI") and src.kind != "xmm":
+            n_src = 2
+        else:
+            n_src = 4
+        if src.kind in ("xmm", "mem"):
+            L.extend("uint32_t s%d_ = %s;" % (i, lane(src, i)) for i in range(n_src))
+        if dst.kind == "xmm":
+            L.extend("uint32_t d%d_ = c->xmm[%d][%d];" % (i, dst.reg, i) for i in range(4))
+        s = lambda i: "s%d_" % i
+        d = lambda i: "d%d_" % i
+
+        if kind is not None:
+            # A compare writes all-ones or zero per lane.
+            if kind == "PS":
+                L.extend(put(dst, i, "recomp_sse_cmp(%s, %s, %d) ? 0xffffffffu : 0u"
+                             % (f32(d(i)), f32(s(i)), pred)) for i in range(4))
+            elif kind == "SS":
+                L.append(put(dst, 0, "recomp_sse_cmp(%s, %s, %d) ? 0xffffffffu : 0u"
+                             % (f32(d(0)), f32(s(0)), pred)))
+            else:
+                lanes = 2 if kind == "PD" else 1
+                L.extend(put64(dst, i, "recomp_sse_cmp(%s, %s, %d) ? ~0ull : 0ull"
+                               % (f64(d(2 * i), d(2 * i + 1)), f64(s(2 * i), s(2 * i + 1)), pred))
+                         for i in range(lanes))
+            return L
+        if m in SSE_PACKED_MATH:
+            op = SSE_PACKED_MATH[m]
+            if m.endswith("PS"):
+                L.extend(put(dst, i, "recomp_f32_bits(%s %s %s)" % (f32(d(i)), op, f32(s(i))))
+                         for i in range(4))
+            else:
+                L.extend(put64(dst, i, "recomp_f64_bits(%s %s %s)"
+                               % (f64(d(2 * i), d(2 * i + 1)), op, f64(s(2 * i), s(2 * i + 1))))
+                         for i in range(2))
+            return L
+        if m in ("MINPS", "MAXPS"):
+            fn = "recomp_sse_minf" if m == "MINPS" else "recomp_sse_maxf"
+            L.extend(put(dst, i, "recomp_f32_bits(%s(%s, %s))" % (fn, f32(d(i)), f32(s(i))))
+                     for i in range(4))
+            return L
+        unary = {"SQRTPS": "recomp_sse_sqrtf", "RCPPS": "recomp_sse_rcpf", "RSQRTPS": "recomp_sse_rsqrtf",
+                 "RCPSS": "recomp_sse_rcpf", "RSQRTSS": "recomp_sse_rsqrtf"}
+        if m in unary:
+            lanes = 1 if m.endswith("SS") else 4
+            L.extend(put(dst, i, "recomp_f32_bits(%s(%s))" % (unary[m], f32(s(i)))) for i in range(lanes))
+            return L
+        if m == "SQRTPD":
+            L.extend(put64(dst, i, "recomp_f64_bits(recomp_sse_sqrt(%s))" % f64(s(2 * i), s(2 * i + 1)))
+                     for i in range(2))
+            return L
+        if m in ("UNPCKLPS", "UNPCKHPS"):
+            b = 0 if m == "UNPCKLPS" else 2
+            L.extend([put(dst, 0, d(b)), put(dst, 1, s(b)), put(dst, 2, d(b + 1)), put(dst, 3, s(b + 1))])
+            return L
+        if m == "MOVHLPS":
+            L.extend([put(dst, 0, s(2)), put(dst, 1, s(3))])
+            return L
+        if m == "MOVLHPS":
+            L.extend([put(dst, 2, s(0)), put(dst, 3, s(1))])
+            return L
+        if m == "MOVMSKPS":
+            L.append(write_op(dst, 32, "(s0_ >> 31) | ((s1_ >> 31) << 1) | ((s2_ >> 31) << 2) | ((s3_ >> 31) << 3)"))
+            return L
+        if m == "MOVMSKPD":
+            L.append(write_op(dst, 32, "(s1_ >> 31) | ((s3_ >> 31) << 1)"))
+            return L
+        if m in ("CVTSS2SI", "CVTSD2SI"):
+            value = f32(s(0)) if m == "CVTSS2SI" else f64(s(0), s(1))
+            L.append(write_op(dst, 32, "recomp_sse_cvt_i32(%s, 0)" % value))
+            return L
+        if m == "CVTPI2PS":
+            if src.kind == "mm":
+                L.append("uint32_t s0_ = (uint32_t)c->mm[%d], s1_ = (uint32_t)(c->mm[%d] >> 32);"
+                         % (src.reg, src.reg))
+            L.extend(put(dst, i, "recomp_f32_bits((float)(int32_t)%s)" % s(i)) for i in range(2))
+            return L
+        if m in ("CVTPS2PI", "CVTTPS2PI"):
+            trunc = 1 if m == "CVTTPS2PI" else 0
+            L.append("c->mm[%d] = (uint64_t)recomp_sse_cvt_i32(%s, %d) | "
+                     "((uint64_t)recomp_sse_cvt_i32(%s, %d) << 32);"
+                     % (dst.reg, f32(s(0)), trunc, f32(s(1)), trunc))
+            return L
+        if m == "CVTDQ2PS":
+            L.extend(put(dst, i, "recomp_f32_bits((float)(int32_t)%s)" % s(i)) for i in range(4))
+            return L
+        if m in ("CVTPS2DQ", "CVTTPS2DQ"):
+            trunc = 1 if m == "CVTTPS2DQ" else 0
+            L.extend(put(dst, i, "recomp_sse_cvt_i32(%s, %d)" % (f32(s(i)), trunc)) for i in range(4))
+            return L
+        raise TranslateError("packed SSE form %s has no emitter" % m)
 
     def emit_mmx(self, ins, m):
         """MMX on the eight MMn registers, through runtime/x86.h's helpers."""

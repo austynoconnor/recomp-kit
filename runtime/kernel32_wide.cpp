@@ -13,6 +13,7 @@
 #include <ctime>
 #include <map>
 #include <cctype>
+#include <cstdlib>
 
 namespace {
 // gm_wstr produces valid UTF-8. Count UTF-16 units, including surrogate pairs.
@@ -195,17 +196,49 @@ bool profile_key(const std::string &line, std::string &key, std::string &value) 
         value = value.substr(1, value.size() - 2);
     return !key.empty();
 }
-void k_GetPrivateProfileStringW(X86 *c) {
-    std::string section = gm_wstr(arg(c, 0)), key = gm_wstr(arg(c, 1));
+// The profile functions come in ANSI and UTF-16 forms that differ only in how
+// a guest string is read and written; IO supplies that.
+struct WideIO {
+    static std::string get(uint32_t a) {
+        return gm_wstr(a);
+    }
+    static uint32_t put(uint32_t a, const std::string &s, uint32_t cap) {
+        return gm_put_wstr(a, s, cap);
+    }
+    static uint32_t units(const std::string &s) {
+        return wide_units(s);
+    }
+    static void zero(uint32_t a, uint32_t i) {
+        wr16(a + i * 2, 0);
+    }
+    static constexpr uint32_t unit = 2;
+};
+struct AnsiIO {
+    static std::string get(uint32_t a) {
+        return gm_str(a);
+    }
+    static uint32_t put(uint32_t a, const std::string &s, uint32_t cap) {
+        return gm_put_str(a, s.c_str(), cap);
+    }
+    static uint32_t units(const std::string &s) {
+        return (uint32_t)s.size();
+    }
+    static void zero(uint32_t a, uint32_t i) {
+        wr8(a + i, 0);
+    }
+    static constexpr uint32_t unit = 1;
+};
+template <class IO> void profile_get_string(X86 *c) {
+    std::string section = IO::get(arg(c, 0)), key = IO::get(arg(c, 1));
     uint32_t out = arg(c, 3), cap = arg(c, 4);
     ProfileFile ini;
-    if (!profile_read(gm_wstr(arg(c, 5)), ini)) {
+    if (!profile_read(IO::get(arg(c, 5)), ini)) {
         set_last_error(5);
         set_eax(c, 0);
         return;
     }
     bool multi = !arg(c, 0) || !arg(c, 1);
-    std::string result = trim(gm_wstr(arg(c, 2))), current, k, value;
+    std::string result = trim(IO::get(arg(c, 2))), current, k, value;
     std::vector<std::string> names;
     for (const std::string &line : ini.lines) {
         if (profile_section(line, current)) {
@@ -225,46 +258,46 @@ void k_GetPrivateProfileStringW(X86 *c) {
         return;
     }
     if (!multi) {
-        set_eax(c, gm_put_wstr(out, result, cap));
+        set_eax(c, IO::put(out, result, cap));
         return;
     }
     // MULTI_SZ sizes include each name's terminator, excluding the final one.
     uint32_t used = 0;
-    wr16(out, 0);
+    IO::zero(out, 0);
     if (cap == 1) {
         set_eax(c, 0);
         return;
     }
     for (const auto &name : names) {
-        uint32_t need = wide_units(name) + 1;
+        uint32_t need = IO::units(name) + 1;
         if (need >= cap - used) {
-            gm_put_wstr(out + used * 2, name, cap - used - 1);
-            wr16(out + (cap - 2) * 2, 0);
-            wr16(out + (cap - 1) * 2, 0);
+            IO::put(out + used * IO::unit, name, cap - used - 1);
+            IO::zero(out, cap - 2);
+            IO::zero(out, cap - 1);
             set_eax(c, cap - 2);
             return;
         }
-        used += gm_put_wstr(out + used * 2, name, cap - used) + 1;
+        used += IO::put(out + used * IO::unit, name, cap - used) + 1;
     }
-    wr16(out + used * 2, 0);
+    IO::zero(out, used);
     if (used == 0)
-        wr16(out + 2, 0);
+        IO::zero(out, 1);
     set_eax(c, used);
 }
-void k_WritePrivateProfileStringW(X86 *c) {
+template <class IO> void profile_write_string(X86 *c) {
     if (!arg(c, 0)) {
         set_eax(c, !arg(c, 1) && !arg(c, 2));
         return;
     } // cache flush
     ProfileFile ini;
-    std::string name = gm_wstr(arg(c, 3));
+    std::string name = IO::get(arg(c, 3));
     if (name.empty() || !profile_read(name, ini)) {
         set_last_error(5);
         set_eax(c, 0);
         return;
     }
-    std::string section = gm_wstr(arg(c, 0)), key = gm_wstr(arg(c, 1)), current, k, value;
-    std::string replacement = key + "=" + gm_wstr(arg(c, 2));
+    std::string section = IO::get(arg(c, 0)), key = IO::get(arg(c, 1)), current, k, value;
+    std::string replacement = key + "=" + IO::get(arg(c, 2));
     std::vector<std::string> lines;
     bool inside = false, found_section = false, found_key = false;
     for (const auto &line : ini.lines) {
@@ -319,6 +352,59 @@ void k_WritePrivateProfileStringW(X86 *c) {
         ok = false;
     win32_invalidate_dir_cache();
     set_eax(c, ok ? 1 : 0);
+}
+
+// GetPrivateProfileInt: the value's leading decimal digits (with an optional
+// sign), or the default when the key is absent or does not start with one.
+template <class IO> void profile_get_int(X86 *c) {
+    std::string section = IO::get(arg(c, 0)), key = IO::get(arg(c, 1)), current, k, value;
+    uint32_t result = arg(c, 2);
+    ProfileFile ini;
+    if (arg(c, 0) && arg(c, 1) && profile_read(IO::get(arg(c, 3)), ini)) {
+        for (const std::string &line : ini.lines) {
+            if (profile_section(line, current))
+                continue;
+            if (equal_name(current, section) && profile_key(line, k, value) && equal_name(k, key)) {
+                const char *p = value.c_str();
+                bool neg = *p == '-';
+                if (*p == '-' || *p == '+')
+                    p++;
+                if (*p >= '0' && *p <= '9') {
+                    uint32_t v = 0;
+                    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
+                        v = (uint32_t)strtoul(p + 2, nullptr, 16);
+                    else
+                        while (*p >= '0' && *p <= '9')
+                            v = v * 10 + (uint32_t)(*p++ - '0');
+                    result = neg ? (uint32_t)(0u - v) : v;
+                }
+                break;
+            }
+        }
+    }
+    set_eax(c, result);
+}
+void k_GetPrivateProfileStringW(X86 *c) {
+    profile_get_string<WideIO>(c);
+}
+void k_GetPrivateProfileStringA(X86 *c) {
+    profile_get_string<AnsiIO>(c);
+}
+void k_WritePrivateProfileStringW(X86 *c) {
+    profile_write_string<WideIO>(c);
+}
+void k_WritePrivateProfileStringA(X86 *c) {
+    profile_write_string<AnsiIO>(c);
+}
+void k_GetPrivateProfileIntW(X86 *c) {
+    profile_get_int<WideIO>(c);
+}
+void k_GetPrivateProfileIntA(X86 *c) {
+    profile_get_int<AnsiIO>(c);
+}
+// GetProfileInt reads WIN.INI, which this runtime does not have: the default.
+void k_GetProfileIntA(X86 *c) {
+    set_eax(c, arg(c, 2));
 }
 
 void k_CreateEventW(X86 *c) {
@@ -955,6 +1041,11 @@ static const ImportShim g_kernel32_wide[] = {
 
     {"KERNEL32.dll", "GetPrivateProfileStringW", 6, k_GetPrivateProfileStringW},
     {"KERNEL32.dll", "WritePrivateProfileStringW", 4, k_WritePrivateProfileStringW},
+    {"KERNEL32.dll", "GetPrivateProfileStringA", 6, k_GetPrivateProfileStringA},
+    {"KERNEL32.dll", "WritePrivateProfileStringA", 4, k_WritePrivateProfileStringA},
+    {"KERNEL32.dll", "GetPrivateProfileIntW", 4, k_GetPrivateProfileIntW},
+    {"KERNEL32.dll", "GetPrivateProfileIntA", 4, k_GetPrivateProfileIntA},
+    {"KERNEL32.dll", "GetProfileIntA", 3, k_GetProfileIntA},
 
     {"KERNEL32.dll", "CreateFileW", 7, k_CreateFileW},
     {"KERNEL32.dll", "FindFirstFileW", 2, k_FindFirstFileW},

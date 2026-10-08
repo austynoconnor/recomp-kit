@@ -391,6 +391,81 @@ static inline void recomp_comis(X86 *c, double a, double b) {
     }
 }
 
+/* Packed SSE lanes are dwords; these reinterpret one as a float or a pair as
+ * a double without changing a bit. */
+static inline float recomp_bits_f32(uint32_t bits) {
+    float v;
+    memcpy(&v, &bits, 4);
+    return v;
+}
+static inline uint32_t recomp_f32_bits(float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, 4);
+    return bits;
+}
+static inline double recomp_bits_f64(uint64_t bits) {
+    double v;
+    memcpy(&v, &bits, 8);
+    return v;
+}
+static inline uint64_t recomp_f64_bits(double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, 8);
+    return bits;
+}
+
+/* MINPS/MAXPS lanes: the second operand when either is a NaN or both are
+ * zero, as MINSS/MAXSS. */
+static inline float recomp_sse_minf(float a, float b) {
+    return a < b ? a : b;
+}
+static inline float recomp_sse_maxf(float a, float b) {
+    return a > b ? a : b;
+}
+
+/* RCPPS/RSQRTPS: the exact value rather than the hardware's 12-bit estimate;
+ * within the architected error, and what QEMU computes. */
+static inline float recomp_sse_rcpf(float v) {
+    return 1.0f / v;
+}
+static inline float recomp_sse_rsqrtf(float v) {
+    return 1.0f / recomp_sse_sqrtf(v);
+}
+
+/* CMPccPS/PD/SS/SD: the eight predicates of the immediate. Single lanes are
+ * compared as doubles, which is exact. */
+static inline int recomp_sse_cmp(double a, double b, int pred) {
+    int unordered = a != a || b != b;
+    switch (pred & 7) {
+    case 0:
+        return a == b;
+    case 1:
+        return a < b;
+    case 2:
+        return a <= b;
+    case 3:
+        return unordered;
+    case 4:
+        return !(a == b);
+    case 5:
+        return !(a < b);
+    case 6:
+        return !(a <= b);
+    default:
+        return !unordered;
+    }
+}
+
+/* CVT(T)SS2SI, CVT(T)PS2PI, CVT(T)PS2DQ: round to nearest (the MXCSR reset
+ * mode) or truncate; a NaN or a result outside int32 is the "integer
+ * indefinite" 0x80000000. */
+static inline uint32_t recomp_sse_cvt_i32(double v, int truncate) {
+    double r = truncate ? trunc(v) : nearbyint(v);
+    if (!(r >= -2147483648.0 && r <= 2147483647.0))
+        return 0x80000000u;
+    return (uint32_t)(int32_t)r;
+}
+
 /* ------------------------------------------------- runtime call-outs
  * Implemented in generated table.c (recomp_call) or by runtime/.
  */

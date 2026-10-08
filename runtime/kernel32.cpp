@@ -27,6 +27,7 @@
 #include <string.h>
 #include <time.h>
 
+#include <deque>
 #include <map>
 #include <chrono>
 #include <condition_variable>
@@ -531,8 +532,13 @@ uint32_t loader_tls_block_for_thread(uint32_t tls_array) {
     return block;
 }
 
+namespace {
+void kernel32_reset_apcs(); // defined with ReadFileEx below
+} // namespace
+
 void win32_init(const std::string &game_dir) {
     kernel32_wide_reset();
+    kernel32_reset_apcs();
     g_game_dir = game_dir.empty() ? std::string(".") : game_dir;
     g_cur_dir = RECOMP_GUEST_ROOT;
     g_last_error = 0;
@@ -805,6 +811,113 @@ void k_CreateFileA(X86 *c) {
     create_file_named(c, gm_str(arg(c, 0)));
 }
 
+// -------------------------------------------------------------------------
+// Overlapped and completion-routine reads.
+//
+// Every read here completes before the call returns, which Windows allows
+// for an overlapped handle too. OVERLAPPED is Internal (status) at +0,
+// InternalHigh (bytes) at +4, Offset/OffsetHigh at +8/+12 and hEvent at +16.
+// ReadFileEx's completion routine is an APC: Windows runs it only when the
+// thread that issued the read next waits alertably (SleepEx(..., TRUE)), so
+// it is queued per thread and delivered there, never from inside ReadFileEx.
+// Metal Gear Solid 2 streams its disc image this way.
+// -------------------------------------------------------------------------
+namespace {
+struct QueuedApc {
+    uint32_t fn, a0, a1, a2;
+};
+std::map<uint32_t, std::deque<QueuedApc>> g_apcs; // by guest thread id
+constexpr uint32_t STATUS_END_OF_FILE_ = 0xC0000011u;
+constexpr uint32_t ERROR_HANDLE_EOF_ = 38;
+} // namespace
+
+// Read `want` bytes at the OVERLAPPED's offset, record the result in it and
+// signal its event. False (ERROR_HANDLE_EOF) for a read that starts at or
+// past the end, as Windows reports it.
+static bool overlapped_read(HObj *o, uint32_t buf, uint32_t want, uint32_t ovl, uint32_t pread) {
+    int64_t offset = (int64_t)((uint64_t)rd32(ovl + 8) | ((uint64_t)rd32(ovl + 12) << 32));
+    int64_t n =
+        os_fd_seek(o->fd, offset, OS_SEEK_SET) < 0 ? -1 : os_fd_read(o->fd, g_mem + buf, want);
+    if (recomp_env("TRACE_FILES"))
+        LOGW("file: overlapped read at %lld want=%u got=%lld", (long long)offset, want,
+             (long long)n);
+    uint32_t got = n > 0 ? (uint32_t)n : 0;
+    bool eof = n == 0 && want > 0;
+    wr32(ovl + 0, n < 0 ? 0xC0000022u : eof ? STATUS_END_OF_FILE_ : 0u);
+    wr32(ovl + 4, got);
+    if (pread)
+        wr32(pread, got);
+    if (HObj *ev = handle_get(rd32(ovl + 16), H_EVENT)) {
+        ev->signalled = true;
+        sched_wake_all();
+    }
+    if (n < 0)
+        set_last_error(ERROR_ACCESS_DENIED_);
+    else if (eof)
+        set_last_error(ERROR_HANDLE_EOF_);
+    return n >= 0 && !eof;
+}
+
+// ReadFileEx(file, buffer, count, overlapped, completion): the read is done
+// now and the completion routine (error, bytes, overlapped) waits for the
+// thread's next alertable wait.
+void k_ReadFileEx(X86 *c) {
+    HObj *o = handle_get(arg(c, 0), H_FILE);
+    uint32_t buf = arg(c, 1), want = arg(c, 2), ovl = arg(c, 3), done = arg(c, 4);
+    if (!o || !ovl || !gm_valid(ovl, 20) || !gm_valid(buf, want)) {
+        set_last_error(o ? ERROR_ACCESS_DENIED_ : ERROR_INVALID_HANDLE_);
+        set_eax(c, 0);
+        return;
+    }
+    if (!overlapped_read(o, buf, want, ovl, 0)) {
+        set_eax(c, 0);
+        return;
+    }
+    if (done)
+        g_apcs[cur_thread_id()].push_back({done, 0u, rd32(ovl + 4), ovl});
+    set_last_error(0);
+    set_eax(c, 1);
+}
+
+// Run this thread's queued completion routines. True when any ran, which
+// turns an alertable wait's result into WAIT_IO_COMPLETION.
+static bool deliver_apcs(X86 *c) {
+    auto it = g_apcs.find(cur_thread_id());
+    if (it == g_apcs.end() || it->second.empty())
+        return false;
+    // A routine may issue the next read, which queues behind this batch and
+    // waits for the next alertable wait, as on Windows.
+    std::deque<QueuedApc> batch;
+    batch.swap(it->second);
+    for (const QueuedApc &apc : batch)
+        guest_call(c, apc.fn, apc.a0, apc.a1, apc.a2);
+    return true;
+}
+
+// GetOverlappedResult(file, overlapped, bytes, wait): every operation has
+// already finished, so this reports what it recorded.
+void k_GetOverlappedResult(X86 *c) {
+    uint32_t ovl = arg(c, 1), pbytes = arg(c, 2);
+    if (!ovl || !gm_valid(ovl, 20)) {
+        set_last_error(87); // ERROR_INVALID_PARAMETER
+        set_eax(c, 0);
+        return;
+    }
+    if (pbytes)
+        wr32(pbytes, rd32(ovl + 4));
+    uint32_t status = rd32(ovl);
+    if (status == 0) {
+        set_eax(c, 1);
+        return;
+    }
+    set_last_error(status == STATUS_END_OF_FILE_ ? ERROR_HANDLE_EOF_ : ERROR_ACCESS_DENIED_);
+    set_eax(c, 0);
+}
+
+void kernel32_reset_apcs() {
+    g_apcs.clear();
+}
+
 void k_ReadFile(X86 *c) {
     HObj *o = handle_get(arg(c, 0), H_FILE);
     uint32_t buf = arg(c, 1), want = arg(c, 2), pread = arg(c, 3);
@@ -822,6 +935,13 @@ void k_ReadFile(X86 *c) {
     if (!gm_valid(buf, want)) {
         set_last_error(ERROR_ACCESS_DENIED_);
         set_eax(c, 0);
+        return;
+    }
+    uint32_t ovl = arg(c, 4);
+    if (ovl && gm_valid(ovl, 20)) {
+        // An OVERLAPPED read starts at the offset it names and completes
+        // before ReadFile returns; see overlapped_read.
+        set_eax(c, overlapped_read(o, buf, want, ovl, pread) ? 1 : 0);
         return;
     }
     int64_t n = os_fd_read(o->fd, g_mem + buf, want);
@@ -3613,6 +3733,141 @@ void k_lstrcatA(X86 *c) {
     set_eax(c, d);
 }
 
+// lstrcmpiA: case-insensitive in the C locale; Windows' word-sort rules for
+// punctuation are not modelled.
+void k_lstrcmpiA(X86 *c) {
+    int r = os_strcasecmp(gm_str(arg(c, 0)).c_str(), gm_str(arg(c, 1)).c_str());
+    set_eax(c, (uint32_t)(r < 0 ? -1 : r > 0 ? 1 : 0));
+}
+
+void k_GetUserDefaultLangID(X86 *c) {
+    set_eax(c, 0x0409); // en-US, matching GetUserDefaultLCID
+}
+
+// IsProcessorFeaturePresent agrees with recomp_cpuid: no MMX, SSE or 3DNow!
+// is advertised, so a guest that picks a code path by either test takes the
+// same one. RDTSC and CMPXCHG8B are present.
+void k_IsProcessorFeaturePresent(X86 *c) {
+    switch (arg(c, 0)) {
+    case 2: // PF_COMPARE_EXCHANGE_DOUBLE
+    case 8: // PF_RDTSC_INSTRUCTION_AVAILABLE
+        set_eax(c, 1);
+        return;
+    default:
+        set_eax(c, 0);
+    }
+}
+
+// GetDiskFreeSpaceExA(dir, available, total, total_free): the same drive
+// disk_free_space describes, 4 GB free of 8 GB.
+void k_GetDiskFreeSpaceExA(X86 *c) {
+    const uint64_t free_bytes = 0x100000000ull, total = 0x200000000ull;
+    const uint32_t out[3] = {arg(c, 1), arg(c, 2), arg(c, 3)};
+    const uint64_t val[3] = {free_bytes, total, free_bytes};
+    for (int i = 0; i < 3; ++i) {
+        if (out[i] && gm_valid(out[i], 8)) {
+            wr32(out[i], (uint32_t)val[i]);
+            wr32(out[i] + 4, (uint32_t)(val[i] >> 32));
+        }
+    }
+    set_eax(c, 1);
+}
+
+// GetTempPathA(len, buf): the guest root, which the file layer can write.
+void k_GetTempPathA(X86 *c) {
+    uint32_t len = arg(c, 0), buf = arg(c, 1);
+    std::string dir = std::string(RECOMP_GUEST_ROOT) + "\\";
+    if (!buf || len < dir.size() + 1) {
+        set_eax(c, (uint32_t)dir.size() + 1);
+        return;
+    }
+    gm_put_str(buf, dir.c_str(), len);
+    set_eax(c, (uint32_t)dir.size());
+}
+
+// GetTempFileNameA(dir, prefix, unique, out): <dir>\<pre><hex>.TMP. A zero
+// `unique` picks a number; the file itself is not created.
+void k_GetTempFileNameA(X86 *c) {
+    static uint32_t next = 1;
+    uint32_t unique = arg(c, 2) & 0xffffu;
+    if (!unique)
+        unique = next++ & 0xffffu;
+    std::string dir = gm_str(arg(c, 0)), prefix = gm_str(arg(c, 1)).substr(0, 3);
+    if (!dir.empty() && dir.back() != '\\' && dir.back() != '/')
+        dir += "\\";
+    char name[16];
+    snprintf(name, sizeof name, "%X.TMP", unique);
+    std::string full = dir + prefix + name;
+    if (arg(c, 3))
+        gm_put_str(arg(c, 3), full.c_str(), 260);
+    set_eax(c, unique);
+}
+
+// FormatMessageA with FORMAT_MESSAGE_FROM_SYSTEM: "Error <code>", as the
+// wide form; inserts and other sources are refused.
+void k_FormatMessageA(X86 *c) {
+    uint32_t flags = arg(c, 0), out = arg(c, 4), cap = arg(c, 5);
+    if (!(flags & 0x1000) || (flags & (0x400 | 0x800)) || !out) {
+        set_last_error(87);
+        set_eax(c, 0);
+        return;
+    }
+    std::string text = "Error " + std::to_string(arg(c, 2));
+    uint32_t need = (uint32_t)text.size() + 1;
+    if (flags & 0x100) { // FORMAT_MESSAGE_ALLOCATE_BUFFER
+        cap = std::max(cap, need);
+        uint32_t buffer = gm_valid(out, 4) ? heap_alloc(cap, true) : 0;
+        if (!buffer) {
+            set_last_error(8);
+            set_eax(c, 0);
+            return;
+        }
+        wr32(out, buffer);
+        out = buffer;
+    } else if (cap < need || !gm_valid(out, need)) {
+        set_last_error(122);
+        set_eax(c, 0);
+        return;
+    }
+    set_eax(c, gm_put_str(out, text.c_str(), cap));
+}
+
+// Console, debugger and process launching: a port has none of them. The
+// console calls succeed (their output already goes to the host's stdout);
+// starting another program fails as "file not found".
+void k_AllocConsole(X86 *c) {
+    set_eax(c, 1);
+}
+void k_SetConsoleTitleA(X86 *c) {
+    set_eax(c, 1);
+}
+void k_DebugBreak(X86 *c) {
+    log_once("DebugBreak", "DebugBreak: ignored");
+    set_eax(c, 0);
+}
+void k_WinExec(X86 *c) {
+    LOGW("WinExec(%s): not supported", gm_str(arg(c, 0), 260).c_str());
+    set_eax(c, 2); // ERROR_FILE_NOT_FOUND; success is above 31
+}
+void k_CreateProcessA(X86 *c) {
+    LOGW("CreateProcessA(%s, %s): not supported", gm_str(arg(c, 0), 260).c_str(),
+         gm_str(arg(c, 1), 260).c_str());
+    set_last_error(2);
+    set_eax(c, 0);
+}
+void k_OpenProcess(X86 *c) {
+    set_last_error(87);
+    set_eax(c, 0);
+}
+void k_ExitProcess(X86 *c);
+// FatalAppExitA(action, message): log the message, then end the process as
+// ExitProcess would, with code 3 like the CRT's abort.
+void k_FatalAppExitA(X86 *c) {
+    LOGW("FatalAppExitA: %s", gm_str(arg(c, 1), 1024).c_str());
+    wr32(c->r[4] + 4, 3);
+    k_ExitProcess(c);
+}
+
 void k_IsDBCSLeadByte(X86 *c) {
     set_eax(c, 0);
 }
@@ -4724,11 +4979,18 @@ void k_SetWaitableTimer(X86 *c) {
     set_eax(c, 1);
 }
 
+// SleepEx(ms, alertable): an alertable sleep runs the completion routines
+// ReadFileEx queued for this thread and returns WAIT_IO_COMPLETION (0xc0)
+// at once, as Windows does when any are pending; otherwise it sleeps, and
+// delivers what was queued meanwhile.
 void k_SleepEx(X86 *c) {
-    // No APCs are ever queued, so an alertable wait is a plain one and
-    // nothing was delivered.
-    k_Sleep(c);
-    set_eax(c, 0);
+    uint32_t ms = arg(c, 0), alertable = arg(c, 1);
+    if (alertable && deliver_apcs(c)) {
+        set_eax(c, 0xc0);
+        return;
+    }
+    sched_sleep_ms(ms);
+    set_eax(c, alertable && deliver_apcs(c) ? 0xc0 : 0);
 }
 
 const ImportShim g_kernel32_shims[] = {
@@ -4754,6 +5016,17 @@ const ImportShim g_kernel32_shims[] = {
     // files
     {"KERNEL32.dll", "CreateFileA", 7, k_CreateFileA},
     {"KERNEL32.dll", "ReadFile", 5, k_ReadFile},
+    {"KERNEL32.dll", "ReadFileEx", 5, k_ReadFileEx},
+    {"KERNEL32.dll", "GetOverlappedResult", 4, k_GetOverlappedResult},
+    {"KERNEL32.dll", "lstrcmpiA", 2, k_lstrcmpiA},
+    {"KERNEL32.dll", "GetUserDefaultLangID", 0, k_GetUserDefaultLangID},
+    {"KERNEL32.dll", "IsProcessorFeaturePresent", 1, k_IsProcessorFeaturePresent},
+    {"KERNEL32.dll", "GetTempPathA", 2, k_GetTempPathA},
+    {"KERNEL32.dll", "GetTempFileNameA", 4, k_GetTempFileNameA},
+    {"KERNEL32.dll", "FormatMessageA", 7, k_FormatMessageA},
+    {"KERNEL32.dll", "AllocConsole", 0, k_AllocConsole},
+    {"KERNEL32.dll", "SetConsoleTitleA", 1, k_SetConsoleTitleA},
+    {"KERNEL32.dll", "WinExec", 2, k_WinExec},
     {"KERNEL32.dll", "WriteFile", 5, k_WriteFile},
     {"KERNEL32.dll", "SetFilePointer", 4, k_SetFilePointer},
     {"KERNEL32.dll", "GetFileSize", 2, k_GetFileSize},
@@ -4842,14 +5115,13 @@ const ImportShim g_kernel32_shims[] = {
     {"KERNEL32.dll", "GetProcessAffinityMask", 3, k_GetProcessAffinityMask},
     {"KERNEL32.dll", "SetProcessAffinityMask", 2, k_SetProcessAffinityMask},
     {"KERNEL32.dll", "SetThreadAffinityMask", 2, k_SetThreadAffinityMask},
-    {"KERNEL32.dll", "CreateProcessA", 10, nullptr},
-    {"KERNEL32.dll", "DebugBreak", 0, nullptr},
-    {"KERNEL32.dll", "FatalAppExitA", 2, nullptr},
+    {"KERNEL32.dll", "CreateProcessA", 10, k_CreateProcessA},
+    {"KERNEL32.dll", "DebugBreak", 0, k_DebugBreak},
+    {"KERNEL32.dll", "FatalAppExitA", 2, k_FatalAppExitA},
     {"KERNEL32.dll", "GetDateFormatA", 6, nullptr},
     {"KERNEL32.dll", "GetTimeFormatA", 6, nullptr},
-    {"KERNEL32.dll", "GetDiskFreeSpaceExA", 4, nullptr},
+    {"KERNEL32.dll", "GetDiskFreeSpaceExA", 4, k_GetDiskFreeSpaceExA},
     {"KERNEL32.dll", "GetLongPathNameA", 3, nullptr},
-    {"KERNEL32.dll", "GetOverlappedResult", 4, nullptr},
     {"KERNEL32.dll", "HeapValidate", 3, nullptr},
     {"KERNEL32.dll", "QueueUserAPC", 3, nullptr},
     {"KERNEL32.dll", "SetConsoleCtrlHandler", 2, nullptr},
@@ -4916,7 +5188,7 @@ const ImportShim g_kernel32_shims[] = {
     {"KERNEL32.dll", "SystemTimeToTzSpecificLocalTime", 3, nullptr},
     {"KERNEL32.dll", "TzSpecificLocalTimeToSystemTime", 3, nullptr},
     {"KERNEL32.dll", "MoveFileW", 2, nullptr},
-    {"KERNEL32.dll", "OpenProcess", 3, nullptr},
+    {"KERNEL32.dll", "OpenProcess", 3, k_OpenProcess},
     {"KERNEL32.dll", "ExpandEnvironmentStringsW", 3, nullptr},
     {"KERNEL32.dll", "GetCurrentDirectoryW", 2, nullptr},
     {"KERNEL32.dll", "GetEnvironmentVariableW", 4, nullptr},

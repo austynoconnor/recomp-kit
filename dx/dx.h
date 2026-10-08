@@ -49,6 +49,9 @@ void weanetr_register();
 // Media Foundation: the session, the topology it is given and the file it
 // plays. Registered last of the media shims because nothing else defers to it.
 void mf_register();
+// MSACM32 conversion streams (acm.cpp) and DirectSoundEnumerate (dsound_enum.cpp).
+void acm_register();
+void dsound_enum_register();
 // Drops the decoders, audio channels and event queues before com_reset
 // discards the objects that named them.
 void mf_reset();
