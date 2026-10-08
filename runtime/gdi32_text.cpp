@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstring>
 #include <climits>
+#include <map>
 using namespace gdi;
 namespace {
 uint32_t font_word(const Object &font, int offset) {
@@ -34,23 +35,6 @@ void create_font(X86 *c) {
     Object font;
     font.kind = Object::Font;
     memcpy(font.logfont.data(), g_mem + p, 92);
-    set_eax(c, make_object(font));
-}
-// LOGFONTA is LOGFONTW with a 32-byte ANSI face name: widen it and keep the
-// wide form, which is what every text path here reads.
-void create_font_a(X86 *c) {
-    uint32_t p = arg(c, 0);
-    if (!p || !gm_valid(p, 60)) {
-        set_eax(c, 0);
-        return;
-    }
-    Object font;
-    font.kind = Object::Font;
-    memcpy(font.logfont.data(), g_mem + p, 28);
-    for (int i = 0; i < 32; ++i) {
-        uint16_t ch = g_mem[p + 28 + i];
-        memcpy(font.logfont.data() + 28 + i * 2, &ch, 2);
-    }
     set_eax(c, make_object(font));
 }
 // TEXTMETRICW is 60 bytes on x86: eleven DWORDs, four UTF-16
@@ -292,6 +276,118 @@ void enumerate(X86 *c) {
 void unsupported(X86 *c) {
     set_eax(c, 0);
 }
+
+// The ANSI text entry points: their strings widened through the ANSI code page
+// (Latin-1 here) into a temporary guest block, then the wide entry point.
+uint32_t widen_ansi(uint32_t text, uint32_t n) {
+    uint32_t w = heap_alloc(2 * n + 2, true);
+    for (uint32_t i = 0; w && i < n; ++i)
+        wr16(w + 2 * i, rd8(text + i));
+    return w;
+}
+// CreateFontA(cHeight, cWidth, cEscapement, cOrientation, cWeight, bItalic,
+// bUnderline, bStrikeOut, iCharSet, iOutPrecision, iClipPrecision, iQuality,
+// iPitchAndFamily, pszFaceName): the LOGFONTW the wide path keeps.
+void create_font_a(X86 *c) {
+    uint32_t lf = heap_alloc(92, true);
+    if (!lf) {
+        set_eax(c, 0);
+        return;
+    }
+    for (int i = 0; i < 5; ++i)
+        wr32(lf + 4u * (uint32_t)i, arg(c, i));
+    for (int i = 0; i < 8; ++i)
+        wr8(lf + 20u + (uint32_t)i, (uint8_t)arg(c, 5 + i));
+    if (uint32_t face = arg(c, 13))
+        for (uint32_t i = 0; i < 31 && rd8(face + i); ++i)
+            wr16(lf + 28 + 2 * i, rd8(face + i));
+    shim_forward(c, create_font, {lf});
+    heap_free(lf);
+}
+// CreateFontIndirectA(const LOGFONTA *): 28 bytes of metrics, then a 32-byte face.
+void create_font_indirect_a(X86 *c) {
+    uint32_t src = arg(c, 0), lf = src && gm_valid(src, 60) ? heap_alloc(92, true) : 0;
+    if (!lf) {
+        set_eax(c, 0);
+        return;
+    }
+    for (uint32_t i = 0; i < 28; i += 4)
+        wr32(lf + i, rd32(src + i));
+    for (uint32_t i = 0; i < 31 && rd8(src + 28 + i); ++i)
+        wr16(lf + 28 + 2 * i, rd8(src + 28 + i));
+    shim_forward(c, create_font, {lf});
+    heap_free(lf);
+}
+// ExtTextOutA(hdc, x, y, options, lprect, lpString, c, lpDx)
+void text_out_a(X86 *c) {
+    uint32_t n = arg(c, 6), text = arg(c, 5);
+    if (n > GUEST_SIZE / 4 || (n && (!text || !gm_valid(text, n)))) {
+        set_eax(c, 0);
+        return;
+    }
+    uint32_t w = widen_ansi(text, n);
+    shim_forward(c, text_out,
+                 {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3), arg(c, 4), w, n, arg(c, 7)});
+    heap_free(w);
+}
+// GetTextExtentPoint32A(hdc, lpString, c, lpSize)
+void extent_a(X86 *c) {
+    uint32_t n = arg(c, 2), text = arg(c, 1);
+    if (n > GUEST_SIZE / 4 || (n && (!text || !gm_valid(text, n)))) {
+        set_eax(c, 0);
+        return;
+    }
+    uint32_t w = widen_ansi(text, n);
+    shim_forward(c, extent, {arg(c, 0), w, n, arg(c, 3)});
+    heap_free(w);
+}
+// SetTextAlign and SetMapMode keep what was asked per DC and return the
+// previous value. The text path draws from the reference point's top-left and
+// in device units, which is TA_TOP | TA_LEFT and MM_TEXT, the defaults; any
+// other request is reported once.
+std::map<uint32_t, uint32_t> &text_align() {
+    static auto *m = new std::map<uint32_t, uint32_t>();
+    return *m;
+}
+std::map<uint32_t, uint32_t> &map_mode() {
+    static auto *m = new std::map<uint32_t, uint32_t>();
+    return *m;
+}
+void set_text_align(X86 *c) {
+    uint32_t dc = arg(c, 0), align = arg(c, 1);
+    if (!dc_of(dc)) {
+        set_eax(c, 0xffffffffu); // GDI_ERROR
+        return;
+    }
+    auto it = text_align().find(dc);
+    uint32_t old = it == text_align().end() ? 0 : it->second;
+    text_align()[dc] = align;
+    if (align & ~1u) // anything beyond TA_UPDATECP's absence and TA_TOP|TA_LEFT
+        log_once("gdi.textalign", "gdi: SetTextAlign(%x) is recorded; text still draws top-left",
+                 align);
+    set_eax(c, old);
+}
+void get_text_align(X86 *c) {
+    auto it = text_align().find(arg(c, 0));
+    set_eax(c, it == text_align().end() ? 0 : it->second);
+}
+void set_map_mode(X86 *c) {
+    uint32_t dc = arg(c, 0), mode = arg(c, 1);
+    if (!dc_of(dc) || mode < 1 || mode > 8) {
+        set_eax(c, 0);
+        return;
+    }
+    auto it = map_mode().find(dc);
+    uint32_t old = it == map_mode().end() ? 1 : it->second;
+    map_mode()[dc] = mode;
+    if (mode != 1)
+        log_once("gdi.mapmode", "gdi: SetMapMode(%u) is recorded; drawing stays in MM_TEXT", mode);
+    set_eax(c, old);
+}
+void get_map_mode(X86 *c) {
+    auto it = map_mode().find(arg(c, 0));
+    set_eax(c, dc_of(arg(c, 0)) ? (it == map_mode().end() ? 1 : it->second) : 0);
+}
 } // namespace
 namespace gdi {
 // DrawText's basic VCL layout uses the same fixed font as ExtTextOutW.
@@ -440,7 +536,14 @@ void register_text() {
         "GDI32.dll", n, a, f                                                                       \
     }
     static const ImportShim shims[] = {G("CreateFontIndirectW", 1, create_font),
-                                       G("CreateFontIndirectA", 1, create_font_a),
+                                       G("CreateFontA", 14, create_font_a),
+                                       G("CreateFontIndirectA", 1, create_font_indirect_a),
+                                       G("ExtTextOutA", 8, text_out_a),
+                                       G("GetTextExtentPoint32A", 4, extent_a),
+                                       G("SetTextAlign", 2, set_text_align),
+                                       G("GetTextAlign", 1, get_text_align),
+                                       G("SetMapMode", 2, set_map_mode),
+                                       G("GetMapMode", 1, get_map_mode),
                                        G("ExtTextOutW", 8, text_out),
                                        G("GetTextExtentPoint32W", 4, extent),
                                        G("GetTextExtentPointW", 4, extent),

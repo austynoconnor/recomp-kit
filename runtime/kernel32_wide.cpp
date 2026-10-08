@@ -833,7 +833,7 @@ void k_WaitForMultipleObjectsEx(X86 *c) {
 }
 
 bool resource_module(uint32_t module) {
-    if (!module || module == loader_image_base())
+    if (resource_module_known(module))
         return true;
     set_last_error(1812);
     return false;
@@ -844,7 +844,7 @@ void k_FindResourceW(X86 *c) {
         return;
     }
     std::string why;
-    uint32_t entry = resource_find(arg(c, 2), arg(c, 1), &why);
+    uint32_t entry = resource_find(arg(c, 2), arg(c, 1), &why, arg(c, 0));
     if (!entry) {
         set_last_error(1814);
         LOGV("FindResourceW: %s", why.c_str());
@@ -852,7 +852,8 @@ void k_FindResourceW(X86 *c) {
     set_eax(c, entry);
 }
 void k_LoadResource(X86 *c) {
-    uint32_t data = resource_module(arg(c, 0)) ? resource_data(arg(c, 1), nullptr) : 0;
+    uint32_t data =
+        resource_module(arg(c, 0)) ? resource_data(arg(c, 1), nullptr, nullptr, arg(c, 0)) : 0;
     if (!data)
         set_last_error(1812);
     set_eax(c, data);
@@ -862,7 +863,7 @@ void k_LockResource(X86 *c) {
 }
 void k_SizeofResource(X86 *c) {
     uint32_t size = 0;
-    if (!resource_module(arg(c, 0)) || !resource_data(arg(c, 1), &size))
+    if (!resource_module(arg(c, 0)) || !resource_data(arg(c, 1), &size, nullptr, arg(c, 0)))
         set_last_error(1812);
     set_eax(c, size);
 }
@@ -872,7 +873,7 @@ void k_FreeResource(X86 *c) {
 void k_EnumResourceNamesW(X86 *c) {
     uint32_t module = arg(c, 0), type = arg(c, 1), callback = arg(c, 2), param = arg(c, 3);
     std::vector<ResourceName> names;
-    if (!callback || !resource_module(module) || !resource_names(type, &names)) {
+    if (!callback || !resource_module(module) || !resource_names(type, &names, nullptr, module)) {
         set_last_error(1814);
         set_eax(c, 0);
         return;

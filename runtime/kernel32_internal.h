@@ -18,6 +18,9 @@ void volume_information_named(X86 *c, const std::string &root, bool wide);
 void disk_free_space(X86 *c);
 void drive_type_named(X86 *c, const std::string &root);
 void logical_drive_strings(X86 *c, bool wide);
+// The virtual CD-ROM drive game.toml [media] cd_label describes; "" when none.
+const char *virtual_cd_label();
+bool virtual_cd_present();
 void get_file_attributes_ex_named(X86 *c, const std::string &name);
 
 void create_event_named(X86 *c, const std::string &name);

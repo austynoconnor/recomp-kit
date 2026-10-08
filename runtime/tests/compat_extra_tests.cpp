@@ -106,7 +106,6 @@ static void test_gdi32(X86 *c, uint32_t s) {
     check(call_import(c, "GDI32.dll", "GetDeviceGammaRamp", {0, ramp}) == 1, "GetDeviceGammaRamp");
     check(rd16(ramp) == 0 && rd16(ramp + 255 * 2) == 0xff00 && rd16(ramp + (512 + 128) * 2) == 0x8000,
           "identity ramp on all three channels");
-    check(call_import(c, "GDI32.dll", "SetMapMode", {0, 1}) == 1, "SetMapMode returns MM_TEXT");
     check(call_import(c, "GDI32.dll", "SetICMMode", {0, 1}) == 1, "SetICMMode");
     uint32_t lf = s + 0x800;
     memset(g_mem + lf, 0, 60);

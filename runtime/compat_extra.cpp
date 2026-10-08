@@ -325,9 +325,6 @@ void draw_text_a(X86 *c) {
 
 // --- GDI32 ------------------------------------------------------------------
 
-void set_map_mode(X86 *c) {
-    set_eax(c, 1); // the previous mode, MM_TEXT: the only one the runtime draws in
-}
 void set_icm_mode(X86 *c) {
     set_eax(c, 1); // ICM_OFF before and after
 }
@@ -425,7 +422,6 @@ const ImportShim shims[] = {
     {"USER32.dll", "ToAscii", 5, to_ascii},
     {"USER32.dll", "ToUnicode", 6, to_unicode},
     {"USER32.dll", "DrawTextA", 5, draw_text_a},
-    {"GDI32.dll", "SetMapMode", 2, set_map_mode},
     {"GDI32.dll", "SetICMMode", 2, set_icm_mode},
     {"GDI32.dll", "GetDeviceGammaRamp", 2, get_device_gamma_ramp},
     // Winsock 2 and 1.1 by name. The byte-order helpers are real; the rest
