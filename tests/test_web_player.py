@@ -5,6 +5,9 @@ Uses a tiny worker fixture instead of loading any game or WebAssembly module.
 from functools import partial
 from http.server import ThreadingHTTPServer
 import importlib.util
+import hashlib
+import json
+import shutil
 from pathlib import Path
 import tempfile
 import threading
@@ -108,6 +111,61 @@ class WebPlayerTests(unittest.TestCase):
         page.wait_for_function("document.querySelector('#status').textContent.includes('Start game')")
         self.assertEqual(page.locator("script[src]").count(), 0)
         self.assertFalse(page.evaluate("!!window.Module"))
+
+    def hosted_fixture(self, wrong_size=False):
+        """Exercise real download, validation and OPFS code with tiny game files."""
+        root = Path(self.temp.name)
+        for name in ("worker.js", "core.js"):
+            shutil.copy(ROOT / "web/launcher" / name, root / name)
+        game = {"id": "stub", "title": "Test game", "executable": "GAME.EXE",
+                "sha256": hashlib.sha256(b"test executable").hexdigest(),
+                "requiredDirs": ["data"], "exclude": [], "minFreeMb": 0,
+                "hostedAssets": "./stub/assets.json"}
+        assets = {"GAME.EXE": b"test executable", "data/map.bin": b"test map"}
+        entries = []
+        for name, data in assets.items():
+            path = root / "stub" / name
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.write_bytes(data)
+            size = len(data) + (1 if wrong_size and name == "data/map.bin" else 0)
+            entries.append({"path": name, "size": size, "mtime": 1, "isDir": False,
+                            "url": "/stub/" + name})
+        manifest = root / "stub/assets.json"
+        manifest.write_text(json.dumps({"files": entries}))
+        source = (ROOT / "web/player/runtime.html").read_text()
+        prepare = "async function prepareGame(game) {" + source.split(
+            "async function prepareGame(game) {", 1)[1].split("async function start()", 1)[0]
+        (root / "stub/download.html").write_text('<p id="status"></p><script>\n'
+            'function status(text) { document.querySelector("#status").textContent = text; }\n'
+            + prepare + '\nprepareGame(' + json.dumps(game) + ').then(() => window.result="ready")'
+            '.catch(error => window.result=error.message);</script>')
+        return manifest
+
+    def test_first_visit_downloads_and_cached_visit_needs_no_source(self):
+        self.hosted_fixture()
+        page = self.context.new_page()
+        page.goto(self.url + "download.html")
+        page.wait_for_function("window.result !== undefined")
+        self.assertEqual(page.evaluate("window.result"), "ready")
+        # A repeat visit must use validated OPFS even when the source is offline.
+        (Path(self.temp.name) / "stub/GAME.EXE").unlink()
+        (Path(self.temp.name) / "stub/data/map.bin").unlink()
+        page.reload()
+        page.wait_for_function("window.result !== undefined")
+        self.assertEqual(page.evaluate("window.result"), "ready")
+
+    def test_short_download_fails_and_can_resume(self):
+        manifest = self.hosted_fixture(wrong_size=True)
+        page = self.context.new_page()
+        page.goto(self.url + "download.html")
+        page.wait_for_function("window.result !== undefined")
+        self.assertIn("Incomplete download", page.evaluate("window.result"))
+        data = json.loads(manifest.read_text())
+        data["files"][1]["size"] -= 1
+        manifest.write_text(json.dumps(data))
+        page.reload()
+        page.wait_for_function("window.result !== undefined")
+        self.assertEqual(page.evaluate("window.result"), "ready")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- 2026-10-08 10:29 CDT — GPT-6 (Codex): Added optional hosted game assets to
+  the local web server (--asset-dir ID=DIR) with pinned-executable validation,
+  bundle exclusions and explicit file routes. The player automatically populates
+  missing OPFS data from the hosted source with progress before engine startup;
+  valid cached imports still work. Network sources stream one file at a time,
+  reject truncated content and use the existing resume/stamp validation. Import
+  source failures now abort their file writer. Added browser regressions for
+  first downloads, cached offline-source visits and short-download retry, plus
+  route/exclusion/hash checks. 52 combined game/launcher/build/player tests pass.
+  Generic configurations without hosted assets retain their import workflow.
+
 - 2026-10-08 10:15 CDT — GPT-6 (Codex): Added an idle browser player shell
   with explicit Start/Stop and exclusive per-game Web Locks. Runtime documents
   and owned workers are discarded before session ownership is released;

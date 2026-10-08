@@ -91,3 +91,9 @@ The initial publication additionally runs the source-only CI checks and local
 native suites built through CMake from the standalone checkout, and the Linux and
 Windows portable-layer suites in CI. Long campaign completion, multiplayer
 and sustained 4K120 remain unverified; publish measurements with their conditions.
+
+The player browser suite also exercises automatic hosted downloads with tiny
+fixtures: executable validation, cache reuse after the source goes offline and
+retry after a truncated response. The launcher Python suite checks the explicit
+local asset routes, exclusion rules and executable hash validation. These tests
+do not load an actual game or establish game compatibility.

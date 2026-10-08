@@ -31,8 +31,8 @@
 <main>
   <section class="card" id="welcome">
     <h1>@TITLE@</h1>
-    <p>Ready when you are. Your imported files and saves stay in this browser.
-       Use Stop game to close the running game and release its resources.</p>
+    <p>Click Start to play. Your game files and saves stay in this browser
+       for next time. Use Stop game to close the running game.</p>
     <button class="primary" id="start">Start game</button>
     <p id="message" role="status" aria-live="polite"></p>
   </section>
@@ -98,7 +98,7 @@ function stopGame() {
   stopButton.hidden = true;
   releaseSession?.();
   releaseSession = null;
-  message.textContent = "Game stopped. Your imported files and saves are kept.";
+  message.textContent = "Game stopped. Cached files and saves are kept.";
   startButton.focus();
 }
 stopButton.addEventListener("click", stopGame);

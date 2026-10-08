@@ -119,6 +119,31 @@ async function zipSource(file) {
   return { list: async () => zip.entries(), stream: (e) => zip.stream(e) };
 }
 
+// Download one file at a time as a stream, using the existing resumable OPFS
+// importer. A large game never needs a single multi-gigabyte memory buffer.
+async function hostedSource(manifestUrl, signal) {
+  const response = await fetch(manifestUrl, { signal });
+  if (!response.ok) throw new Error("Game download list is unavailable.");
+  const manifest = await response.json();
+  return {
+    list: async () => manifest.files,
+    async stream(entry) {
+      const response = await fetch(new URL(entry.url, manifestUrl), { signal });
+      if (!response.ok || !response.body) throw new Error(`Could not download ${entry.path}. Try Start again.`);
+      let received = 0;
+      return response.body.pipeThrough(new TransformStream({
+        transform(chunk, controller) {
+          received += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+        flush() {
+          if (received !== entry.size) throw new Error(`Incomplete download: ${entry.path}`);
+        },
+      }));
+    },
+  };
+}
+
 async function freeBytes() {
   try {
     const { quota, usage } = await navigator.storage.estimate();
@@ -146,11 +171,12 @@ const handlers = {
     const persisted = await navigator.storage.persisted?.().catch(() => false);
     return { status, estimate, persisted };
   },
-  async import({ game, kind, files, handle, file }) {
+  async import({ game, kind, files, handle, file, manifestUrl }) {
     controller = new AbortController();
     let source;
     if (kind === "files") source = filesSource(files);
     else if (kind === "handle") source = await handleSource(handle);
+    else if (kind === "hosted") source = await hostedSource(manifestUrl, controller.signal);
     else source = await zipSource(file);
     const root = await dirFor(game.id + "/game");
     const outcome = await importGame(game, source, opfsStore(root), {

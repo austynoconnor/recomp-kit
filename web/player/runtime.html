@@ -49,6 +49,47 @@ async function gameId() {
   return decodeURIComponent(parts[parts.length - 1] || "");
 }
 
+async function prepareGame(game) {
+  const worker = new Worker("../worker.js", { type: "module" });
+  let nextId = 0;
+  const pending = new Map();
+  worker.onmessage = ({ data }) => {
+    if (data.progress) {
+      const p = data.progress;
+      const percent = p.bytesTotal ? Math.floor(p.bytesDone / p.bytesTotal * 100) : 0;
+      status(`Downloading game · ${percent}%\n${(p.bytesDone / 1024 ** 3).toFixed(2)} of ${(p.bytesTotal / 1024 ** 3).toFixed(2)} GB\nYour next visit will use the cached files.`);
+      return;
+    }
+    const request = pending.get(data.id);
+    if (!request) return;
+    pending.delete(data.id);
+    if (data.error) request.reject(new Error(data.error));
+    else request.resolve(data.result);
+  };
+  worker.onerror = () => {
+    for (const request of pending.values()) request.reject(new Error("Game files could not be loaded. Try Start again."));
+    pending.clear();
+  };
+  const request = (cmd, extra = {}) => new Promise((resolve, reject) => {
+    const id = ++nextId;
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, cmd, game, ...extra });
+  });
+  try {
+    status("Checking game files…");
+    const cached = await request("status");
+    if (cached.status.state === "ready") return;
+    if (!game.hostedAssets) throw new Error(`${game.title} has not been imported yet.`);
+    status("Preparing your first play…\nDownloading game files automatically.");
+    const manifestUrl = new URL(game.hostedAssets, new URL("../games.json", location.href)).href;
+    const outcome = await request("import", { kind: "hosted", manifestUrl });
+    if (outcome.result === "noSpace") throw new Error("There isn't enough browser storage for this game.");
+    if (outcome.result !== "done") throw new Error(outcome.error || "Game download did not finish. Stop and try Start again to resume.");
+  } finally {
+    worker.terminate();
+  }
+}
+
 async function start() {
   if (window.parent === window) throw new Error("Open the player page and choose Start game.");
   if (!crossOriginIsolated) throw new Error("This page must be served cross-origin isolated (COOP/COEP headers).");
@@ -59,14 +100,9 @@ async function start() {
   if (!game) throw new Error(`No game "${id}" in the launcher's games.json.`);
   document.title = game.title;
 
-  // The game must have been imported by the launcher first.
-  let dir = await navigator.storage.getDirectory();
-  try {
-    for (const p of [id, "game"]) dir = await dir.getDirectoryHandle(p);
-    await dir.getFileHandle(game.executable);
-  } catch {
-    throw new Error(`${game.title} has not been imported yet.`);
-  }
+  // Hosted games populate OPFS automatically; existing imported copies work too.
+  await prepareGame(game);
+  status("Starting game…");
 
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
   if (!adapter) throw new Error("WebGPU gave no adapter.");
