@@ -132,6 +132,14 @@ def configure(cfg):
     RESUMABLE_STACKS = cfg["translate"].get("resumable_stacks", False)
     EXTRA_ENTRY_POINTS = frozenset(int(a) for a in cfg["translate"].get("entry_points", ()))
     FUNCTION_ALIGNMENT = cfg["translate"].get("function_alignment", 16)
+    # The CRT's __setjmp3/longjmp pair, when the game links one; the defaults
+    # are Populous's. Rebuilt in place so every holder of INTRINSIC_BODY sees it.
+    global INTRINSIC_SETJMP, INTRINSIC_LONGJMP
+    INTRINSIC_SETJMP = int(cfg["translate"].get("setjmp", INTRINSIC_SETJMP))
+    INTRINSIC_LONGJMP = int(cfg["translate"].get("longjmp", INTRINSIC_LONGJMP))
+    INTRINSIC_BODY.clear()
+    INTRINSIC_BODY[INTRINSIC_LONGJMP] = "recomp_longjmp(c);"
+    INTRINSIC_BODY[INTRINSIC_SETJMP] = "recomp_setjmp(c);"
     global OPERAND_REDIRECTS, INSTRUCTION_PATCHES, DATA_SEEDS
     OPERAND_REDIRECTS = {int(r["at"]): (int(r["from"]), int(r["to"]))
                          for r in cfg["translate"].get("operand_redirects", ())}
@@ -295,6 +303,7 @@ GUEST_SHIM_END = 0x10000000
 
 # Runtime intrinsics: guest addresses whose translated body is replaced by a
 # call into runtime/intrinsics.h.
+# Populous's addresses; a game names its own with [translate] setjmp/longjmp.
 INTRINSIC_LONGJMP = 0x0055DB78          # _longjmp
 INTRINSIC_SETJMP  = 0x0055DAFC          # __setjmp3, buffer at ESP+4
 INTRINSIC_BODY = {
@@ -2653,8 +2662,13 @@ class Translator(object):
         out = []
         if fn.addr in INTRINSIC_BODY:
             self.stats["_intrinsic_body"] += 1
+            # An entry inside the replaced body (a data pointer that happens
+            # to land there) has no translated code to enter; reaching one is
+            # reported rather than left an undefined symbol.
             return ["/* runtime intrinsic */",
-                    "void fn_%08x(X86 *c) { %s }" % (fn.addr, INTRINSIC_BODY[fn.addr])]
+                    "void fn_%08x(X86 *c) { %s }" % (fn.addr, INTRINSIC_BODY[fn.addr])] + [
+                "void fn_%08x(X86 *c) { recomp_unmodelled(c, %s); }" % (e, hexlit(e))
+                for e in entries if e != fn.addr]
         # Following branches can pull in addresses BELOW the entry, so the
         # first instruction in address order is not necessarily where this
         # function starts.  Jump to the entry explicitly rather than falling

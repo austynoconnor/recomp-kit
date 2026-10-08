@@ -27,6 +27,7 @@
 #include "fixtures/tone_mp3.h"
 #include "fixtures/quad_shaders.h"
 #include "../d3d11.h"
+#include "../d3d9_ffp.h"
 #include "../d3d9_pipeline.h"
 #include "../d3d9_shader.h"
 #include "guest_abi.h"
@@ -3517,6 +3518,163 @@ static void test_dshow_graph_playback() {
     g_queue_enabled = false;
     remove(file.c_str());
     os_rmdir(dir);
+}
+
+// A graph made directly: CoCreateInstance(CLSID_FilterGraph, IID_IGraphBuilder)
+// and IGraphBuilder::RenderFile on an MP3, then IMediaControl::Run, the way
+// Crazy Taxi plays its music. Releasing the last view frees the hidden stream
+// that holds the file, and a file that is not there is refused.
+static void test_dshow_filtergraph_renderfile() {
+    static const uint8_t clsid_filtergraph[16] = {0xb3, 0xeb, 0x36, 0xe4, 0x4f, 0x52, 0xce, 0x11,
+                                                  0x9f, 0x53, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70};
+    auto quartz = [](uint8_t lo) {
+        std::array<uint8_t, 16> g = {lo,   0x68, 0xa8, 0x56, 0xd4, 0x0a, 0xce, 0x11,
+                                     0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70};
+        return g;
+    };
+    const uint32_t S_OK_ = 0;
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s/recomp-dshow-XXXXXX", os_temp_dir());
+    CHECK(os_mkdtemp(dir) == 0);
+    std::string file = std::string(dir) + "/music.mp3";
+    FILE *f = fopen(file.c_str(), "wb");
+    CHECK(f != nullptr);
+    if (!f)
+        return;
+    fwrite(kToneMp3, 1, sizeof kToneMp3, f);
+    fclose(f);
+    win32_init(dir);
+    g_plays.clear();
+    g_queues.clear();
+    g_stops.clear();
+    g_queue_enabled = true;
+    g_queued_bytes = 0;
+    g_voice_remaining = 0;
+
+    uint32_t clsid = sc(0x1e00), iid = sc(0x1e10), ppv = sc(0x1e20), pctl = sc(0x1e50),
+             wpath = sc(0x1f00);
+    auto put_path = [&](const char *name) {
+        for (size_t i = 0; i <= strlen(name); ++i)
+            wr16(wpath + 2 * (uint32_t)i, (uint16_t)name[i]);
+    };
+    uint32_t live = com_live_count();
+    uint32_t cocreate = tramp("ole32.dll", "CoCreateInstance");
+    memcpy(g_mem + clsid, clsid_filtergraph, 16);
+    memcpy(g_mem + iid, quartz(0xa9).data(), 16); // IID_IGraphBuilder
+    CHECK_EQ(call_shim(cocreate, {clsid, 0, 1, iid, ppv}), S_OK_);
+    uint32_t graph = rd32(ppv);
+    CHECK(graph != 0);
+    if (!graph)
+        return;
+    put_path("music.mp3");
+    CHECK_EQ(call_method(graph, 13, {wpath, 0}), S_OK_); // RenderFile
+    memcpy(g_mem + iid, quartz(0xb1).data(), 16);
+    CHECK_EQ(call_method(graph, 0, {iid, pctl}), S_OK_); // QueryInterface(IMediaControl)
+    uint32_t ctl = rd32(pctl);
+    CHECK(ctl != 0);
+    if (ctl) {
+        CHECK_EQ(call_method(ctl, 7, {}), S_OK_); // Run
+        CHECK_EQ(g_plays.size(), 1u);
+        if (!g_plays.empty()) {
+            CHECK_EQ(g_plays[0].rate, 44100);
+            CHECK_EQ(g_plays[0].channels, 2);
+        }
+        CHECK_EQ(call_method(ctl, 9, {}), S_OK_); // Stop
+        call_method(ctl, 2);
+    }
+    call_method(graph, 2);
+    CHECK_EQ(com_live_count(), live); // graph, hidden stream and its media stream are gone
+
+    memcpy(g_mem + iid, quartz(0xa9).data(), 16);
+    CHECK_EQ(call_shim(cocreate, {clsid, 0, 1, iid, ppv}), S_OK_);
+    graph = rd32(ppv);
+    put_path("absent.mp3");
+    CHECK(graph && call_method(graph, 13, {wpath, 0}) != S_OK_);
+    if (graph)
+        call_method(graph, 2);
+    CHECK_EQ(com_live_count(), live);
+    g_queue_enabled = false;
+    remove(file.c_str());
+    os_rmdir(dir);
+}
+
+// Direct3D 8 over the Direct3D 9 objects, drawn through the fixed-function
+// pipeline: Direct3DCreate8, a windowed device, Clear, an FVF vertex shader
+// handle (XYZRHW | DIFFUSE) and DrawPrimitiveUP. With no GPU host the CPU
+// rasterizer runs the generated vs_2_0/ps_2_0 pair, so the back buffer read
+// through IDirect3DSurface8::LockRect shows the cleared colour outside the
+// triangle and the vertex colour inside it.
+static void test_d3d8_fixed_function_triangle() {
+    cpu_reset();
+    auto fbits = [](float f) {
+        uint32_t u;
+        memcpy(&u, &f, 4);
+        return u;
+    };
+    uint32_t wc = sc(0x200);
+    gm_zero(wc, 40);
+    wr32(wc + 4, tramp("USER32.dll", "DefWindowProcA"));
+    gm_put_str(sc(0x280), "D3D8Target", 32);
+    wr32(wc + 36, sc(0x280));
+    CHECK(call_shim(tramp("USER32.dll", "RegisterClassA"), {wc}) != 0);
+    uint32_t hwnd = call_shim(tramp("USER32.dll", "CreateWindowExA"),
+                              {0, sc(0x280), sc(0x280), 0x80000000u, 0, 0, 64, 64, 0, 0, 0, 0});
+    CHECK(hwnd != 0);
+    uint32_t d3d = call_shim(tramp("d3d8.dll", "Direct3DCreate8"), {220});
+    CHECK(d3d != 0);
+    if (!d3d)
+        return;
+    uint32_t pp = sc(0x300);
+    gm_zero(pp, 52);
+    wr32(pp + 0, 64);                                                      // BackBufferWidth
+    wr32(pp + 4, 64);                                                      // BackBufferHeight
+    wr32(pp + 8, 22);                                                      // D3DFMT_X8R8G8B8
+    wr32(pp + 12, 1);                                                      // BackBufferCount
+    wr32(pp + 20, 1);                                                      // D3DSWAPEFFECT_DISCARD
+    wr32(pp + 24, hwnd);                                                   // hDeviceWindow
+    wr32(pp + 28, 1);                                                      // Windowed
+    CHECK_EQ(call_method(d3d, 15, {0, 1, hwnd, 0x20, pp, sc(0x340)}), 0u); // CreateDevice, SWVP
+    uint32_t dev = rd32(sc(0x340));
+    CHECK(dev != 0);
+    if (!dev) {
+        call_method(d3d, 2);
+        return;
+    }
+    CHECK_EQ(call_method(dev, 36, {0, 0, 1, 0xff000000u, fbits(1.0f), 0}), 0u); // Clear
+    CHECK_EQ(call_method(dev, 34), 0u);                                         // BeginScene
+    CHECK_EQ(call_method(dev, 50, {137, 0}), 0u); // SetRenderState(LIGHTING, FALSE)
+    CHECK_EQ(call_method(dev, 76, {0x44}), 0u);   // SetVertexShader(XYZRHW | DIFFUSE)
+    // A triangle over the top-left of the 64x64 target, in screen space.
+    uint32_t v = sc(0x400);
+    const float xy[3][2] = {{0, 0}, {48, 0}, {0, 48}};
+    for (int i = 0; i < 3; ++i) {
+        uint32_t at = v + 20u * (uint32_t)i;
+        wr32(at, fbits(xy[i][0]));
+        wr32(at + 4, fbits(xy[i][1]));
+        wr32(at + 8, fbits(0.5f));
+        wr32(at + 12, fbits(1.0f));
+        wr32(at + 16, 0xff00ff00u); // green
+    }
+    CHECK_EQ(call_method(dev, 72, {4, 1, v, 20}), 0u);     // DrawPrimitiveUP(TRIANGLELIST)
+    CHECK_EQ(call_method(dev, 35), 0u);                    // EndScene
+    CHECK_EQ(call_method(dev, 16, {0, 0, sc(0x344)}), 0u); // GetBackBuffer
+    uint32_t bb = rd32(sc(0x344));
+    CHECK(bb != 0);
+    if (bb) {
+        uint32_t lr = sc(0x348);
+        CHECK_EQ(call_method(bb, 9, {lr, 0, 0x10}), 0u); // LockRect(READONLY)
+        uint32_t pitch = rd32(lr), bits = rd32(lr + 4);
+        CHECK(bits != 0 && pitch >= 64 * 4);
+        if (bits) {
+            CHECK_EQ(rd32(bits + 8 * pitch + 8 * 4) & 0xffffffu, 0x00ff00u);   // inside
+            CHECK_EQ(rd32(bits + 60 * pitch + 60 * 4) & 0xffffffu, 0x000000u); // outside
+        }
+        call_method(bb, 10); // UnlockRect
+        call_method(bb, 2);
+    }
+    call_method(dev, 2);
+    call_method(d3d, 2);
+    call_shim(tramp("USER32.dll", "DestroyWindow"), {hwnd});
 }
 
 static void test_gdi_primary_blit() {
@@ -12914,6 +13072,8 @@ int main() {
         {"CoCreateInstance DirectSound", test_cocreate_directsound},
         {"DirectShow audio stream", test_dshow_audio_stream},
         {"DirectShow graph playback", test_dshow_graph_playback},
+        {"DirectShow FilterGraph RenderFile", test_dshow_filtergraph_renderfile},
+        {"Direct3D 8 fixed-function triangle", test_d3d8_fixed_function_triangle},
         {"palette versions", test_palette_versions},
         {"storage generations", test_storage_generations},
         {"draw snapshot is deep", test_draw_snapshot_is_deep},

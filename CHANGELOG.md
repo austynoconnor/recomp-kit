@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- 2026-10-08 17:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: merged `giggity-d3d8` at `7c9d7e2` (Direct3D 8,
+  fixed-function rendering, DirectShow `RenderFile`). Both branches had
+  written Direct3D 9 device getters; one copy of each is kept, preferring
+  `giggity-d3d8`'s: its `GetTransform`, `GetRenderState`, `GetTexture`,
+  `GetTextureStageState`, `GetSamplerState`, `SetFVF`, `GetFVF` and
+  `d9_fvf_declaration` (in `d3d9_ffp.cpp`) replace this branch's, and the
+  device's `fvf` field this branch added is gone (`D9Pipeline::fvf` holds
+  it). This branch's `SetVertexShader`/`SetPixelShader` replace the ones
+  that only accepted null: they bind a shader object's bytecode, and null
+  still returns the stage to the fixed-function pipeline. This branch's
+  `GetRenderTarget`, `GetScissorRect`, `GetStreamSource`, `GetIndices`,
+  `GetVertexDeclaration`, `Get{Vertex,Pixel}ShaderConstantF`, shader
+  objects, `GetDisplayMode`, `CreateVolumeTexture` and `Res::GetType`
+  stay. The DirectSound 3D-listener and device-export work from earlier
+  merges is unchanged by this one.
+
 - 2026-10-08 16:40 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: `IDirect3DDevice9::GetDisplayMode` reports the back
   buffer's size at 60 Hz, X8R8G8B8, where the stub left the structure
@@ -30,11 +47,9 @@
   token, rejecting unknown SM1 instructions); `Set{Vertex,Pixel}Shader`
   put that bytecode and its `code_key` in the pipeline record the renderer
   reads, the same way the D3DX effect path does, and the matching getters
-  return the bound object. `SetFVF` binds a declaration built from the FVF
-  code by the new `d9_fvf_declaration` (positions including blend weights
-  and indices, normal, point size, both colours and texture coordinate
-  sizes), made once per device and code; `GetFVF` reads it back while that
-  declaration is bound. `Res::GetType` reports surface, texture, cube
+  return the bound object. (This entry also added `SetFVF`, `GetFVF` and
+  several state getters; the 17:00 merge kept `giggity-d3d8`'s versions of
+  those instead.) `Res::GetType` reports surface, texture, cube
   texture, vertex buffer or index buffer. `dx_tests` case "Direct3D 9
   device getters and shaders"; `dx_tests` 141,290 checks, 17 failures,
   all the existing 64-bit "display ABI" layout checks that fail under
@@ -163,6 +178,55 @@
   `SetMemory` and `SetVolume`; the host decoder keeps reading the file
   itself. Checked by compiling the changed files with Emscripten's clang
   (`-Wall -Wextra -Werror`); no native compiler is installed on this machine.
+- 2026-10-08 15:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: Direct3D 8,
+  fixed-function rendering, DirectShow RenderFile and game-named setjmp, the
+  pieces that take Crazy Taxi from the Direct3D 8 wall to its title screen in
+  a headless run. All of it is game-neutral; MGS2 and SWBF2 are expected to use
+  the Direct3D 8 layer and the fixed-function pipeline.
+  - `dx/d3d8.cpp` (new): `d3d8.dll!Direct3DCreate8` and IDirect3D8 (16 slots),
+    IDirect3DDevice8 (97 slots), IDirect3DVertexBuffer8, IndexBuffer8,
+    Surface8 (11 slots), Texture8 and CubeTexture8 as views of the existing
+    Direct3D 9 objects; most methods forward to the D9 shims with rewritten
+    arguments (`shim_forward`). Version 8 differences handled here:
+    D3DPRESENT_PARAMETERS 8 to 9 (MultiSampleQuality inserted), the 8-era
+    caps (first 212 bytes of D3DCAPS9, vs 1.1 / ps 1.4, CANRENDERWINDOWED),
+    an adapter mode list, vertex shader handles (bit 31) against FVFs, D3DVSD
+    declarations converted to D3D9 elements with `dcl` instructions inserted
+    into vs_1_1 code, the sampler states that live in SetTextureStageState in
+    version 8, ZBIAS to DEPTHBIAS, CopyRects and UpdateTexture through locks,
+    and state blocks (Begin/End recorded by difference, Apply, Capture,
+    Create, Delete). static_asserts pin every vtable size.
+  - `dx/d3d9_ffp.{h,cpp}` (new): the fixed-function pipeline as generated
+    vs_2_0/ps_2_0 bytecode, cached by state. Vertex side: world-view-
+    projection, pre-transformed (RHW) positions, normals, up to 8
+    directional/point/spot lights with material and ambient, colour vertex
+    sources, specular, vertex fog (exp, exp2, linear, range-based, or the
+    pre-transformed vertex's own factor; table fog is not done yet), texture
+    coordinate generation and texture transforms. Pixel side: all D3DTOP colour and alpha
+    operations over 8 stages, TFACTOR, per-stage constants, specular add and
+    fog. `d9_fvf_declaration`/`d9_fvf_stride` turn an FVF into elements.
+  - `dx/d3d9.cpp`: a draw without both shaders now goes through the generated
+    pair on the GPU backends and the CPU rasterizer alike (`draw_pipeline`);
+    real Set/Get for transforms (identity by default), MultiplyTransform,
+    material, lights, clip planes, FVF, render/texture-stage/sampler state
+    getters and GetTexture; LockRect honours a sub-rectangle on surfaces,
+    textures and cube faces.
+  - `dx/d3d9_raster.cpp`: the alpha test compares with D3DRS_ALPHAFUNC (it was
+    always "greater or equal").
+  - `dx/dshow.cpp`: CLSID_FilterGraph. A graph a game makes itself plays an MP3
+    given to IGraphBuilder::RenderFile or IMediaControl::RenderFile through
+    the existing minimp3 stream and host channel; the graph owns a hidden
+    stream and frees it with itself.
+  - Translator: `[translate] setjmp` / `longjmp` name the CRT's __setjmp3 and
+    longjmp for the runtime intrinsics (the old constants, Populous's
+    addresses, stay the defaults). Data-pointer entries that land inside a
+    replaced intrinsic body are emitted as `recomp_unmodelled` traps instead
+    of undefined symbols.
+  - Tests: dx_tests "Direct3D 8 fixed-function triangle" (create, clear, FVF
+    draw, read back through the back buffer) and "DirectShow FilterGraph
+    RenderFile"; tests/test_game_config.py covers setjmp/longjmp.
+  - Verified so far only on the CPU rasterizer in a Linux headless run; the
+    GPU backends receive the same generated shaders but were not run.
 
 - 2026-10-08 12:02 CDT (branch giggity-d3d8) — Claude Opus 5.5: Windows shims a
   DirectX 8 game (Crazy Taxi) needs to start, all reusable by other games.

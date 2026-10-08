@@ -310,7 +310,6 @@ struct ComObj {
     // pipeline record whenever the shader is bound, and its d9sh::code_key.
     std::shared_ptr<const std::vector<uint8_t>> shader_code;
     uint64_t shader_key = 0;
-    uint32_t fvf = 0; // K_D3D9DEVICE: the FVF code SetFVF was last given, 0 for none
     uint32_t current_viewport = 0;
     bool in_scene = false;
     std::vector<uint32_t> viewports;

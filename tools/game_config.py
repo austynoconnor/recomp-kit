@@ -159,6 +159,9 @@ def load(game_dir):
     alignment = translate.setdefault("function_alignment", 16)
     if type(alignment) is not int or alignment <= 0:
         raise ValueError("%s: [translate] function_alignment must be a positive integer" % source)
+    for key in ("setjmp", "longjmp"):
+        if key in translate and (type(translate[key]) is not int or translate[key] <= 0):
+            raise ValueError("%s: [translate] %s must be a guest address" % (source, key))
     tracks = cfg.setdefault("media", {}).setdefault("cd_tracks", [])
     if not isinstance(tracks, list) or not all(isinstance(v, str) for v in tracks):
         raise ValueError("%s: [media] cd_tracks must be a list of strings" % source)
