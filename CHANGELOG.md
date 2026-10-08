@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 2026-10-08 14:05 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `GetFileAttributes(A/W/ExA/ExW)` fail a path holding a
+  wildcard or another character no file name may hold (`? * < > | "`, after
+  any `\\?\` or `\\.\` prefix) with ERROR_INVALID_NAME (123), as Windows
+  does, instead of ERROR_FILE_NOT_FOUND. The Microsoft Layer for Unicode
+  calls `GetFileAttributesW(L"???.???")` and takes only that error as the
+  sign it runs on NT; otherwise it assumed Windows 9x and loaded
+  unicows.dll, which since the resource-only DLL change is mapped but never
+  translated, and the first wide call jumped into it. Formatted the
+  changed native files with the pinned clang-format. Tests under Node:
+  `compat_extra_tests` 182 checks, `gdi_tests` 142, 0 failures;
+  `dx_tests` 141,143 checks with the same 17 64-bit layout failures as
+  before.
+
 - 2026-10-08 13:45 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: the Winsock shims in `compat_extra.cpp` are also
   registered by ordinal ("ord1" accept to "ord151" `__WSAFDIsSet`, the

@@ -86,7 +86,7 @@ void get_file_information_by_handle(X86 *c) {
     wr32(out + 28, 0x1d2c0ffeu); // dwVolumeSerialNumber, any stable value
     wr32(out + 32, (uint32_t)(st.size >> 32));
     wr32(out + 36, (uint32_t)st.size);
-    wr32(out + 40, 1); // nNumberOfLinks
+    wr32(out + 40, 1);            // nNumberOfLinks
     uint32_t index = 2166136261u; // FNV-1a of the path: stable per file
     for (unsigned char ch : path)
         index = (index ^ ch) * 16777619u;
@@ -119,13 +119,16 @@ SysTime read_systemtime(uint32_t p) {
     }
     struct tm now{};
     os_localtime((int64_t)time(nullptr), &now);
-    t = SysTime{now.tm_year + 1900, now.tm_mon + 1, now.tm_wday, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec};
+    t = SysTime{now.tm_year + 1900, now.tm_mon + 1, now.tm_wday, now.tm_mday,
+                now.tm_hour,        now.tm_min,     now.tm_sec};
     return t;
 }
 std::string format_picture(const std::string &pic, const SysTime &t) {
-    static const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
-    static const char *const months[] = {"January", "February", "March",     "April",   "May",      "June",
-                                         "July",    "August",   "September", "October", "November", "December"};
+    static const char *const days[] = {"Sunday",   "Monday", "Tuesday", "Wednesday",
+                                       "Thursday", "Friday", "Saturday"};
+    static const char *const months[] = {"January",   "February", "March",    "April",
+                                         "May",       "June",     "July",     "August",
+                                         "September", "October",  "November", "December"};
     std::string out;
     char buf[16];
     for (size_t i = 0; i < pic.size();) {
@@ -151,7 +154,8 @@ std::string format_picture(const std::string &pic, const SysTime &t) {
             break;
         case 'M':
             if (n >= 3)
-                out += n == 3 ? std::string(months[(t.month + 11) % 12], 3) : months[(t.month + 11) % 12];
+                out += n == 3 ? std::string(months[(t.month + 11) % 12], 3)
+                              : months[(t.month + 11) % 12];
             else
                 snprintf(buf, sizeof buf, n == 2 ? "%02d" : "%d", t.month), out += buf;
             break;
@@ -203,7 +207,9 @@ void put_formatted(X86 *c, const std::string &text, uint32_t out, uint32_t cch) 
 // (Locale, dwFlags, lpDate, lpFormat, lpDateStr, cchDate)
 void get_date_format(X86 *c) {
     uint32_t flags = arg(c, 1), pic = arg(c, 3);
-    std::string picture = pic ? gm_str(pic, 256) : (flags & 2) ? "dddd, MMMM d, yyyy" : "M/d/yyyy"; // DATE_LONGDATE
+    std::string picture = pic           ? gm_str(pic, 256)
+                          : (flags & 2) ? "dddd, MMMM d, yyyy"
+                                        : "M/d/yyyy"; // DATE_LONGDATE
     put_formatted(c, format_picture(picture, read_systemtime(arg(c, 2))), arg(c, 4), arg(c, 5));
 }
 // (Locale, dwFlags, lpTime, lpFormat, lpTimeStr, cchTime)
@@ -244,7 +250,9 @@ void end_dialog(X86 *c) {
 // A US keyboard layout's character for a virtual key, or 0. `state` is the
 // 256-byte key-state array ToAscii and ToUnicode are given.
 uint32_t key_char(uint32_t vk, uint32_t state) {
-    auto down = [&](uint32_t k) { return state && gm_valid(state + k, 1) && (g_mem[state + k] & 0x80); };
+    auto down = [&](uint32_t k) {
+        return state && gm_valid(state + k, 1) && (g_mem[state + k] & 0x80);
+    };
     bool shift = down(0x10) || down(0xa0) || down(0xa1);
     bool caps = state && gm_valid(state + 0x14, 1) && (g_mem[state + 0x14] & 1);
     if (down(0x11) || down(0x12))
@@ -256,28 +264,50 @@ uint32_t key_char(uint32_t vk, uint32_t state) {
     if (vk >= 0x60 && vk <= 0x69)
         return '0' + (vk - 0x60); // numeric keypad
     switch (vk) {
-    case 0x08: return 8;
-    case 0x09: return 9;
-    case 0x0d: return 13;
-    case 0x1b: return 27;
-    case 0x20: return ' ';
-    case 0x6a: return '*';
-    case 0x6b: return '+';
-    case 0x6d: return '-';
-    case 0x6e: return '.';
-    case 0x6f: return '/';
-    case 0xba: return shift ? ':' : ';';
-    case 0xbb: return shift ? '+' : '=';
-    case 0xbc: return shift ? '<' : ',';
-    case 0xbd: return shift ? '_' : '-';
-    case 0xbe: return shift ? '>' : '.';
-    case 0xbf: return shift ? '?' : '/';
-    case 0xc0: return shift ? '~' : '`';
-    case 0xdb: return shift ? '{' : '[';
-    case 0xdc: return shift ? '|' : '\\';
-    case 0xdd: return shift ? '}' : ']';
-    case 0xde: return shift ? '"' : '\'';
-    default: return 0;
+    case 0x08:
+        return 8;
+    case 0x09:
+        return 9;
+    case 0x0d:
+        return 13;
+    case 0x1b:
+        return 27;
+    case 0x20:
+        return ' ';
+    case 0x6a:
+        return '*';
+    case 0x6b:
+        return '+';
+    case 0x6d:
+        return '-';
+    case 0x6e:
+        return '.';
+    case 0x6f:
+        return '/';
+    case 0xba:
+        return shift ? ':' : ';';
+    case 0xbb:
+        return shift ? '+' : '=';
+    case 0xbc:
+        return shift ? '<' : ',';
+    case 0xbd:
+        return shift ? '_' : '-';
+    case 0xbe:
+        return shift ? '>' : '.';
+    case 0xbf:
+        return shift ? '?' : '/';
+    case 0xc0:
+        return shift ? '~' : '`';
+    case 0xdb:
+        return shift ? '{' : '[';
+    case 0xdc:
+        return shift ? '|' : '\\';
+    case 0xdd:
+        return shift ? '}' : ']';
+    case 0xde:
+        return shift ? '"' : '\'';
+    default:
+        return 0;
     }
 }
 
@@ -308,12 +338,14 @@ void to_unicode(X86 *c) {
 // DrawTextA: widen the ANSI text (code page 1252 is Latin-1 for the bytes a
 // game's debug and message text uses) and draw it with the wide path.
 void draw_text_a(X86 *c) {
-    uint32_t hdc = arg(c, 0), text = arg(c, 1), count = arg(c, 2), rect = arg(c, 3), flags = arg(c, 4);
+    uint32_t hdc = arg(c, 0), text = arg(c, 1), count = arg(c, 2), rect = arg(c, 3),
+             flags = arg(c, 4);
     if (!text || !rect) {
         set_eax(c, 0);
         return;
     }
-    std::string s = (int32_t)count < 0 ? gm_str(text) : std::string((const char *)g_mem + text, count);
+    std::string s =
+        (int32_t)count < 0 ? gm_str(text) : std::string((const char *)g_mem + text, count);
     uint32_t wide = heap_alloc((uint32_t)(s.size() + 1) * 2, true);
     if (!wide) {
         set_eax(c, 0);
@@ -361,8 +393,8 @@ void inet_addr_(X86 *c) {
     std::string s = arg(c, 0) ? gm_str(arg(c, 0), 64) : std::string();
     unsigned a, b, d, e;
     char tail;
-    if (sscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &d, &e, &tail) != 4 || a > 255 || b > 255 || d > 255 ||
-        e > 255) {
+    if (sscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &d, &e, &tail) != 4 || a > 255 || b > 255 ||
+        d > 255 || e > 255) {
         set_eax(c, 0xffffffffu); // INADDR_NONE
         return;
     }

@@ -1173,29 +1173,29 @@ uint32_t pseudo_module_image(const std::string &name) {
     wr32(base + 0x3c, kNt);
     wr32(base + kNt, 0x00004550); // "PE", two zero bytes
     uint32_t fh = base + kNt + 4;
-    wr16(fh, 0x014c);       // i386
-    wr16(fh + 16, 0xe0);    // SizeOfOptionalHeader
-    wr16(fh + 18, 0x2102);  // executable, 32-bit, DLL
+    wr16(fh, 0x014c);      // i386
+    wr16(fh + 16, 0xe0);   // SizeOfOptionalHeader
+    wr16(fh + 18, 0x2102); // executable, 32-bit, DLL
     uint32_t oh = fh + 20;
-    wr16(oh, 0x010b);       // PE32
-    wr32(oh + 28, base);    // ImageBase
-    wr32(oh + 32, 0x1000);  // SectionAlignment
-    wr32(oh + 36, 0x200);   // FileAlignment
-    wr16(oh + 40, 5);       // OS 5.1
+    wr16(oh, 0x010b);      // PE32
+    wr32(oh + 28, base);   // ImageBase
+    wr32(oh + 32, 0x1000); // SectionAlignment
+    wr32(oh + 36, 0x200);  // FileAlignment
+    wr16(oh + 40, 5);      // OS 5.1
     wr16(oh + 42, 1);
-    wr16(oh + 48, 5);       // subsystem 5.1
+    wr16(oh + 48, 5); // subsystem 5.1
     wr16(oh + 50, 1);
-    wr32(oh + 56, size);    // SizeOfImage
-    wr32(oh + 60, 0x1000);  // SizeOfHeaders
-    wr16(oh + 68, 3);       // console subsystem, as system DLLs say
-    wr32(oh + 92, 16);      // NumberOfRvaAndSizes
-    wr32(oh + 96, kExp);    // export directory
+    wr32(oh + 56, size);   // SizeOfImage
+    wr32(oh + 60, 0x1000); // SizeOfHeaders
+    wr16(oh + 68, 3);      // console subsystem, as system DLLs say
+    wr32(oh + 92, 16);     // NumberOfRvaAndSizes
+    wr32(oh + 96, kExp);   // export directory
     wr32(oh + 100, total - kExp);
     uint32_t at = strings;
     gm_put_str(base + at, name.c_str(), (uint32_t)name.size() + 1);
     uint32_t dir = base + kExp;
-    wr32(dir + 12, at);     // Name
-    wr32(dir + 16, 1);      // ordinal base
+    wr32(dir + 12, at); // Name
+    wr32(dir + 16, 1);  // ordinal base
     wr32(dir + 20, n);
     wr32(dir + 24, n);
     wr32(dir + 28, funcs);
@@ -4367,7 +4367,23 @@ void create_file_named(X86 *c, const std::string &name) {
     set_eax(c, h);
 }
 
+// A wildcard or another character no file name may hold makes Windows fail
+// a path query with ERROR_INVALID_NAME (123) before looking at the disk. The
+// Microsoft Layer for Unicode relies on it: GetFileAttributesW(L"???.???")
+// failing that way is how it knows it runs on NT (Windows 9x answers
+// ERROR_CALL_NOT_IMPLEMENTED); any other error and it takes the 9x path. A
+// leading \\?\ or \\.\ is a prefix, not part of the name.
+bool path_has_invalid_name_chars(const std::string &name) {
+    size_t from = (name.rfind("\\\\?\\", 0) == 0 || name.rfind("\\\\.\\", 0) == 0) ? 4 : 0;
+    return name.find_first_of("?*<>|\"", from) != std::string::npos;
+}
+
 void get_file_attributes_named(X86 *c, const std::string &name) {
+    if (path_has_invalid_name_chars(name)) {
+        set_last_error(123); // ERROR_INVALID_NAME
+        set_eax(c, 0xffffffffu);
+        return;
+    }
     std::string host = win32_host_path(name);
     OsStat st{};
     if (host.empty() || os_stat(host.c_str(), &st) != 0) {
@@ -4667,6 +4683,11 @@ void get_file_attributes_ex_named(X86 *c, const std::string &name) {
     uint32_t out = arg(c, 2);
     if (arg(c, 1) != 0 || !out || !gm_valid(out, 36)) {
         set_last_error(87);
+        set_eax(c, 0);
+        return;
+    }
+    if (path_has_invalid_name_chars(name)) {
+        set_last_error(123); // ERROR_INVALID_NAME
         set_eax(c, 0);
         return;
     }
