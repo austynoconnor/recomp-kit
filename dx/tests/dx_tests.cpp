@@ -10829,6 +10829,15 @@ static void test_d3d9_device_getters_and_shaders() {
     CHECK_EQ(call_method(dev, V_SetVertexShaderConstantF, {10, sc(0x700), 2}), 0u);
     CHECK_EQ(call_method(dev, V_GetVertexShaderConstantF, {11, sc(0x800), 1}), 0u);
     CHECK_EQ(rd32(sc(0x800)), 0x3f000004u);
+
+    // GetDisplayMode (slot 8) is the back buffer; CreateVolumeTexture (slot
+    // 24) fails with a null texture.
+    CHECK_EQ(call_method(dev, 8, {0, sc(0x900)}), 0u);
+    CHECK_EQ(rd32(sc(0x900)), 640u);
+    CHECK_EQ(rd32(sc(0x90c)), 22u);
+    wr32(sc(0x910), 0x1234);
+    CHECK(call_method(dev, 24, {16, 16, 16, 1, 0, 21, 1, sc(0x910), 0}) != 0u);
+    CHECK_EQ(rd32(sc(0x910)), 0u);
 }
 
 static void test_dsound_device_exports() {

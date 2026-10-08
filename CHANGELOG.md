@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 2026-10-08 16:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `IDirect3DDevice9::GetDisplayMode` reports the back
+  buffer's size at 60 Hz, X8R8G8B8, where the stub left the structure
+  unwritten. `CreateVolumeTexture` fails with `D3DERR_OUTOFVIDEOMEMORY`
+  and a null texture instead of succeeding with no texture: Star Wars
+  Battlefront II's texture loader checks the result and skips the texture,
+  where before it locked a null pointer and crashed. Volume textures are
+  still unsupported. `dx_tests` 141,297 checks, 17 failures (the existing
+  64-bit "display ABI" checks under wasm32).
+
 - 2026-10-08 16:10 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: the Direct3D 9 device implements what Star Wars
   Battlefront II's statically linked D3DX calls directly, where the old

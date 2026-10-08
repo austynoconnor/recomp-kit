@@ -61,6 +61,7 @@ static const uint32_t D3D_OK9 = 0u;
 static const uint32_t D3DERR_NOTAVAILABLE = MAKE_D3DHRESULT(2154);
 static const uint32_t D3DERR_INVALIDCALL = MAKE_D3DHRESULT(2156);
 static const uint32_t D3DERR_NOTFOUND9 = MAKE_D3DHRESULT(2150);
+static const uint32_t D3DERR_OUTOFVIDEOMEMORY9 = MAKE_D3DHRESULT(380);
 
 // Defined with the resources further down.
 struct ComObj;
@@ -353,7 +354,6 @@ static ComObj *device_depthbuffer(ComObj *dev);
     }
 
 D9_STUB(EvictManagedResources, 1)
-D9_STUB(GetDisplayMode, 3)
 D9_STUB(GetCreationParameters, 2)
 D9_STUB(SetCursorProperties, 4)
 D9_STUB(SetCursorPosition, 4)
@@ -364,7 +364,6 @@ D9_STUB(GetRasterStatus, 3)
 D9_STUB(SetDialogBoxMode, 2)
 D9_STUB(SetGammaRamp, 4)
 D9_STUB(GetGammaRamp, 3)
-D9_STUB(CreateVolumeTexture, 9)
 D9_STUB(UpdateSurface, 5)
 D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
@@ -2835,6 +2834,37 @@ static const ComMethod g_shader9[] = {
     {"GetDevice", 2, Res_GetDevice},
     {"GetFunction", 3, Shader_GetFunction},
 };
+
+// (this, iSwapChain, pMode): D3DDISPLAYMODE is Width, Height, RefreshRate,
+// Format. The display is the device's back buffer at 60 Hz, X8R8G8B8.
+void Dev_GetDisplayMode(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t m = arg(c, 2);
+    if (!dev || !m) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(m + 0, dev->width ? dev->width : 640);
+    wr32(m + 4, dev->height ? dev->height : 480);
+    wr32(m + 8, 60);
+    wr32(m + 12, 22);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, Width, Height, Depth, Levels, Usage, Format, Pool, ppVolumeTexture,
+// pSharedHandle). There are no volume textures yet: say so, with a null out
+// pointer, so a game that checks the result skips the texture rather than
+// locking a texture it was never given.
+void Dev_CreateVolumeTexture(X86 *c) {
+    uint32_t out = arg(c, 8);
+    log_once("d3d9.dev.CreateVolumeTexture",
+             "d3d9: CreateVolumeTexture %ux%ux%u: volume textures are not supported, "
+             "answering D3DERR_OUTOFVIDEOMEMORY",
+             arg(c, 1), arg(c, 2), arg(c, 3));
+    if (out)
+        com_out_ptr(out, 0);
+    com_ret(c, D3DERR_OUTOFVIDEOMEMORY9);
+}
 
 static const ComMethod g_d3d9[] = {
     {"QueryInterface", 3, com_QueryInterface},
