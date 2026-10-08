@@ -1,7 +1,7 @@
 // worker.js - imports, status and saves in the origin private file system
 // (OPFS), off the page's thread. Layout: /<game id>/game/... (the game, its
 // .manifest.json and .stamp) and /<game id>/profile/... (saves and settings).
-import { importGame, gameStatus, ZipReader, zipWrite, Sha256 } from "./core.js";
+import { importGame, gameStatus, planImport, STAMP, ZipReader, zipWrite, Sha256 } from "./core.js";
 
 let controller = null;
 
@@ -184,6 +184,31 @@ const handlers = {
       freeBytes: await freeBytes(),
       onProgress: (p) => postMessage({ progress: p }),
     });
+    controller = null;
+    return outcome;
+  },
+  // A streamed view needs the full directory catalogue, but only its pinned
+  // executable is downloaded up front. Never stamp this as a full installation.
+  async streamSetup({ game, manifestUrl }) {
+    controller = new AbortController();
+    const source = await hostedSource(manifestUrl, controller.signal);
+    const plan = planImport(game, await source.list());
+    if (plan.error || plan.missing.length) throw new Error("Game download list is incomplete.");
+    if (plan.files.some(f => /[\r\n]/.test(f.relative) || f.relative.length > 4000))
+      throw new Error("Game download list contains an unsupported path.");
+    const root = await dirFor(game.id + "/game");
+    const store = opfsStore(root);
+    const bootSource = { list: async () => plan.files.filter(f => f.relative === plan.exe).map(f => f.entry),
+                         stream: entry => source.stream(entry) };
+    const outcome = await importGame({ ...game, requiredDirs: [] }, bootSource, store, {
+      signal: controller.signal, freeBytes: await freeBytes(),
+      onProgress: p => postMessage({ progress: p, startup: true }),
+    });
+    await store.remove(STAMP);
+    if (outcome.result === "done") {
+      const paths = plan.files.filter(f => f.relative !== plan.exe).map(f => f.relative);
+      await store.writeText(".stream-index", paths.join("\n") + "\n");
+    }
     controller = null;
     return outcome;
   },

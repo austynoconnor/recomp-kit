@@ -18,6 +18,7 @@ import fnmatch
 import hashlib
 import http.server
 import json
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -42,6 +43,7 @@ def game_entry(cfg):
         "store": launcher["store"],
         "installNames": launcher["install_names"],
         "minFreeMb": launcher["min_free_mb"],
+        "streamAssets": launcher.get("stream_assets", False),
     }
 
 
@@ -106,6 +108,7 @@ def hosted_assets(games, asset_dirs, out):
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "assets.json").write_text(json.dumps({"files": entries}) + "\n")
         game["hostedAssets"] = "./%s/assets.json" % game["id"]
+        game["assetBase"] = "/_game-assets/%s" % quote(game["id"], safe="")
     (Path(out) / "games.json").write_text(json.dumps(games, indent=2) + "\n")
     return routes
 
@@ -118,18 +121,73 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
         self.asset_files = asset_files or {}
         super().__init__(*args, **kwargs)
 
+    def asset_route(self, path):
+        # FetchFS joins its base URL with an already-rooted relative path.
+        # Normalize only repeated slashes; dot paths still cannot reach inputs.
+        return re.sub(r"/+", "/", urlsplit(path).path)
+
     def translate_path(self, path):
-        route = urlsplit(path).path
+        route = self.asset_route(path)
         if route in self.asset_files:
             return str(self.asset_files[route])
         return super().translate_path(path)
 
     def send_head(self):
-        route = urlsplit(self.path).path
-        if route.startswith("/_game-assets/") and route not in self.asset_files:
+        route = self.asset_route(self.path)
+        self.byte_range = None
+        if not route.startswith("/_game-assets/"):
+            return super().send_head()
+        path = self.asset_files.get(route)
+        if path is None:
             self.send_error(404, "Game asset not found")
             return None
-        return super().send_head()
+        file = open(path, "rb")
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        # HEAD reports the entire file, including when FetchFS sends Range.
+        requested = self.headers.get("Range") if self.command == "GET" else None
+        if requested:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested)
+            if match and any(match.groups()):
+                left, right = match.groups()
+                if left:
+                    start = int(left)
+                    end = min(int(right), end) if right else end
+                elif int(right):
+                    start = max(0, size - int(right))
+                else:
+                    start = size
+            else:
+                start = size
+            if start > end or start >= size:
+                file.close()
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return None
+            self.byte_range = (start, end)
+        self.send_response(206 if requested else 200)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        if requested:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        self.end_headers()
+        return file
+
+    def copyfile(self, source, outputfile):
+        if self.byte_range is None:
+            return super().copyfile(source, outputfile)
+        start, end = self.byte_range
+        source.seek(start)
+        remaining = end - start + 1
+        while remaining:
+            chunk = source.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            outputfile.write(chunk)
+            remaining -= len(chunk)
 
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")

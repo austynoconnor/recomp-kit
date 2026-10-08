@@ -39,6 +39,8 @@ window.recompLog = log; // for tests
 // Keep diagnostics bounded during long runs; the browser console need not
 // retain every line emitted by translated code.
 function record(text) {
+  if (text.includes("[host] could not prepare streamed game files"))
+    status("Game data could not be prepared. Stop and choose Start game to retry.");
   log.push(text);
   if (log.length > 1000) log.splice(0, log.length - 1000);
 }
@@ -57,7 +59,7 @@ async function prepareGame(game) {
     if (data.progress) {
       const p = data.progress;
       const percent = p.bytesTotal ? Math.floor(p.bytesDone / p.bytesTotal * 100) : 0;
-      status(`Downloading game · ${percent}%\n${(p.bytesDone / 1024 ** 3).toFixed(2)} of ${(p.bytesTotal / 1024 ** 3).toFixed(2)} GB\nYour next visit will use the cached files.`);
+      status(`Downloading game · ${percent}%\n${data.startup ? `${(p.bytesDone / 1024 ** 2).toFixed(1)} of ${(p.bytesTotal / 1024 ** 2).toFixed(1)} MB` : `${(p.bytesDone / 1024 ** 3).toFixed(2)} of ${(p.bytesTotal / 1024 ** 3).toFixed(2)} GB`}\n${data.startup ? "Other game files load as they are needed." : "Your next visit will use the cached files."}`);
       return;
     }
     const request = pending.get(data.id);
@@ -78,13 +80,15 @@ async function prepareGame(game) {
   try {
     status("Checking game files…");
     const cached = await request("status");
-    if (cached.status.state === "ready") return;
+    if (cached.status.state === "ready") return false;
     if (!game.hostedAssets) throw new Error(`${game.title} has not been imported yet.`);
     status("Preparing your first play…\nDownloading game files automatically.");
     const manifestUrl = new URL(game.hostedAssets, new URL("../games.json", location.href)).href;
-    const outcome = await request("import", { kind: "hosted", manifestUrl });
+    const streamed = game.streamAssets && game.assetBase;
+    const outcome = await request(streamed ? "streamSetup" : "import", { kind: "hosted", manifestUrl });
     if (outcome.result === "noSpace") throw new Error("There isn't enough browser storage for this game.");
     if (outcome.result !== "done") throw new Error(outcome.error || "Game download did not finish. Stop and try Start again to resume.");
+    return !!streamed;
   } finally {
     worker.terminate();
   }
@@ -101,7 +105,7 @@ async function start() {
   document.title = game.title;
 
   // Hosted games populate OPFS automatically; existing imported copies work too.
-  await prepareGame(game);
+  const streamed = await prepareGame(game);
   status("Starting game…");
 
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
@@ -133,6 +137,10 @@ async function start() {
     preRun: [() => {
       const m = Module;
       m.ENV.RECOMP_PROFILE_DIR = `/opfs/${id}/profile`;
+      if (streamed) {
+        m.ENV.RECOMP_WEB_ASSET_BASE = new URL(game.assetBase, location.href).href;
+        m.ENV.RECOMP_WEB_ASSET_INDEX = `/opfs/${id}/game/.stream-index`;
+      }
       const extra = new URLSearchParams(location.search);
       for (const [k, v] of extra) if (k.startsWith("RECOMP_")) m.ENV[k] = v;
     }],

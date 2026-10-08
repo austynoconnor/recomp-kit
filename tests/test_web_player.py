@@ -112,7 +112,7 @@ class WebPlayerTests(unittest.TestCase):
         self.assertEqual(page.locator("script[src]").count(), 0)
         self.assertFalse(page.evaluate("!!window.Module"))
 
-    def hosted_fixture(self, wrong_size=False):
+    def hosted_fixture(self, wrong_size=False, streamed=False):
         """Exercise real download, validation and OPFS code with tiny game files."""
         root = Path(self.temp.name)
         for name in ("worker.js", "core.js"):
@@ -120,7 +120,8 @@ class WebPlayerTests(unittest.TestCase):
         game = {"id": "stub", "title": "Test game", "executable": "GAME.EXE",
                 "sha256": hashlib.sha256(b"test executable").hexdigest(),
                 "requiredDirs": ["data"], "exclude": [], "minFreeMb": 0,
-                "hostedAssets": "./stub/assets.json"}
+                "hostedAssets": "./stub/assets.json", "streamAssets": streamed,
+                "assetBase": "/stub"}
         assets = {"GAME.EXE": b"test executable", "data/map.bin": b"test map"}
         entries = []
         for name, data in assets.items():
@@ -166,6 +167,33 @@ class WebPlayerTests(unittest.TestCase):
         page.reload()
         page.wait_for_function("window.result !== undefined")
         self.assertEqual(page.evaluate("window.result"), "ready")
+
+    def test_stream_startup_fetches_only_executable_and_keeps_full_status_incomplete(self):
+        self.hosted_fixture(streamed=True)
+        page = self.context.new_page()
+        requests = []
+        page.on("request", lambda request: requests.append(request.url))
+        page.goto(self.url + "download.html")
+        page.wait_for_function("window.result !== undefined")
+        self.assertEqual(page.evaluate("window.result"), "ready")
+        self.assertTrue(any(url.endswith("GAME.EXE") for url in requests))
+        self.assertFalse(any(url.endswith("map.bin") for url in requests))
+        files = page.evaluate("""async () => {
+            const r = await navigator.storage.getDirectory();
+            const d = await (await r.getDirectoryHandle('stub')).getDirectoryHandle('game');
+            const out = [];
+            for await (const name of d.keys()) out.push(name);
+            return out;
+        }""")
+        self.assertIn(".stream-index", files)
+        self.assertNotIn(".stamp", files)
+        self.assertNotIn("data", files)
+        (Path(self.temp.name) / "stub/GAME.EXE").unlink()
+        requests.clear()
+        page.reload()
+        page.wait_for_function("window.result !== undefined")
+        self.assertEqual(page.evaluate("window.result"), "ready")
+        self.assertFalse(any(url.endswith("GAME.EXE") for url in requests))
 
     def test_hints_follow_active_device_and_controller_disconnect(self):
         root = Path(self.temp.name) / "stub"
