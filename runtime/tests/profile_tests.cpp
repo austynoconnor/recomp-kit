@@ -11,6 +11,7 @@ extern "C" {
 #include "../intrinsics.h"
 #include "../win32.h"
 #include "../imports.h"
+#include <chrono>
 #include <initializer_list>
 #include <cstdio>
 #include <cstring>
@@ -141,16 +142,24 @@ int main(int argc, char **argv) {
     };
     // Caller stays published across all 10,000 generated dispatches; gaps therefore
     // count against the >90% requirement instead of disappearing as idle time.
+    // A fast machine finishes 10,000 copies in under 100 ms (100 samples at
+    // 1000 Hz), so batches repeat until the run lasts at least 200 ms.
     recomp_profile_push(0xfffffffe);
-    for (int i = 0; i < 10000; ++i) {
-        setup();
-        if (i & 1)
-            direct_call(&c);
-        else
-            recomp_call(&c, target);
-    }
+    uint32_t batches = 0;
+    auto started = std::chrono::steady_clock::now();
+    do {
+        for (int i = 0; i < 10000; ++i) {
+            setup();
+            if (i & 1)
+                direct_call(&c);
+            else
+                recomp_call(&c, target);
+        }
+        ++batches;
+    } while (enabled && batches < 50 &&
+             std::chrono::steady_clock::now() - started < std::chrono::milliseconds(200));
     CHECK(memcmp(g_mem + src, g_mem + dst, n) == 0);
-    CHECK(fixture_calls == 10000);
+    CHECK(fixture_calls == 10000 * batches);
     CHECK(recomp_profile_depth() == (enabled ? 1u : 0u));
     if (enabled) {
         auto rows = profile_snapshot();
@@ -160,9 +169,9 @@ int main(int argc, char **argv) {
             if (r.index == index_)
                 hot = r.samples;
         }
-        printf("fixture: 10000 generated dispatches at %08x with a copy hook, "
+        printf("fixture: %u generated dispatches at %08x with a copy hook, "
                "hot=%llu total=%llu share=%.2f%%\n",
-               target, (unsigned long long)hot, (unsigned long long)total,
+               10000 * batches, target, (unsigned long long)hot, (unsigned long long)total,
                total ? 100.0 * hot / total : 0);
         CHECK(total >= 100);
         CHECK(hot * 100 > total * 90);

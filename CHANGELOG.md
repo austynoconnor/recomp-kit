@@ -9,6 +9,9 @@
   branches' USER32 table additions are kept. The import-coverage test no
   longer counts the deliberately ambiguous `abi-test.dll` decorations that
   the startup-API test registers as real unknown imports.
+  The game-backed profiler fixture repeats its 10,000 dispatches until it
+  has run for 200 ms, so a fast machine still collects the 100 samples the
+  check needs.
 
 - 2026-10-08 12:24 CDT — Claude Opus 5.5: groundwork for Metal Gear Solid 2:
   Substance (branch `giggity-mgs2`), independent of the Direct3D 8 work.
