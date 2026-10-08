@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <string>
 
@@ -93,6 +94,130 @@ void get_file_information_by_handle(X86 *c) {
 
 void get_user_default_lang_id(X86 *c) {
     set_eax(c, 0x0409); // en-US, matching GetUserDefaultLCID
+}
+
+// GetDateFormatA / GetTimeFormatA for en-US. A SYSTEMTIME is eight WORDs:
+// year, month, day of week, day, hour, minute, second, milliseconds. A null
+// one means now. The picture language is Windows': d dd ddd dddd, M MM MMM
+// MMMM, y yy yyyy, h hh H HH, m mm, s ss, t tt, and 'quoted' text.
+struct SysTime {
+    int year, month, dow, day, hour, minute, second;
+};
+SysTime read_systemtime(uint32_t p) {
+    SysTime t{};
+    if (p && gm_valid(p, 16)) {
+        t.year = rd16(p);
+        t.month = rd16(p + 2);
+        t.dow = rd16(p + 4);
+        t.day = rd16(p + 6);
+        t.hour = rd16(p + 8);
+        t.minute = rd16(p + 10);
+        t.second = rd16(p + 12);
+        return t;
+    }
+    struct tm now{};
+    os_localtime((int64_t)time(nullptr), &now);
+    t = SysTime{now.tm_year + 1900, now.tm_mon + 1, now.tm_wday, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec};
+    return t;
+}
+std::string format_picture(const std::string &pic, const SysTime &t) {
+    static const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    static const char *const months[] = {"January", "February", "March",     "April",   "May",      "June",
+                                         "July",    "August",   "September", "October", "November", "December"};
+    std::string out;
+    char buf[16];
+    for (size_t i = 0; i < pic.size();) {
+        char ch = pic[i];
+        if (ch == '\'') {
+            size_t end = pic.find('\'', i + 1);
+            if (end == std::string::npos)
+                end = pic.size();
+            out += pic.substr(i + 1, end - i - 1);
+            i = end + 1;
+            continue;
+        }
+        size_t n = 1;
+        while (i + n < pic.size() && pic[i + n] == ch)
+            ++n;
+        int h12 = t.hour % 12 ? t.hour % 12 : 12;
+        switch (ch) {
+        case 'd':
+            if (n >= 3)
+                out += n == 3 ? std::string(days[t.dow % 7], 3) : days[t.dow % 7];
+            else
+                snprintf(buf, sizeof buf, n == 2 ? "%02d" : "%d", t.day), out += buf;
+            break;
+        case 'M':
+            if (n >= 3)
+                out += n == 3 ? std::string(months[(t.month + 11) % 12], 3) : months[(t.month + 11) % 12];
+            else
+                snprintf(buf, sizeof buf, n == 2 ? "%02d" : "%d", t.month), out += buf;
+            break;
+        case 'y':
+            if (n <= 2)
+                snprintf(buf, sizeof buf, n == 2 ? "%02d" : "%d", t.year % 100);
+            else
+                snprintf(buf, sizeof buf, "%04d", t.year);
+            out += buf;
+            break;
+        case 'h':
+            snprintf(buf, sizeof buf, n >= 2 ? "%02d" : "%d", h12), out += buf;
+            break;
+        case 'H':
+            snprintf(buf, sizeof buf, n >= 2 ? "%02d" : "%d", t.hour), out += buf;
+            break;
+        case 'm':
+            snprintf(buf, sizeof buf, n >= 2 ? "%02d" : "%d", t.minute), out += buf;
+            break;
+        case 's':
+            snprintf(buf, sizeof buf, n >= 2 ? "%02d" : "%d", t.second), out += buf;
+            break;
+        case 't':
+            out += n >= 2 ? (t.hour < 12 ? "AM" : "PM") : (t.hour < 12 ? "A" : "P");
+            break;
+        default:
+            out.append(n, ch);
+            break;
+        }
+        i += n;
+    }
+    return out;
+}
+// The shared tail: write the text and its NUL, or report the size needed.
+void put_formatted(X86 *c, const std::string &text, uint32_t out, uint32_t cch) {
+    uint32_t need = (uint32_t)text.size() + 1;
+    if (cch == 0) {
+        set_eax(c, need);
+        return;
+    }
+    if (!out || cch < need || !gm_valid(out, need)) {
+        set_last_error(122); // ERROR_INSUFFICIENT_BUFFER
+        set_eax(c, 0);
+        return;
+    }
+    memcpy(g_mem + out, text.c_str(), need);
+    set_eax(c, need);
+}
+// (Locale, dwFlags, lpDate, lpFormat, lpDateStr, cchDate)
+void get_date_format(X86 *c) {
+    uint32_t flags = arg(c, 1), pic = arg(c, 3);
+    std::string picture = pic ? gm_str(pic, 256) : (flags & 2) ? "dddd, MMMM d, yyyy" : "M/d/yyyy"; // DATE_LONGDATE
+    put_formatted(c, format_picture(picture, read_systemtime(arg(c, 2))), arg(c, 4), arg(c, 5));
+}
+// (Locale, dwFlags, lpTime, lpFormat, lpTimeStr, cchTime)
+void get_time_format(X86 *c) {
+    uint32_t flags = arg(c, 1), pic = arg(c, 3);
+    std::string picture;
+    if (pic) {
+        picture = gm_str(pic, 256);
+    } else {
+        picture = (flags & 8) ? "H:mm" : "h:mm"; // TIME_FORCE24HOURFORMAT
+        if (!(flags & 2))                        // TIME_NOSECONDS
+            picture += ":ss";
+        if (!(flags & 8) && !(flags & 4)) // TIME_NOTIMEMARKER
+            picture += " tt";
+    }
+    put_formatted(c, format_picture(picture, read_systemtime(arg(c, 2))), arg(c, 4), arg(c, 5));
 }
 
 // --- USER32 -----------------------------------------------------------------
@@ -292,6 +417,8 @@ const ImportShim shims[] = {
     {"KERNEL32.dll", "GetFileInformationByHandle", 2, get_file_information_by_handle},
     {"KERNEL32.dll", "GetUserDefaultLangID", 0, get_user_default_lang_id},
     {"KERNEL32.dll", "GetSystemDefaultLangID", 0, get_user_default_lang_id},
+    {"KERNEL32.dll", "GetDateFormatA", 6, get_date_format},
+    {"KERNEL32.dll", "GetTimeFormatA", 6, get_time_format},
     {"USER32.dll", "DialogBoxParamA", 5, dialog_box_param},
     {"USER32.dll", "GetDlgItem", 2, get_dlg_item},
     {"USER32.dll", "EndDialog", 2, end_dialog},

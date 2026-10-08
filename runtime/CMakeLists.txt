@@ -79,6 +79,13 @@ add_test(NAME runtime_tests COMMAND runtime_tests WORKING_DIRECTORY ${POP_ROOT})
 # code through the interpreter. It takes two seconds when that returns.
 set_tests_properties(runtime_tests PROPERTIES LABELS game TIMEOUT 600
                      ENVIRONMENT RECOMP_PYTHON=${Python3_EXECUTABLE})
+add_executable(compat_extra_tests tests/compat_extra_tests.cpp tests/stub_recomp_call.cpp)
+target_link_libraries(compat_extra_tests PRIVATE recomp_platform recomp_runtime recomp_dx)
+target_compile_options(compat_extra_tests PRIVATE ${POP_WARN_HOST})
+pop_optimize(compat_extra_tests 1)
+pop_test_binary(compat_extra_tests)
+add_test(NAME compat_extra_tests COMMAND compat_extra_tests WORKING_DIRECTORY ${POP_ROOT})
+set_tests_properties(compat_extra_tests PROPERTIES LABELS nogame)
 add_executable(gdi_tests tests/gdi_tests.cpp tests/stub_recomp_call.cpp)
 target_link_libraries(gdi_tests PRIVATE recomp_platform recomp_runtime)
 target_compile_options(gdi_tests PRIVATE ${POP_WARN_HOST})
