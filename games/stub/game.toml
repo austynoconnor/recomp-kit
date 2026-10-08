@@ -42,9 +42,13 @@ camera = 0x00600400
 [controls]
 # The on-screen controls a fresh profile shows when no hardware keyboard is attached:
 # "pad", "keys", "pad+keys" or "hidden". pad: "mapped" (keys and mouse), "native"
-# (DirectInput joystick and XInput) or "off".
+# (DirectInput joystick and XInput) or "off". mouse: "absolute" (the guest
+# sees the host pointer's position) or "relative" (while the pointer is
+# captured the guest sees raw motion: SDL relative mode, pointer lock in a
+# browser; for games that aim with the mouse).
 default_layout = "pad"
 pad = "mapped"
+mouse = "absolute"
 
 [bundle]
 exclude = []

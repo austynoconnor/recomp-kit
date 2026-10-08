@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- 2026-10-08 18:50 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: relative mouse mode for games that aim with the mouse.
+  New `[controls] mouse = "absolute" | "relative"` in game.toml (default
+  `"absolute"`, so no existing game changes), generated as
+  `RECOMP_CONTROLS_RELATIVE_MOUSE`. With `"relative"`, while the host has
+  captured the pointer the SDL host turns on SDL's relative mouse mode
+  (pointer lock in a browser), so the pointer never stops at a window edge,
+  and passes raw motion (scaled to drawable pixels, sub-pixel remainders
+  carried) to DirectInput through the new `host_gate_relative_motion` /
+  `host_input_relative_motion`. The guest cursor position is left alone
+  and the pointer correction that steers absolute motion is dropped while
+  relative motion arrives. Releasing capture (Escape, focus loss) leaves
+  relative mode. `tests/test_game_config.py` covers the new key; the stub
+  game.toml documents it.
+
 - 2026-10-08 18:30 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: Direct3D 9 for what stalled Star Wars Battlefront II's
   loading screen. ps_1_x texture-addressing instructions (`texbem`,

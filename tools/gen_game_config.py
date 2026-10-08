@@ -54,6 +54,9 @@ def render_header(cfg):
     controls = cfg["controls"]
     lines.append("#define RECOMP_CONTROLS_DEFAULT_LAYOUT %s" % c_string(controls["default_layout"]))
     lines.append("#define RECOMP_CONTROLS_PAD %d" % ("off", "mapped", "native").index(controls["pad"]))
+    # 1: while the pointer is captured the host reports raw mouse motion
+    # (SDL relative mode; pointer lock in a browser) instead of a position.
+    lines.append("#define RECOMP_CONTROLS_RELATIVE_MOUSE %d" % int(controls["mouse"] == "relative"))
     lines.append("#define RECOMP_CONTROLS_MAPPED %s" % c_string(
         ";".join("%s=%s" % (k, controls["mapped"][k]) for k in sorted(controls["mapped"]))))
     native = controls["native"]

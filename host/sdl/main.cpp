@@ -276,6 +276,9 @@ struct PendingInput {
     uint32_t character = 0;
     uint32_t flags = 0;
 };
+// PendingInput::flags of a MOTION event in relative mouse mode: dx/dy are
+// raw motion in drawable pixels and x/y mean nothing.
+constexpr uint32_t kRelativeMotion = 1;
 std::vector<PendingInput> g_pending_input;
 // The queue is FILLED on the host thread inside an idle slice, with the
 // scheduler's lock down, and DRAINED by whichever guest thread holds the baton
@@ -423,6 +426,15 @@ void update_platform_pointer_capture() {
         SDL_ShowCursor();
         g_pointer_hidden = false;
     }
+#if RECOMP_CONTROLS_RELATIVE_MOUSE
+    // A game that aims with the mouse reads raw motion while captured: SDL's
+    // relative mode (pointer lock in a browser) never lets the pointer reach
+    // an edge.
+    if (g_window && SDL_GetWindowRelativeMouseMode(g_window) != want) {
+        SDL_SetWindowRelativeMouseMode(g_window, want);
+        trace_state(want ? "relative mouse ON" : "relative mouse OFF");
+    }
+#endif
 
     // A regular window confines too; hiding alone lets the OS pointer leave
     // the frame. Dragging into the resize margin releases capture so the
@@ -562,6 +574,19 @@ void handle_mouse_move(const SDL_MouseMotionEvent &motion) {
         controls::host_pointer_moved(motion.x, motion.y);
     PendingInput e;
     e.kind = PendingInput::MOTION;
+#if RECOMP_CONTROLS_RELATIVE_MOUSE
+    if (g_window && motion.which != SDL_TOUCH_MOUSEID && SDL_GetWindowRelativeMouseMode(g_window)) {
+        // Window points to drawable pixels, so a delta means the same
+        // distance whatever the window's scale.
+        int bw, bh, dw, dh;
+        window_sizes(&bw, &bh, &dw, &dh);
+        e.flags = kRelativeMotion;
+        e.dx = motion.xrel * (bw > 0 ? double(dw) / bw : 1.0);
+        e.dy = motion.yrel * (bh > 0 ? double(dh) / bh : 1.0);
+        queue_or_apply(e);
+        return;
+    }
+#endif
     // A pointer resting against a system strip means the edge behind it.
     double strip_top = 0, strip_bottom = 0;
     system_strip_insets(&strip_top, &strip_bottom);
@@ -746,7 +771,18 @@ void apply_input(const PendingInput &e) {
         host_gate_fallback_layout(e.drawable_w, e.drawable_h);
     switch (e.kind) {
     case PendingInput::MOTION:
-        apply_motion(e.x, e.y, e.dx, e.dy);
+        if (e.flags & kRelativeMotion) {
+            // Sub-pixel motion is carried to the next event rather than lost.
+            static double carry_x = 0, carry_y = 0;
+            carry_x += e.dx;
+            carry_y += e.dy;
+            const int32_t ix = int32_t(carry_x), iy = int32_t(carry_y);
+            carry_x -= ix;
+            carry_y -= iy;
+            host_gate_relative_motion(ix, iy);
+        } else {
+            apply_motion(e.x, e.y, e.dx, e.dy);
+        }
         break;
     case PendingInput::BUTTON:
         apply_button(e.button, e.down, e.x, e.y, e.inside, e.edge);
