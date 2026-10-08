@@ -1266,7 +1266,8 @@ static void cd_guest_root(X86 *c) {
     call_import(c, "KERNEL32.dll", "SetCurrentDirectoryA", {put_str(RECOMP_GUEST_ROOT)});
 }
 static void cd_exe_dir(X86 *c) {
-    call_import(c, "KERNEL32.dll", "SetCurrentDirectoryA", {put_str(win32_guest_exe_dir().c_str())});
+    call_import(c, "KERNEL32.dll", "SetCurrentDirectoryA",
+                {put_str(win32_guest_exe_dir().c_str())});
 }
 struct AtGuestRoot {
     X86 *c;

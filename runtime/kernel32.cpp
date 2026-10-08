@@ -565,7 +565,9 @@ static std::string install_root(const std::string &exe_dir, bool *in_subdir) {
         std::string last = slash == std::string::npos ? root : root.substr(slash + 1);
         if (lower(last) != lower(parts[i]))
             return exe_dir;
-        root = slash == std::string::npos ? std::string(".") : slash == 0 ? "/" : root.substr(0, slash);
+        root = slash == std::string::npos ? std::string(".")
+               : slash == 0               ? "/"
+                                          : root.substr(0, slash);
     }
     *in_subdir = !parts.empty();
     return root;
