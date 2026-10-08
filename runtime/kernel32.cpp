@@ -3443,7 +3443,7 @@ void k_SetThreadPriority(X86 *c) {
 }
 
 void k_ExitProcess(X86 *c) {
-    LOGW("ExitProcess(%u)", arg(c, 0));
+    LOGW("ExitProcess(%u) from %08x", arg(c, 0), rd32(c->r[R_ESP]));
     if (request_process_exit(arg(c, 0)))
         return; // never returns
     publish_process_exit(arg(c, 0));

@@ -73,8 +73,13 @@ def copy_web_build(game_id, build, out):
             shutil.copy2(f, dest / f.name)
 
 
-def hosted_assets(games, asset_dirs, out):
-    """Expose only configured game files, without copying private inputs into the site."""
+def hosted_assets(games, asset_dirs, out, export=False):
+    """Expose only configured game files, without copying private inputs into the site.
+
+    With `export`, the files are copied into <out>/<game id>/assets/ instead and
+    every URL is relative, so the directory can be uploaded to any static host
+    that answers HEAD with Content-Length and byte-range GETs (the streamed path
+    needs both; the full-import path needs only GET)."""
     routes = {}
     for game in games:
         if game["id"] not in asset_dirs:
@@ -100,15 +105,24 @@ def hosted_assets(games, asset_dirs, out):
             if parts[-1] in (".stamp", ".manifest.json", ".DS_Store") or parts[0] == "__MACOSX":
                 continue
             stat = path.stat()
-            url = "/_game-assets/%s/%s" % (quote(game["id"], safe=""), quote(rel, safe="/"))
-            routes[url] = resolved
+            if export:
+                copy = Path(out) / game["id"] / "assets" / rel
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(resolved, copy)
+                url = "assets/" + quote(rel, safe="/")  # relative to assets.json
+            else:
+                url = "/_game-assets/%s/%s" % (quote(game["id"], safe=""), quote(rel, safe="/"))
+                routes[url] = resolved
             entries.append({"path": rel, "size": stat.st_size, "mtime": int(stat.st_mtime),
                             "isDir": False, "url": url})
         dest = Path(out) / game["id"]
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "assets.json").write_text(json.dumps({"files": entries}) + "\n")
         game["hostedAssets"] = "./%s/assets.json" % game["id"]
-        game["assetBase"] = "/_game-assets/%s" % quote(game["id"], safe="")
+        # The runtime page lives in <out>/<game id>/, so a relative base names
+        # the exported copy from there.
+        game["assetBase"] = ("../%s/assets" % quote(game["id"], safe="") if export
+                             else "/_game-assets/%s" % quote(game["id"], safe=""))
     (Path(out) / "games.json").write_text(json.dumps(games, indent=2) + "\n")
     return routes
 
@@ -212,16 +226,20 @@ def main():
     parser.add_argument("--serve", type=int, nargs="?", const=8000, metavar="PORT")
     parser.add_argument("--asset-dir", action="append", default=[], metavar="ID=DIR",
                         help="serve game files automatically from a local installation")
+    parser.add_argument("--export-assets", action="store_true",
+                        help="copy the --asset-dir files into the site for a static host "
+                             "instead of serving them (no --serve needed)")
     args = parser.parse_args()
     games = build(args.game_dir, args.out)
     ids = {g["id"] for g in games}
     asset_dirs = {}
     for spec in args.asset_dir:
         game_id, sep, directory = spec.partition("=")
-        if not sep or game_id not in ids or args.serve is None:
-            parser.error("--asset-dir needs ID=DIR for a known game and --serve")
+        if not sep or game_id not in ids or (args.serve is None and not args.export_assets):
+            parser.error("--asset-dir needs ID=DIR for a known game and --serve or --export-assets")
         asset_dirs[game_id] = directory
-    asset_files = hosted_assets(games, asset_dirs, args.out) if asset_dirs else {}
+    asset_files = (hosted_assets(games, asset_dirs, args.out, export=args.export_assets)
+                   if asset_dirs else {})
     for spec in args.web_build:
         game_id, sep, build_dir = spec.partition("=")
         if not sep or game_id not in ids:

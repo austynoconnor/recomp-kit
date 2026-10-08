@@ -59,6 +59,28 @@ class WebLauncherTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 web_launcher.hosted_assets([game], {"stub": root}, out)
 
+    def test_exported_assets_are_copied_with_relative_urls(self):
+        # --export-assets: the site carries the game files itself, for a static
+        # host; URLs are relative to assets.json and nothing is routed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "game"
+            (root / "data").mkdir(parents=True)
+            (root / "data/a b.dat").write_bytes(b"asset data")
+            (root / "STUB.EXE").write_bytes(b"test executable")
+            (root / "secret.txt").write_text("excluded")
+            game = {"id": "stub", "executable": "STUB.EXE",
+                    "sha256": hashlib.sha256(b"test executable").hexdigest(),
+                    "requiredDirs": ["data"], "exclude": ["*.txt"]}
+            out = Path(tmp) / "site"
+            routes = web_launcher.hosted_assets([game], {"stub": root}, out, export=True)
+            self.assertEqual(routes, {})
+            manifest = json.loads((out / "stub/assets.json").read_text())
+            urls = sorted(e["url"] for e in manifest["files"])
+            self.assertEqual(urls, ["assets/STUB.EXE", "assets/data/a%20b.dat"])
+            self.assertEqual((out / "stub/assets/data/a b.dat").read_bytes(), b"asset data")
+            self.assertFalse((out / "stub/assets/secret.txt").exists())
+            self.assertEqual(game["assetBase"], "../stub/assets")
+
     def test_range_reads_head_and_invalid_ranges(self):
         with tempfile.TemporaryDirectory() as tmp:
             asset = Path(tmp) / "archive.bin"

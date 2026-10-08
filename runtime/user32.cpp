@@ -970,6 +970,8 @@ void dispatch_message(X86 *c) {
 }
 
 void u_PostMessageA(X86 *c) {
+    if (arg(c, 1) == 0x0010) // WM_CLOSE: name who asked, for unexplained exits
+        LOGW("PostMessageA(WM_CLOSE) from %08x", rd32(c->r[R_ESP]));
     // System messages with text pointers cannot be posted asynchronously. A
     // caller must SendMessage so the buffer remains alive through conversion.
     if (arg(c, 1) == 0x000c || arg(c, 1) == 0x000d) {
@@ -993,6 +995,8 @@ void u_DispatchMessageA(X86 *c) {
     dispatch_message(c);
 }
 void u_SendMessageA(X86 *c) {
+    if (arg(c, 1) == 0x0010) // WM_CLOSE: name who asked, for unexplained exits
+        LOGW("SendMessageA(WM_CLOSE) from %08x", rd32(c->r[R_ESP]));
     send_message(c, false);
 }
 
@@ -1054,6 +1058,7 @@ void u_DefWindowProcA(X86 *c) {
 }
 
 void u_PostQuitMessage(X86 *c) {
+    LOGW("PostQuitMessage(%u) from %08x", arg(c, 0), rd32(c->r[R_ESP]));
     host_post_message(0, 0x0012, arg(c, 0), 0);
     set_eax(c, 0);
 }

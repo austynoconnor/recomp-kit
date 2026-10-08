@@ -4836,9 +4836,14 @@ static void test_kernel32_wide() {
               rd16(fd) == 0xa5a5,
           "GetSystemDirectoryW supports size queries without writing a buffer");
     check(call_import(&c, "KERNEL32.dll", "GetDriveTypeW", {0}) == 3, "GetDriveTypeW");
-    check(call_import(&c, "KERNEL32.dll", "GetLogicalDriveStringsW", {5, fd}) == 4 &&
-              gm_wstr(fd) == "C:\\" && rd16(fd + 8) == 0,
-          "GetLogicalDriveStringsW double terminates");
+    {
+        // C: always, then the game's virtual CD drive when its image is present.
+        uint32_t need = call_import(&c, "KERNEL32.dll", "GetLogicalDriveStringsW", {0, 0});
+        uint32_t got = call_import(&c, "KERNEL32.dll", "GetLogicalDriveStringsW", {need, fd});
+        check(need >= 5 && need <= 21 && got == need - 1 && gm_wstr(fd) == "C:\\" &&
+                  rd16(fd + 2 * got) == 0 && rd16(fd + 2 * (got - 1)) == 0,
+              "GetLogicalDriveStringsW double terminates");
+    }
     check(call_import(&c, "KERNEL32.dll", "GetVolumeInformationW",
                       {0, fd, 64, fd + 128, fd + 132, fd + 136, fd + 140, 64}) == 1 &&
               gm_wstr(fd + 140) == "FAT32",

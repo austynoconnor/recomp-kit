@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- 2026-10-08 17:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: CPU renderer
+  depth and fog, Direct3D 9 pixel centres, CD3DFont text, static asset export.
+  - `dx/d3d9_raster.cpp`: a depth test (D3DRS_ZENABLE, ZFUNC, ZWRITEENABLE,
+    viewport MinZ/MaxZ) against a host-side float buffer per depth surface,
+    cleared by `Clear(D3DCLEAR_ZBUFFER)` (`d9_raster_clear_depth`); the
+    top-left fill rule, so triangles sharing an edge never both draw it;
+    pixel centres on integer coordinates as Direct3D 9 defines them; point
+    sampling when D3DSAMP_MAGFILTER is POINT (the default); clamped
+    addressing repeats edge texels instead of wrapping to the far side; fog
+    applied after the pixel shader towards D3DRS_FOGCOLOR. Together these
+    removed the seams between 2D tiles and the 3D draw-order errors in Crazy
+    Taxi's frames.
+  - `dx/d3d9_ffp.cpp`: table fog (D3DRS_FOGTABLEMODE) is generated, per
+    vertex from the eye depth (1 / RHW for pre-transformed vertices); the GPU
+    backends keep computing table fog per pixel.
+  - `runtime/gdi32_text.cpp`: ExtTextOut ignores ETO_OPAQUE/ETO_CLIPPED when no
+    rectangle is given, as Windows does; the DirectX SDK's CD3DFont builds its
+    glyph texture that way and every call used to fail.
+  - `tools/web_launcher.py --export-assets`: copies the `--asset-dir` files
+    into `<out>/<game id>/assets/` with relative URLs, so a site can be
+    uploaded to a static host that supports HEAD and byte ranges.
+  - Merged `fork/browser-release` (streamed hosted assets, browser session
+    lifecycle, input hints) so the web build carries them.
+  - Spin-wait loops hand over to other guest threads. Guest threads take
+    turns and only switch inside runtime calls, so a loop that just re-reads
+    one byte until another thread sets it (Crazy Taxi 0040861a, a lock between
+    its game thread and audio thread) never ended: pressing Start froze the
+    game. `tools/recomp/translate.py` now finds such loops (at most six loads,
+    compares and tests; no store; address registers unchanged inside the
+    loop) and puts `recomp_spin_wait(c)` on the back edge, as it does for
+    PAUSE. `runtime/cpu.cpp` makes that a scheduler checkpoint. List walks,
+    which move their address register, are untouched.
+  - Unexplained exits name their caller: ExitProcess, PostQuitMessage and a
+    WM_CLOSE sent or posted by the guest log the guest return address.
+    (Crazy Taxi's "exit after about 1000 frames" turned out to be the
+    headless host's own wall-clock cap.)
+  - `host/script.cpp`: scripts can press every letter key, not only P, Y and N.
+  - Tests: gdi_tests "ETO_OPAQUE with no rectangle"; tests/test_web_launcher.py
+    exported assets; tools/recomp/tests/test_translate_spin.py (a byte poll
+    yields, a list walk and a storing loop do not, PAUSE yields); runtime_tests
+    "GetLogicalDriveStringsW double terminates" allows the virtual CD drive.
+
 - 2026-10-08 15:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: Direct3D 8,
   fixed-function rendering, DirectShow RenderFile and game-named setjmp, the
   pieces that take Crazy Taxi from the Direct3D 8 wall to its title screen in
