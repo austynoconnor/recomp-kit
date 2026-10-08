@@ -1857,6 +1857,7 @@ void k_ReleaseSemaphore(X86 *c) {
         return;
     }
     o->count += n;
+    sched_wake_all(); // a thread waiting on the semaphore can take it now
     set_eax(c, 1);
 }
 

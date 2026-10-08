@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- 2026-10-08 19:20 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `ReleaseSemaphore` now wakes the scheduler, as
+  `SetEvent` and `ReleaseMutex` already did, so a thread waiting on the
+  semaphore is reconsidered at once instead of sleeping out its timeout.
+  Star Wars Battlefront II hands its loader and render threads off through
+  semaphores tens of thousands of times while loading.
+
 - 2026-10-08 18:50 CDT â€” Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: relative mouse mode for games that aim with the mouse.
   New `[controls] mouse = "absolute" | "relative"` in game.toml (default
