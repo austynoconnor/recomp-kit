@@ -1369,7 +1369,7 @@ void k_GetSystemInfo(X86 *c) {
     wr32(p + 0, 0);           // wProcessorArchitecture = INTEL, wReserved
     wr32(p + 4, 4096);        // dwPageSize
     wr32(p + 8, IMAGE_BASE);  // lpMinimumApplicationAddress
-    wr32(p + 12, HEAP_LIMIT); // lpMaximumApplicationAddress
+    wr32(p + 12, heap_highest_limit()); // lpMaximumApplicationAddress
     wr32(p + 16, 1);          // dwActiveProcessorMask
     wr32(p + 20, 1);          // dwNumberOfProcessors
     wr32(p + 24, 586);        // dwProcessorType = PROCESSOR_INTEL_PENTIUM

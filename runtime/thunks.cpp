@@ -14,7 +14,7 @@ bool thunk_bytes(uint32_t at, uint32_t size) {
         return false;
     if (loader_in_image(at) || loader_in_image(at + size - 1))
         return false;
-    return (at >= HEAP_BASE && at < HEAP_LIMIT && size <= HEAP_LIMIT - at) ||
+    return heap_region_contains(at, size) ||
            (at >= STACK_LIMIT && at < STACK_TOP && size <= STACK_TOP - at);
 }
 struct StackWrite {

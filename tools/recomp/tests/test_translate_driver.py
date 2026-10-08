@@ -109,6 +109,31 @@ def test_initterm_takes_a_table_of_function_pointers():
     assert entries == {0x00401000, 0x00401005}
 
 
+def test_initterm_reads_an_inline_walk():
+    """Visual C++ 2005's __cinit walks its C++ initializer table inline, with
+    the bounds in registers rather than pushed for a call."""
+    import struct
+    base, cinit, table = 0x00400000, 0x00401000, 0x00402000
+    slots = [0x00401000, 0, 0x00401020]
+    lo, hi = table, table + 4 * len(slots)
+    code = {
+        # MOV ESI,lo; MOV EDI,hi; MOV EAX,[ESI]; TEST EAX,EAX; JZ +2;
+        # CALL EAX; ADD ESI,4; CMP ESI,EDI; JC loop; RET
+        cinit: (bytes.fromhex("be") + struct.pack("<I", lo) + bytes.fromhex("bf") + struct.pack("<I", hi) +
+                bytes.fromhex("8b0685c07402ffd083c6043bf772f1c3")),
+        0x00401020: bytes.fromhex("c3"),
+        table: b"".join(struct.pack("<I", v) for v in slots),
+    }
+    img = synthetic_image(code, size=0x4000)
+    img.data_ranges = [(table, table + 0x100, ".data")]
+    insns = img.recover(cinit, set())
+    fn = T.Function(cinit, "cinit", insns[-1].addr + 1 - cinit, insns)
+    fn.measure(img)
+    ranges, entries = img.initterm_tables([fn])
+    assert [r[:2] for r in ranges] == [(lo, hi)]
+    assert entries == {0x00401000, 0x00401020}
+
+
 def test_initterm_refuses_a_range_of_text():
     """The strict table test is what makes the loose walker test safe.
 

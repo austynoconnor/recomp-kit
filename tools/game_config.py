@@ -56,6 +56,8 @@ BUTTON_TARGET_RE = re.compile(
     r"action:(settings|system_keyboard|edit_layout)|none)$")
 HEAP_END = 0x0e000000        # runtime/x86.h GUEST_HEAP_END; the mods' heap starts there
 GUEST_SIZE_DEFAULT = 0x10000000   # runtime/x86.h GUEST_SIZE: the arena, 256 MB unless a module needs more
+GUEST_SIZE_MAX = 0xf0000000       # keeps every guest address and size in 32 bits
+UPPER_HEAP_BASE = 0x10000000      # runtime/x86.h GUEST_UPPER_HEAP_BASE
 AUX_REQUIRED_KEYS = ("name", "path", "sha256", "base", "size")
 
 
@@ -235,6 +237,20 @@ def load_aux_modules(cfg, game_dir, source):
         raise ValueError("%s: [game] guest_size %#x must be page aligned and at least %#x"
                          % (source, guest_size, GUEST_SIZE_DEFAULT))
     game["guest_size"] = guest_size
+    # [game] upper_heap: a second heap region from UPPER_HEAP_BASE to the end
+    # of the arena, for a game whose start-up reserves more than the low
+    # arena (heap_base..0x0e000000) holds. Auxiliary modules map in that same
+    # range, so the two do not combine.
+    upper = game.setdefault("upper_heap", False)
+    if not isinstance(upper, bool):
+        raise ValueError("%s: [game] upper_heap must be a boolean" % source)
+    if upper and guest_size <= UPPER_HEAP_BASE:
+        raise ValueError("%s: [game] upper_heap needs guest_size above %#x" % (source, UPPER_HEAP_BASE))
+    if guest_size > GUEST_SIZE_MAX:
+        raise ValueError("%s: [game] guest_size %#x is above %#x" % (source, guest_size, GUEST_SIZE_MAX))
+    if upper and cfg.get("modules", {}).get("aux"):
+        raise ValueError("%s: [game] upper_heap and [modules.aux] both use the arena above %#x"
+                         % (source, UPPER_HEAP_BASE))
     modules = []
     for key, entry in sorted(cfg.get("modules", {}).get("aux", {}).items()):
         missing = [k for k in AUX_REQUIRED_KEYS if k not in entry]

@@ -28,6 +28,18 @@ static const uint32_t IMAGE_BASE = GUEST_IMAGE_BASE; // PE preferred base, no re
 // end address, so it must not be used as a bound.
 static const uint32_t HEAP_BASE = GUEST_HEAP_BASE; // heap arena start
 static const uint32_t HEAP_LIMIT = GUEST_HEAP_END; // heap arena end (exclusive)
+// The optional upper heap region ([game] upper_heap); empty when off.
+static const uint32_t UPPER_HEAP_BASE = GUEST_UPPER_HEAP_BASE;
+static const uint32_t UPPER_HEAP_LIMIT = GUEST_UPPER_HEAP_END;
+// True when [at, at + size) lies inside one heap region.
+static inline bool heap_region_contains(uint32_t at, uint32_t size) {
+    return (at >= HEAP_BASE && at < HEAP_LIMIT && size <= HEAP_LIMIT - at) ||
+           (at >= UPPER_HEAP_BASE && at < UPPER_HEAP_LIMIT && size <= UPPER_HEAP_LIMIT - at);
+}
+// The highest address any heap region ends at.
+static inline uint32_t heap_highest_limit() {
+    return UPPER_HEAP_LIMIT > UPPER_HEAP_BASE ? UPPER_HEAP_LIMIT : HEAP_LIMIT;
+}
 static const uint32_t STACK_TOP = GUEST_STACK_TOP; // initial ESP region top, grows down
 // 8 MB. A fixed megabyte was exhausted by Siege of Avalon's 1.19 launcher on
 // Play, although that executable reserves only a megabyte on Windows

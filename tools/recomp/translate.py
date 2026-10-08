@@ -1226,22 +1226,74 @@ class Image(object):
                     continue
                 if start.kind != "imm" or end.kind != "imm":
                     continue
-                lo, hi = start.imm, end.imm
-                if not (lo < hi and hi - lo <= 0x100000 and lo % 4 == 0):
+                named = self.initterm_range(start.imm, end.imm)
+                if named is None:
                     continue
-                if not any(a <= lo and hi <= b for a, b, _ in self.data_ranges):
+                ranges.append((start.imm, end.imm, ins.addr))
+                entries.update(named)
+        # Visual C++ 2005's __cinit walks the C++ initializer table inline:
+        # `MOV ESI,start; MOV EDI,end; ... MOV EAX,[ESI]; CALL EAX;
+        # ADD ESI,0x4; CMP ESI,EDI; JC`. There is no call site to name the
+        # range, so it is read from the loop's own registers instead: the
+        # register stepped by four, the register it is compared against, and
+        # the immediates each was last loaded with. The same strict table test
+        # applies.
+        for fn in functions:
+            if fn.addr not in walkers:
+                continue
+            for lo, hi, at in self.inline_initterm_bounds(fn):
+                named = self.initterm_range(lo, hi)
+                if named is None or any(r[:2] == (lo, hi) for r in ranges):
                     continue
-                # The looser walker test buys a stricter table test: an
-                # initializer array holds function pointers and nulls and
-                # nothing else, so one slot that is neither disqualifies the
-                # range rather than being quietly skipped.
-                slots = [self.rd32(va) for va in range(lo, hi, 4)]
-                named = [t for t in slots if t]
-                if not named or not all(self.is_exec(t) for t in named):
-                    continue
-                ranges.append((lo, hi, ins.addr))
+                ranges.append((lo, hi, at))
                 entries.update(named)
         return ranges, entries
+
+    def initterm_range(self, lo, hi):
+        """The function pointers in [lo, hi), or None unless it is a table.
+
+        The looser walker test buys a stricter table test: an initializer
+        array holds function pointers and nulls and nothing else, so one slot
+        that is neither disqualifies the range rather than being quietly
+        skipped."""
+        if not (lo < hi and hi - lo <= 0x100000 and lo % 4 == 0):
+            return None
+        if not any(a <= lo and hi <= b for a, b, _ in self.data_ranges):
+            return None
+        slots = [self.rd32(va) for va in range(lo, hi, 4)]
+        named = [t for t in slots if t]
+        if not named or not all(self.is_exec(t) for t in named):
+            return None
+        return named
+
+    @staticmethod
+    def inline_initterm_bounds(fn):
+        """(lo, hi, address) for each inline walk in `fn`: `ADD r,0x4` with a
+        `CMP r,h` after it, where r and h were last loaded with immediates."""
+        regs = ("EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP")
+        out = []
+        for i, ins in enumerate(fn.insns):
+            if ins.mnem != "ADD" or ins.ops[1:] != ["0x4"] or ins.ops[0] not in regs:
+                continue
+            step = ins.ops[0]
+            cmp = next((c for c in fn.insns[i + 1:i + 4]
+                        if c.mnem == "CMP" and len(c.ops) == 2 and c.ops[0] == step and c.ops[1] in regs), None)
+            if cmp is None:
+                continue
+            bound = cmp.ops[1]
+
+            def loaded(reg):
+                value = None
+                for k in range(i):
+                    p = fn.insns[k]
+                    if p.mnem == "MOV" and len(p.ops) == 2 and p.ops[0] == reg:
+                        value = int(p.ops[1], 16) if p.ops[1].startswith("0x") else None
+                return value
+
+            lo, hi = loaded(step), loaded(bound)
+            if lo is not None and hi is not None:
+                out.append((lo, hi, ins.addr))
+        return out
 
     def code_pointers(self, covered, interior_bytes=None, exclude=()):
         """Dwords stored anywhere in the image that name executable addresses.

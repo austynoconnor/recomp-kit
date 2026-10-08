@@ -208,6 +208,38 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 game_config.load(game)   # a module needs an arena that reaches it: checked at load
 
+    def test_upper_heap(self):
+        """[game] upper_heap adds a heap region above 0x10000000, up to guest_size.
+        Off by default; it needs a larger arena and does not combine with
+        auxiliary modules, which map in the same range."""
+        base = game_config.load(ROOT / "games/stub")
+        self.assertFalse(base["game"]["upper_heap"])
+        self.assertIn("set(RECOMP_UPPER_HEAP 0)", gen_game_config.render_cmake(base))
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            (game / "globals.toml").write_text((ROOT / "games/stub/globals.toml").read_text())
+            stub = (ROOT / "games/stub/game.toml").read_text()
+
+            def load(extra):
+                (game / "game.toml").write_text(stub.replace('guest_root = ', extra + '\nguest_root = ', 1))
+                return game_config.load(game)
+
+            cfg = load('guest_size = 0x40000000\nupper_heap = true')
+            self.assertTrue(cfg["game"]["upper_heap"])
+            cmake = gen_game_config.render_cmake(cfg)
+            self.assertIn("set(RECOMP_UPPER_HEAP 1)", cmake)
+            self.assertIn("set(RECOMP_GUEST_SIZE 0x40000000u)", cmake)
+            for bad in ('upper_heap = true', 'guest_size = 0x40000000\nupper_heap = 1',
+                        'guest_size = 0xf1000000\nupper_heap = true'):
+                with self.assertRaises(ValueError):
+                    load(bad)
+            (game / "game.toml").write_text(
+                stub.replace('guest_root = ', 'guest_size = 0x40000000\nupper_heap = true\nguest_root = ', 1) +
+                '\n[modules.aux.blit]\nname = "B.dll"\npath = "B.dll"\nsha256 = "%s"\n'
+                'base = 0x10000000\nsize = 0x1000\n' % ("ab" * 32))
+            with self.assertRaises(ValueError):
+                game_config.load(game)
+
     def test_controls_section(self):
         with tempfile.TemporaryDirectory() as tmp:
             game = Path(tmp)

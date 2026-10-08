@@ -116,6 +116,7 @@ def render_cmake(cfg):
     lines.append("set(RECOMP_IMAGE_BASE %s)" % c_hex(game["image_base"]))
     lines.append("set(RECOMP_HEAP_BASE %s)" % c_hex(game["heap_base"]))
     lines.append("set(RECOMP_GUEST_SIZE %s)" % c_hex(game["guest_size"]))
+    lines.append("set(RECOMP_UPPER_HEAP %d)" % int(game.get("upper_heap", False)))
     # The generated sources include this header before they define FN_<addr>,
     # which is how a game replaces one translated function with a native one.
     lines.append('set(RECOMP_OVERRIDE_HEADER "%s")'

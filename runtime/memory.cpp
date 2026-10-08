@@ -308,7 +308,9 @@ inline uint32_t align_up(uint32_t v, uint32_t a) {
 // Largest request the arena could ever satisfy. Anything at or above this
 // would overflow the rounding in align_up (0xffffffff rounds to 0), so it is
 // rejected before any arithmetic on it.
-const uint32_t HEAP_ARENA_BYTES = HEAP_LIMIT - HEAP_BASE;
+const uint32_t UPPER_HEAP_BYTES = UPPER_HEAP_LIMIT - UPPER_HEAP_BASE;
+const uint32_t HEAP_ARENA_BYTES =
+    HEAP_LIMIT - HEAP_BASE > UPPER_HEAP_BYTES ? HEAP_LIMIT - HEAP_BASE : UPPER_HEAP_BYTES;
 inline bool size_is_sane(uint32_t size) {
     return size <= HEAP_ARENA_BYTES;
 }
@@ -335,6 +337,10 @@ void heap_reset() {
     g_blocks->clear();
     g_free->clear();
     put_block(HEAP_BASE, HEAP_LIMIT - HEAP_BASE, 0, false);
+    // The upper region is a separate block: coalescing only joins blocks
+    // that touch, so nothing ever spans the stack and trampolines between.
+    if (UPPER_HEAP_BYTES)
+        put_block(UPPER_HEAP_BASE, UPPER_HEAP_BYTES, 0, false);
     g_total_allocs = g_total_frees = 0;
 }
 
@@ -589,6 +595,10 @@ std::string heap_check() {
     bool prev_free = false;
     char buf[160];
     for (auto &kv : *g_blocks) {
+        if (cursor == HEAP_LIMIT && UPPER_HEAP_BYTES && kv.first == UPPER_HEAP_BASE) {
+            cursor = UPPER_HEAP_BASE; // the gap between the two regions
+            prev_free = false;
+        }
         if (kv.first != cursor) {
             snprintf(buf, sizeof buf, "gap or overlap at %08x (expected %08x)", kv.first, cursor);
             return buf;
@@ -604,8 +614,8 @@ std::string heap_check() {
         prev_free = !kv.second.used;
         cursor += kv.second.size;
     }
-    if (cursor != HEAP_LIMIT) {
-        snprintf(buf, sizeof buf, "heap ends at %08x, expected %08x", cursor, HEAP_LIMIT);
+    if (cursor != heap_highest_limit()) {
+        snprintf(buf, sizeof buf, "heap ends at %08x, expected %08x", cursor, heap_highest_limit());
         return buf;
     }
     for (uint32_t a : *g_free) {
