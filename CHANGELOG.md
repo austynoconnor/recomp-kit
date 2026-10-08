@@ -10,7 +10,8 @@
     predicates as all-ones masks, UNPCKLPS/UNPCKHPS, MOVHLPS/MOVLHPS,
     MOVMSKPS/MOVMSKPD, CVTSS2SI/CVTSD2SI, the MMX-register conversions
     (CVTPI2PS, CVTPS2PI, CVTTPS2PI) and CVTDQ2PS/CVTPS2DQ/CVTTPS2DQ.
-    LDMXCSR is accepted and ignored (round-to-nearest is assumed). Each form
+    LDMXCSR is accepted and ignored (round-to-nearest is assumed), and
+    3DNow!'s FEMMS is EMMS (D3DX8's AMD paths). Each form
     is checked against Unicorn in `test_translate_insns.py`. RCP/RSQRT give
     exact results rather than the CPU's 12-bit approximation.
   - MSACM32: `acmStreamOpen/Close/Size/PrepareHeader/UnprepareHeader/

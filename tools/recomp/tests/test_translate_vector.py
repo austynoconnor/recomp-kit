@@ -23,3 +23,13 @@ def test_the_vector_rule_names_ymm_registers_and_ymmword_operands():
     assert T.is_vector_insn("VMOVUPS", ["YMM1", "ymmword ptr [EAX]"])
     assert T.is_vector_insn("VPXOR", ["YMM0", "YMM0", "YMM0"])
     assert not T.is_vector_insn("MOV", ["EAX", "dword ptr [EBX]"])
+
+
+def test_femms_is_emms():
+    """3DNow!'s FEMMS (D3DX8's AMD paths in Metal Gear Solid 2) empties the x87
+    tags as EMMS does; Unicorn has no 3DNow!, so this checks the emission."""
+    case = Case("femms", BASE + 0x40, [(0, "FEMMS"), (2, "RET")], "0f 0e c3")
+    text = translate_case(case)
+    assert "c->fpu_tag = 0xffffu;" in text
+    assert "recomp_unmodelled" not in text
+    assert not T.is_vector_insn("FEMMS", [])
