@@ -237,6 +237,22 @@ uint32_t imports_resolve(const char *dll, const char *name) {
                                     ri->second.argc_stdcall);
 }
 
+std::vector<std::pair<std::string, uint32_t>> imports_exports_of(const char *dll) {
+    std::vector<std::pair<std::string, uint32_t>> out;
+    std::string prefix = key_of(dll, nullptr);
+    std::vector<std::string> names;
+    for (auto it = registry().lower_bound(prefix);
+         it != registry().end() && it->first.compare(0, prefix.size(), prefix) == 0; ++it) {
+        std::string name = it->first.substr(prefix.size());
+        if (!name.empty() && name[0] != '#')
+            names.push_back(name);
+    }
+    for (const std::string &name : names)
+        if (uint32_t t = imports_resolve(dll, name.c_str()))
+            out.emplace_back(name, t);
+    return out;
+}
+
 bool imports_serves_module(const char *dll) {
     if (!dll || !*dll)
         return false;

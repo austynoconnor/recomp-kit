@@ -1145,6 +1145,71 @@ uint32_t call_dll_entry(X86 *c, const LoaderModule &m, uint32_t reason) {
     return result;
 }
 
+// A pseudo module is a DLL the runtime serves with shims rather than maps.
+// Its handle points at a small image in the guest heap: DOS and PE headers
+// and an export directory naming every shim for that DLL, each export's
+// address its trampoline. A guest that reads the module's headers or walks
+// its exports by hand (the Microsoft Layer for Unicode does, to find out
+// whether it runs on NT) then sees what it would on Windows, instead of
+// reading outside the guest arena. The RVAs of the trampolines wrap below
+// the image, which 32-bit arithmetic undoes. No sections, nothing else.
+uint32_t pseudo_module_image(const std::string &name) {
+    auto exports = imports_exports_of(name.c_str());
+    const uint32_t n = (uint32_t)exports.size();
+    const uint32_t kNt = 0x40, kExp = 0x140, kDirSize = 40;
+    uint32_t funcs = kExp + kDirSize, names = funcs + 4 * n, ords = names + 4 * n;
+    uint32_t strings = ords + 2 * n;
+    uint32_t total = strings + (uint32_t)name.size() + 1;
+    for (const auto &e : exports)
+        total += (uint32_t)e.first.size() + 1;
+    uint32_t size = (total + 0xfffu) & ~0xfffu;
+    uint32_t base = heap_alloc(size, true, 0x10000);
+    if (!base)
+        return 0;
+    wr16(base, 0x5a4d); // MZ
+    wr32(base + 0x3c, kNt);
+    wr32(base + kNt, 0x00004550); // "PE", two zero bytes
+    uint32_t fh = base + kNt + 4;
+    wr16(fh, 0x014c);       // i386
+    wr16(fh + 16, 0xe0);    // SizeOfOptionalHeader
+    wr16(fh + 18, 0x2102);  // executable, 32-bit, DLL
+    uint32_t oh = fh + 20;
+    wr16(oh, 0x010b);       // PE32
+    wr32(oh + 28, base);    // ImageBase
+    wr32(oh + 32, 0x1000);  // SectionAlignment
+    wr32(oh + 36, 0x200);   // FileAlignment
+    wr16(oh + 40, 5);       // OS 5.1
+    wr16(oh + 42, 1);
+    wr16(oh + 48, 5);       // subsystem 5.1
+    wr16(oh + 50, 1);
+    wr32(oh + 56, size);    // SizeOfImage
+    wr32(oh + 60, 0x1000);  // SizeOfHeaders
+    wr16(oh + 68, 3);       // console subsystem, as system DLLs say
+    wr32(oh + 92, 16);      // NumberOfRvaAndSizes
+    wr32(oh + 96, kExp);    // export directory
+    wr32(oh + 100, total - kExp);
+    uint32_t at = strings;
+    gm_put_str(base + at, name.c_str(), (uint32_t)name.size() + 1);
+    uint32_t dir = base + kExp;
+    wr32(dir + 12, at);     // Name
+    wr32(dir + 16, 1);      // ordinal base
+    wr32(dir + 20, n);
+    wr32(dir + 24, n);
+    wr32(dir + 28, funcs);
+    wr32(dir + 32, names);
+    wr32(dir + 36, ords);
+    at += (uint32_t)name.size() + 1;
+    for (uint32_t i = 0; i < n; ++i) {
+        wr32(base + funcs + 4 * i, exports[i].second - base);
+        wr32(base + names + 4 * i, at);
+        wr16(base + ords + 2 * i, (uint16_t)i);
+        gm_put_str(base + at, exports[i].first.c_str(), (uint32_t)exports[i].first.size() + 1);
+        at += (uint32_t)exports[i].first.size() + 1;
+    }
+    LOGV("pseudo module %s: %u exports at %08x", name.c_str(), n, base);
+    return base;
+}
+
 void load_library_named(X86 *c, const std::string &module_name) {
     std::string name = library_name(module_name);
     auto it = modules().find(name);
@@ -1185,8 +1250,11 @@ void load_library_named(X86 *c, const std::string &module_name) {
         set_eax(c, 0);
         return;
     }
-    uint32_t h = g_next_module;
-    g_next_module += 0x10000;
+    uint32_t h = pseudo_module_image(name);
+    if (!h) {
+        h = g_next_module;
+        g_next_module += 0x10000;
+    }
     modules()[name] = h;
     LOGV("LoadLibrary(\"%s\") -> pseudo module %08x", name.c_str(), h);
     set_eax(c, h);

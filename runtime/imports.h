@@ -13,6 +13,9 @@
 #pragma once
 #include "guest.h"
 #include <stdio.h>
+#include <string>
+#include <utility>
+#include <vector>
 
 // argc_stdcall sentinels.
 static const uint8_t ARGC_CDECL = 0xff;   // caller cleans the stack: pop only the return address
@@ -106,6 +109,12 @@ uint32_t imports_trampoline_for(const char *dll, const char *name);
 // Like imports_trampoline_for but allocates on demand when the name is one of
 // the registered shims. Backs GetProcAddress.
 uint32_t imports_resolve(const char *dll, const char *name);
+// Every name registered for this DLL, in byte order (the order a PE export
+// name table needs), each with its trampoline, allocated here when it was not
+// yet. Ordinal-only entries ("#n") are left out. Backs the export directory
+// of a pseudo module (kernel32.cpp), for a guest that walks a system DLL's
+// exports itself instead of calling GetProcAddress.
+std::vector<std::pair<std::string, uint32_t>> imports_exports_of(const char *dll);
 // Whether at least one shim is registered for this DLL (case-insensitive).
 // Backs LoadLibrary; unimplemented IAT trampolines alone do not serve a DLL.
 bool imports_serves_module(const char *dll);

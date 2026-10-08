@@ -133,6 +133,40 @@ static void test_winsock(X86 *c, uint32_t s) {
     check(call_import(c, "WS2_32.dll", "gethostbyname", {s}) == 0, "no name resolution");
 }
 
+// The Microsoft Layer for Unicode finds GetFileAttributesW by walking
+// kernel32's export directory itself, from GetModuleHandleA's handle.
+static void test_pseudo_module_exports(X86 *c, uint32_t s) {
+    gm_put_str(s, "kernel32.dll", 32);
+    uint32_t h = call_import(c, "KERNEL32.dll", "GetModuleHandleA", {s});
+    check(h && (h & 0xffff) == 0 && h < GUEST_SIZE, "kernel32 handle %08x is 64 KB aligned guest memory", h);
+    if (!h || h >= GUEST_SIZE)
+        return;
+    check(rd16(h) == 0x5a4d, "MZ");
+    uint32_t nt = h + rd32(h + 0x3c);
+    check(rd32(nt) == 0x4550 && rd16(nt + 4) == 0x14c, "PE header for i386");
+    check(rd32(nt + 0x74) >= 1, "has a data directory");
+    uint32_t dir = h + rd32(nt + 0x78);
+    uint32_t n = rd32(dir + 24), names = h + rd32(dir + 32), ords = h + rd32(dir + 36),
+             funcs = h + rd32(dir + 28);
+    check(gm_str(h + rd32(dir + 12)) == "kernel32.dll", "export name %s", gm_str(h + rd32(dir + 12)).c_str());
+    check(n > 100, "%u named exports", n);
+    bool sorted = true;
+    uint32_t found = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        std::string nm = gm_str(h + rd32(names + 4 * i));
+        if (i && gm_str(h + rd32(names + 4 * (i - 1))) >= nm)
+            sorted = false;
+        if (nm == "GetFileAttributesW")
+            found = h + rd32(funcs + 4 * rd16(ords + 2 * i)); // wraps like the guest's ADD
+    }
+    check(sorted, "names are in byte order");
+    gm_put_str(s, "GetFileAttributesW", 32);
+    uint32_t gpa = call_import(c, "KERNEL32.dll", "GetProcAddress", {h, s});
+    check(found && found == gpa, "walked GetFileAttributesW %08x matches GetProcAddress %08x", found, gpa);
+    gm_put_str(s, "KERNEL32", 32);
+    check(call_import(c, "KERNEL32.dll", "GetModuleHandleA", {s}) == h, "same handle by another spelling");
+}
+
 static void test_bink(X86 *c) {
     // Without a D3D9 surface the type is unknown; the hooks are accepted.
     check(call_import(c, "binkw32.dll", "_BinkDX9SurfaceType@4", {0}) == 0, "BinkDX9SurfaceType(null)");
@@ -153,6 +187,7 @@ int main() {
     test_user32(&c, s);
     test_gdi32(&c, s);
     test_winsock(&c, s);
+    test_pseudo_module_exports(&c, s);
     test_bink(&c);
     printf("%d checks, %d failures\n", g_checks, g_failures);
     mem_shutdown();

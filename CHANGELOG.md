@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 2026-10-08 13:10 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: a DLL the runtime serves with shims (a pseudo module)
+  now gets a real, small image in the guest heap, 64 KB aligned: DOS and PE
+  headers and an export directory naming every registered shim for it,
+  each pointing at its trampoline (new `imports_exports_of`). Before, its
+  handle was a bare number from 0x60000000, outside the 256 MB guest arena,
+  so reading the module's headers ran off guest memory: a crash under
+  WebAssembly. Star Wars Battlefront II's Microsoft Layer for Unicode
+  (unicows) does exactly that in its startup, walking kernel32's exports by
+  hand to find `GetFileAttributesW`. `GetProcAddress` is unchanged. Checked
+  by a new case in `compat_extra_tests` (157 checks, 0 failures, under
+  Node), which walks the table as the guest does and compares the result
+  with `GetProcAddress`.
+
 - 2026-10-08 12:30 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: the translator models 3DNow!'s `FEMMS` like `EMMS` (every
   x87 register empty) and SSE3's `FISTTP` (a store that truncates whatever
