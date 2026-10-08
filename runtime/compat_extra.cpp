@@ -20,7 +20,9 @@
 #include <string.h>
 #include <time.h>
 
+#include <deque>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -424,43 +426,68 @@ const ImportShim shims[] = {
     {"USER32.dll", "DrawTextA", 5, draw_text_a},
     {"GDI32.dll", "SetICMMode", 2, set_icm_mode},
     {"GDI32.dll", "GetDeviceGammaRamp", 2, get_device_gamma_ramp},
-    // Winsock 2 and 1.1 by name. The byte-order helpers are real; the rest
-    // report a network that is down.
-    {"WS2_32.dll", "htons", 1, htons_},
-    {"WS2_32.dll", "ntohs", 1, htons_},
-    {"WS2_32.dll", "htonl", 1, htonl_},
-    {"WS2_32.dll", "ntohl", 1, htonl_},
-    {"WS2_32.dll", "inet_addr", 1, inet_addr_},
-    {"WS2_32.dll", "inet_ntoa", 1, inet_ntoa_},
-    {"WS2_32.dll", "WSAStartup", 2, ws2_startup},
-    {"WS2_32.dll", "WSACleanup", 0, wsa_ok},
-    {"WS2_32.dll", "WSAGetLastError", 0, wsa_get_last_error},
-    {"WS2_32.dll", "socket", 3, net_down},
-    {"WS2_32.dll", "bind", 3, net_down},
-    {"WS2_32.dll", "connect", 3, net_down},
-    {"WS2_32.dll", "listen", 2, net_down},
-    {"WS2_32.dll", "accept", 3, net_down},
-    {"WS2_32.dll", "send", 4, net_down},
-    {"WS2_32.dll", "recv", 4, net_down},
-    {"WS2_32.dll", "sendto", 6, net_down},
-    {"WS2_32.dll", "recvfrom", 6, net_down},
-    {"WS2_32.dll", "closesocket", 1, wsa_ok},
-    {"WS2_32.dll", "ioctlsocket", 3, net_down},
-    {"WS2_32.dll", "setsockopt", 5, net_down},
-    {"WS2_32.dll", "gethostbyname", 1, null_result},
-    {"WSOCK32.dll", "htonl", 1, htonl_},
-    {"WSOCK32.dll", "ntohl", 1, htonl_},
-    {"WSOCK32.dll", "htons", 1, htons_},
-    {"WSOCK32.dll", "ntohs", 1, htons_},
-    {"WSOCK32.dll", "select", 5, net_down},
-    {"WSOCK32.dll", "__WSAFDIsSet", 2, fd_is_set},
-    {"WSOCK32.dll", "getsockopt", 5, net_down},
-    {"WSOCK32.dll", "getsockname", 3, net_down},
-    {"WSOCK32.dll", "shutdown", 2, net_down},
+};
+
+// Winsock 2 and 1.1. The byte-order and address helpers are real; the rest
+// report a network that is down. WS2_32 and WSOCK32 number these exports
+// alike, and a game may import them either way (Battlefront II imports every
+// one of its WS2_32 and WSOCK32 calls by ordinal), so each is registered
+// under its name and as "ordN", the loader's name for an ordinal import.
+// `wsock` marks the WSOCK32 entries: misc.cpp already serves that DLL's
+// startup, host lookup and inet_ntoa, and those stay as they are.
+struct Winsock {
+    uint16_t ord;
+    const char *name;
+    uint8_t argc;
+    void (*fn)(X86 *);
+    bool wsock;
+};
+const Winsock kWinsock[] = {
+    {1, "accept", 3, net_down, false},
+    {2, "bind", 3, net_down, false},
+    {3, "closesocket", 1, wsa_ok, false},
+    {4, "connect", 3, net_down, false},
+    {6, "getsockname", 3, net_down, true},
+    {7, "getsockopt", 5, net_down, true},
+    {8, "htonl", 1, htonl_, true},
+    {9, "htons", 1, htons_, true},
+    {10, "ioctlsocket", 3, net_down, false},
+    {11, "inet_addr", 1, inet_addr_, false},
+    {12, "inet_ntoa", 1, inet_ntoa_, false},
+    {13, "listen", 2, net_down, false},
+    {14, "ntohl", 1, htonl_, true},
+    {15, "ntohs", 1, htons_, true},
+    {16, "recv", 4, net_down, false},
+    {17, "recvfrom", 6, net_down, false},
+    {18, "select", 5, net_down, true},
+    {19, "send", 4, net_down, false},
+    {20, "sendto", 6, net_down, false},
+    {21, "setsockopt", 5, net_down, false},
+    {22, "shutdown", 2, net_down, true},
+    {23, "socket", 3, net_down, false},
+    {52, "gethostbyname", 1, null_result, false},
+    {111, "WSAGetLastError", 0, wsa_get_last_error, false},
+    {115, "WSAStartup", 2, ws2_startup, false},
+    {116, "WSACleanup", 0, wsa_ok, false},
+    {151, "__WSAFDIsSet", 2, fd_is_set, true},
 };
 
 } // namespace
 
 void compat_extra_register() {
     imports_register(shims, sizeof shims / sizeof shims[0]);
+    // The registry keeps the name pointers, so the "ordN" strings live here.
+    static std::deque<std::string> names;
+    std::vector<ImportShim> ws;
+    for (const Winsock &w : kWinsock) {
+        names.push_back("ord" + std::to_string(w.ord));
+        const char *ord = names.back().c_str();
+        ws.push_back({"WS2_32.dll", w.name, w.argc, w.fn});
+        ws.push_back({"WS2_32.dll", ord, w.argc, w.fn});
+        if (w.wsock) {
+            ws.push_back({"WSOCK32.dll", w.name, w.argc, w.fn});
+            ws.push_back({"WSOCK32.dll", ord, w.argc, w.fn});
+        }
+    }
+    imports_register(ws.data(), ws.size());
 }

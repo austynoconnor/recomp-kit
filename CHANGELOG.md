@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- 2026-10-08 13:45 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: the Winsock shims in `compat_extra.cpp` are also
+  registered by ordinal ("ord1" accept to "ord151" `__WSAFDIsSet`, the
+  numbering WS2_32 and WSOCK32 share). Star Wars Battlefront II imports
+  every WS2_32 and WSOCK32 call by ordinal, so the by-name shims never
+  reached it; its first headless run stopped on `WS2_32!ord115`
+  (WSAStartup). WSOCK32 gains only the ordinals misc.cpp did not already
+  serve, so D3DPopTB's WSOCK32 startup and host lookup are unchanged. Kit
+  tests built with Emscripten and run under Node: `compat_extra_tests` 172
+  checks and `gdi_tests` 142, 0 failures; of the other `nogame` tests,
+  `platform_tests`, `seh_tests` (no child processes in WebAssembly),
+  `interp_tests` (C++ exceptions are off in this build) and `dx_tests`
+  (17 of 141,143 checks assume 64-bit struct layouts) fail for reasons of
+  the WebAssembly target, the rest pass.
+
 - 2026-10-08 13:30 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: merged `giggity-d3d8` (840c86b) for DirectSound 8. Both
   branches added `CreateFontIndirectA` and `SetMapMode`; the merge keeps

@@ -130,6 +130,13 @@ static void test_winsock(X86 *c, uint32_t s) {
     check(call_import(c, "WS2_32.dll", "WSAGetLastError", {}) == 10050, "with WSAENETDOWN");
     check(call_import(c, "WSOCK32.dll", "select", {0, 0, 0, 0, 0}) == 0xffffffffu, "select fails");
     check(call_import(c, "WS2_32.dll", "gethostbyname", {s}) == 0, "no name resolution");
+    // By ordinal, as Battlefront II imports them.
+    check(call_import(c, "WS2_32.dll", "ord9", {0x1234}) == 0x3412, "WS2_32 #9 is htons");
+    check(call_import(c, "WS2_32.dll", "ord115", {0x0202, s + 0x100}) == 0, "WS2_32 #115 is WSAStartup");
+    check(call_import(c, "WS2_32.dll", "ord23", {2, 1, 6}) == 0xffffffffu, "WS2_32 #23 is socket, and fails");
+    check(call_import(c, "WS2_32.dll", "ord111", {}) == 10050, "WS2_32 #111 is WSAGetLastError");
+    check(call_import(c, "WSOCK32.dll", "ord8", {0x01020304}) == 0x04030201, "WSOCK32 #8 is htonl");
+    check(call_import(c, "WSOCK32.dll", "ord18", {0, 0, 0, 0, 0}) == 0xffffffffu, "WSOCK32 #18 is select");
 }
 
 // The Microsoft Layer for Unicode finds GetFileAttributesW by walking
