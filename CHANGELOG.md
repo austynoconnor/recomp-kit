@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- 2026-10-08 19:30 CDT (branch giggity-d3d8) — Claude Opus 5.5: a game can
+  set its joystick axis range, and data-only core mods reach the web build.
+  - `[controls.native] axis_range = [min, max]` in game.toml (default
+    `[-32768, 32767]`, the DirectInput default). `tools/game_config.py`
+    validates it (two integers, min below max); `tools/gen_game_config.py`
+    emits `RECOMP_CONTROLS_NATIVE_AXIS_MIN/MAX`; the new host call
+    `host_pad_native_axis_range` (`dx/host_api.h`, weak default in
+    `dx/host_api.cpp`, configured value in `host/controls/vpad_host_api.cpp`)
+    hands it to `dx/dinput.cpp`, which gives every axis of a new joystick
+    device that range. Some games, such as Crazy Taxi, never set
+    DIPROP_RANGE and read the stick as -128..127; with the full default
+    range the stick was pinned to its ends.
+  - `host/CMakeLists.txt`: the web build's copy of `mods/core` also takes
+    `*.cfg` and `*.ini` files, so a core mod that only replaces a settings
+    file (Crazy Taxi's Taxi.cfg controller bindings) ships in the browser.
+  - Tests: pad_tests "joystick configured default range" (-128 / 0 / 127 and
+    GetProperty(DIPROP_RANGE)); tests/test_game_config.py axis_range header
+    output and validation.
+
 - 2026-10-08 17:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: CPU renderer
   depth and fog, Direct3D 9 pixel centres, CD3DFont text, static asset export.
   - `dx/d3d9_raster.cpp`: a depth test (D3DRS_ZENABLE, ZFUNC, ZWRITEENABLE,

@@ -271,7 +271,9 @@ if(TARGET recomp_gen)
     endif()
     if(EXISTS ${RECOMP_GAME_DIR}/mods/core)
       file(COPY ${RECOMP_GAME_DIR}/mods/core DESTINATION ${web_resources}/mods FILES_MATCHING PATTERN "*.toml"
-           PATTERN "*.json" PATTERN "*.lua" PATTERN "*.png" PATTERN "*.bmp" PATTERN "*.txt")
+           PATTERN "*.json" PATTERN "*.lua" PATTERN "*.png" PATTERN "*.bmp" PATTERN "*.txt"
+           # Data-only mods replace game settings files (Crazy Taxi's Taxi.cfg).
+           PATTERN "*.cfg" PATTERN "*.ini")
     endif()
     # The player page (tools/web_launcher.py --web-build places it beside the launcher).
     set(APP ${RECOMP_APP_NAME})
