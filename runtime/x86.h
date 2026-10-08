@@ -65,6 +65,18 @@ extern uint8_t *g_mem;
 #define GUEST_HEAP_BASE 0x01000000u
 #endif
 #define GUEST_HEAP_END 0x0e000000u
+/* [game] upper_heap: a second heap region from GUEST_UPPER_HEAP_BASE to the
+ * end of the arena (GUEST_SIZE), above the stack, TEB and trampolines. Off
+ * by default, when the region is empty (base == end). */
+#ifndef GUEST_UPPER_HEAP
+#define GUEST_UPPER_HEAP 0
+#endif
+#define GUEST_UPPER_HEAP_BASE 0x10000000u
+#if GUEST_UPPER_HEAP
+#define GUEST_UPPER_HEAP_END GUEST_SIZE
+#else
+#define GUEST_UPPER_HEAP_END GUEST_UPPER_HEAP_BASE
+#endif
 #define GUEST_STACK_TOP 0x0f000000u
 #define GUEST_TEB_BASE 0x0fe00000u
 #define GUEST_SHIM_BASE 0x0ff00000u

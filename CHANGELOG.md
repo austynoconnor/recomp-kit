@@ -24,6 +24,23 @@
   when LAN Play opened. Verified in visible Chrome: LAN Play shows an empty
   server list, Create Server reports "There was a problem trying to start the
   LAN server", and Back returns to the main menu.
+- 2026-10-08 — Claude Opus 5.5: `[game] upper_heap = true` adds a second
+  guest heap region from 0x10000000 to `guest_size`, above the stack, TEB
+  and import trampolines, for a game whose start-up reserves more than the
+  low arena (`heap_base`..0x0e000000) holds. Bully: Scholarship Edition
+  allocates fixed 64 MB and 384 MB pools before its first frame. Off by
+  default (the region is empty and nothing changes); it needs `guest_size`
+  above 0x10000000 and does not combine with `[modules.aux]`, which map in
+  the same range. The allocator keeps the regions as separate blocks, so
+  nothing coalesces across the gap; heap_check, VirtualQuery,
+  lpMaximumApplicationAddress and the thunk decoder know both regions.
+  New config test.
+- 2026-10-08 — Claude Opus 5.5: static-initializer discovery reads Visual
+  C++ 2005's inline `__cinit` walk (`MOV ESI,start; MOV EDI,end; ... CALL
+  EAX; ADD ESI,4; CMP ESI,EDI`), which has no `__initterm` call site to name
+  the range. The same strict table test applies. Bully's table holds 2,750
+  C++ initializers; four of them were never translated and returned 0.
+  New driver test.
 
 - 2026-10-12 19:25 CDT — Claude Opus 5.5: Browser controllers now reach the
   game in [controls] pad = "mapped" mode. The web start path (web_main) never
