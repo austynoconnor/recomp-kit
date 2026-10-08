@@ -329,6 +329,7 @@ struct ComObj {
     uint32_t buf_bytes = 0;
     uint32_t buf_pixels = 0; // guest address of the PCM data
     uint32_t buf_flags = 0;
+    uint32_t ds_owner = 0; // id of the DirectSound object that created the buffer
     uint32_t rate = 22050, nchannels = 1, bits = 16, block_align = 2;
     int32_t volume = 0, pan = 0;
     uint32_t frequency = 0; // 0 = the format's own rate

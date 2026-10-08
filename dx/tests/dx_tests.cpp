@@ -10643,6 +10643,66 @@ static void test_dsound_stream() {
 // the play cursor by hand and asserts the events fire exactly when the cursor
 // reaches their offsets, including across the loop point.
 // ---------------------------------------------------------------------------
+// The 3D listener comes from the primary buffer, which is where DirectSound
+// documents getting it; a secondary buffer has none.
+static void test_dsound_primary_listener() {
+    cpu_reset();
+    uint32_t ds = make_dsound();
+    CHECK(ds != 0);
+    uint32_t bd = sc(0x200);
+    gm_zero(bd, DSBUFFERDESC_SIZE);
+    wr32(bd + DSBD_OFF_dwSize, DSBUFFERDESC_SIZE);
+    wr32(bd + DSBD_OFF_dwFlags, DSBCAPS_PRIMARYBUFFER | DSBCAPS_CTRL3D);
+    CHECK_EQ(call_method(ds, DS_CreateSoundBuffer, {bd, sc(4), 0}), DS_OK);
+    uint32_t primary = rd32(sc(4));
+    CHECK(primary != 0);
+    static const uint8_t IID_LISTENER[16] = {0x84, 0xFA, 0x9A, 0x27, 0x81, 0x49, 0xCE, 0x11,
+                                             0xA5, 0x21, 0x00, 0x20, 0xAF, 0x0B, 0xE5, 0x60};
+    uint32_t iid = sc(0x500);
+    for (uint32_t i = 0; i < 16; ++i)
+        wr8(iid + i, IID_LISTENER[i]);
+    CHECK_EQ(call_method(primary, B_QueryInterface, {iid, sc(0x510)}), DS_OK);
+    uint32_t listener = rd32(sc(0x510));
+    CHECK(listener != 0);
+    // SetPosition (slot 14) and GetPosition (slot 7) round-trip.
+    float pos[3] = {1.5f, -2.0f, 3.25f};
+    uint32_t bits[3];
+    memcpy(bits, pos, sizeof bits);
+    CHECK_EQ(call_method(listener, 14, {bits[0], bits[1], bits[2], 0}), DS_OK);
+    CHECK_EQ(call_method(listener, 7, {sc(0x520)}), DS_OK);
+    CHECK(rdf32(sc(0x520)) == 1.5f && rdf32(sc(0x524)) == -2.0f && rdf32(sc(0x528)) == 3.25f);
+    uint32_t buf = make_buffer(ds, 1, 22050, 16, 1024, sc(8));
+    CHECK(buf != 0);
+    CHECK_EQ(call_method(buf, B_QueryInterface, {iid, sc(0x530)}), E_NOINTERFACE);
+}
+
+// The device exports a game uses to pick its output: one playback device,
+// no capture device. The enumeration callback is guest code, so only the
+// argument check is exercised here.
+static void test_dsound_device_exports() {
+    cpu_reset();
+    uint32_t get_id = tramp("DSOUND.dll", "ord9");
+    CHECK(get_id != 0);
+    CHECK_EQ(call_shim(get_id, {0, sc(0x10)}), DS_OK);
+    uint32_t d1 = rd32(sc(0x10));
+    CHECK(d1 != 0);
+    // DSDEVID_DefaultPlayback {DEF00000-9C6D-47ED-AAF1-4DDA8F2B5C03} maps to it too.
+    static const uint8_t kDefault[16] = {0x00, 0x00, 0xF0, 0xDE, 0x6D, 0x9C, 0xED, 0x47,
+                                         0xAA, 0xF1, 0x4D, 0xDA, 0x8F, 0x2B, 0x5C, 0x03};
+    for (uint32_t i = 0; i < 16; ++i)
+        wr8(sc(0x20) + i, kDefault[i]);
+    CHECK_EQ(call_shim(get_id, {sc(0x20), sc(0x30)}), DS_OK);
+    CHECK_EQ(rd32(sc(0x30)), d1);
+    wr8(sc(0x20), 0x01); // DSDEVID_DefaultCapture
+    CHECK_EQ(call_shim(get_id, {sc(0x20), sc(0x30)}), DSERR_NODRIVER);
+    CHECK_EQ(call_shim(get_id, {0, 0}), DSERR_INVALIDPARAM);
+    wr32(sc(0x40), 0x1234);
+    CHECK_EQ(call_shim(tramp("DSOUND.dll", "ord12"), {0, sc(0x40), 0}), DSERR_NODRIVER);
+    CHECK_EQ(rd32(sc(0x40)), 0u);
+    CHECK_EQ(call_shim(tramp("DSOUND.dll", "ord2"), {0, 0}), DSERR_INVALIDPARAM);
+    CHECK_EQ(call_shim(tramp("DSOUND.dll", "ord7"), {0x00401000, 0}), DS_OK);
+}
+
 static void test_dsound_notify() {
     cpu_reset();
     qmixer_reset();
@@ -12772,6 +12832,8 @@ int main() {
         {"DirectSound data path", test_dsound_data_path},
         {"audio formats", test_dsound_formats},
         {"DirectSound notify", test_dsound_notify},
+        {"DirectSound primary listener", test_dsound_primary_listener},
+        {"DirectSound device exports", test_dsound_device_exports},
         {"DirectSound streaming", test_dsound_stream},
         {"FMV refill gate", test_dsound_stream_pacing},
         {"QMixer streaming", test_qmixer_streaming},

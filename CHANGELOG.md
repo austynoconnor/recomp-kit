@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- 2026-10-08 14:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: DirectSound gaps Star Wars Battlefront II reaches before
+  its first frame, kept small and next to `giggity-d3d8`'s DirectSound 8
+  work (no change to it). The primary buffer answers QueryInterface for
+  `IDirectSound3DListener` with the listener of the DirectSound object that
+  made it (new `ComObj::ds_owner`), which is where DirectSound documents
+  getting the listener; a secondary buffer still refuses. The game asked
+  the primary buffer and called through the null result. New DSOUND
+  exports, each by ordinal and name, so their stack cleanup is known:
+  `GetDeviceID` (9; any playback id, including DSDEVID_DefaultPlayback,
+  gives the runtime's one playback device, a capture id DSERR_NODRIVER),
+  `DirectSoundEnumerateA` (2; the primary sound driver, then that device),
+  `DirectSoundCaptureEnumerateA` (7; none) and `DirectSoundCaptureCreate8`
+  (12; DSERR_NODRIVER). New dx_tests cases "DirectSound primary listener"
+  and "DirectSound device exports" pass under Node (141,187 checks; the 17
+  failures are the existing 64-bit layout checks).
+
 - 2026-10-08 14:05 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: `GetFileAttributes(A/W/ExA/ExW)` fail a path holding a
   wildcard or another character no file name may hold (`? * < > | "`, after
