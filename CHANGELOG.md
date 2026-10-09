@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- 2026-10-09 15:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: keyboard aliases, the d-pad as the left stick, and
+  per-game control hints in the browser.
+  - `[controls] key_aliases = { Up = "W", ... }` in game.toml: while the
+    first key is held the DirectInput keyboard also reports the second, so a
+    game that takes one key per action plays on WASD and the arrows alike
+    (or Escape as its Start key). Aliases read the keys actually held, so
+    they do not chain. `tools/game_config.py` validates the key names (the
+    `[controls.mapped]` list), `tools/gen_game_config.py` emits
+    `RECOMP_CONTROLS_KEY_ALIASES`, new host call `host_key_aliases`
+    (`dx/host_api.h`, weak default ""), applied in `dx/dinput.cpp`
+    `refresh_host_input` with a DIK_ table for those names.
+  - `[controls.native] dpad = "stick"` (default "hat"): the d-pad also moves
+    the left stick's lX/lY (the further of the two wins), for games that
+    read menus and steering only from axes. `RECOMP_CONTROLS_NATIVE_DPAD_STICK`,
+    `host_pad_native_dpad_stick`, `dx/dinput_joystick.cpp` `fill_state`.
+    The `axes` validation now also rejects malformed half-axis names.
+  - `[launcher] input_hints = { keyboard = "...", controller = "..." }`:
+    the game's own control lines under the browser player; the controller
+    line takes `{name}`, `{confirm}` and `{back}` from the pad in use.
+    `tools/web_launcher.py` puts them in games.json (`inputHints`),
+    `web/player/runtime.html` passes them to `input-hints.js` (`hintText`).
+  - Tests: dx_tests keyboard (aliases, no chaining), pad_tests "joystick
+    d-pad on the stick", test_game_config (aliases, dpad, bad names),
+    test_web_launcher (inputHints), new node suite
+    `web/launcher/tests/input-hints.test.mjs`.
+
 - 2026-10-09 10:40 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: formatting only. `host/gpu/d3d9_host.cpp`,
   `host/gpu/webgpu/d3d9_webgpu.cpp` and `runtime/tests/runtime_tests.cpp`

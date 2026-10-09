@@ -126,6 +126,7 @@ class WebLauncherTests(unittest.TestCase):
             other.mkdir()
             text = (ROOT / "games/stub/game.toml").read_text().replace('id = "stub"', 'id = "other"')
             (other / "game.toml").write_text(text + '\n[launcher]\ntitle = "Other"\nstore = "https://x.test"\n'
+                                                    'input_hints = { keyboard = "WASD: drive" }\n'
                                                     '\n[setup]\nrequired_dirs = ["data"]\n')
             shutil.copy(ROOT / "games/stub/globals.toml", other / "globals.toml")
             out = tmp / "site"
@@ -138,6 +139,8 @@ class WebLauncherTests(unittest.TestCase):
             self.assertEqual(data[1]["requiredDirs"], ["data"])
             self.assertEqual(data[0]["executable"], "STUB.EXE")
             self.assertEqual(data[0]["sha256"], "0" * 64)
+            self.assertEqual(data[1]["inputHints"], {"keyboard": "WASD: drive"})
+            self.assertIsNone(data[0]["inputHints"])
             with self.assertRaises(ValueError):
                 web_launcher.build([ROOT / "games/stub", ROOT / "games/stub"], tmp / "dup")
 

@@ -109,6 +109,10 @@ const char *host_pad_native_axes(void) {
 const char *host_pad_native_buttons(void) {
     return kDefaultButtons;
 }
+int g_dpad_stick = 0;
+int host_pad_native_dpad_stick(void) {
+    return g_dpad_stick;
+}
 int32_t g_axis_min = -32768, g_axis_max = 32767;
 void host_pad_native_axis_range(int32_t *min, int32_t *max) {
     *min = g_axis_min;
@@ -922,6 +926,29 @@ static void test_joy_half_axes() {
     g_axis_max = 32767;
 }
 
+// [controls.native] dpad = "stick": the d-pad also pushes lX/lY (Crazy Taxi
+// reads menus only from the axes); the stick wins when pushed further.
+static void test_joy_dpad_stick() {
+    g_axis_min = -128;
+    g_axis_max = 127;
+    uint32_t dev = make_joystick(SDK_DIJOYSTATE);
+    g_pad = HostPadState{};
+    g_pad.hat = 1;                                        // up
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 4), 0); // off: only the POV
+    g_dpad_stick = 1;
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 4), -128);
+    g_pad.hat = 2; // right
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 0), 127);
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 4), 0);
+    g_pad.hat = 0;
+    g_pad.lx = -32767;
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 0), -128);
+    g_dpad_stick = 0;
+    g_pad = HostPadState{};
+    g_axis_min = -32768;
+    g_axis_max = 32767;
+}
+
 static void test_xinput() {
     cpu_reset();
     pad_reset();
@@ -1098,6 +1125,7 @@ int main() {
         {"joystick custom format", test_joy_custom_format},
         {"joystick configured default range", test_joy_configured_range},
         {"joystick half axes (combined pedals)", test_joy_half_axes},
+        {"joystick d-pad on the stick", test_joy_dpad_stick},
         {"xinput", test_xinput},
     };
     for (const auto &t : tests) {

@@ -200,7 +200,14 @@ start().catch((e) => status(e.message, true));
 </script>
 <script type="module">
 import { startInputHints } from "./input-hints.js";
-startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin));
+// The game's own control lines, when its game.toml names them.
+const parts = location.pathname.split("/").filter(Boolean);
+if (parts.length && parts[parts.length - 1].includes(".")) parts.pop();
+const id = decodeURIComponent(parts[parts.length - 1] || "");
+const games = await fetch("../games.json").then(r => r.json()).catch(() => []);
+const custom = games.find?.(g => g.id === id)?.inputHints || null;
+startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin),
+                undefined, custom);
 </script>
 </body>
 </html>

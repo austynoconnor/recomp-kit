@@ -9,7 +9,20 @@ export function controllerLabels(id = "") {
            confirm: "A / bottom button", back: "B / right button" };
 }
 
-export function startInputHints(render, readPads = () => navigator.getGamepads?.() || []) {
+// `custom` ({keyboard, controller}, game.toml [launcher] input_hints) replaces
+// the generic lines; {name}, {confirm} and {back} in the controller line take
+// the active pad's labels.
+export function hintText(labels, custom = null) {
+  if (labels) {
+    const line = custom?.controller ||
+      "{name} · D-pad: browse · {confirm}: confirm · {back}: back · Use keyboard to type names";
+    return line.replace(/\{(name|confirm|back)\}/g, (_, k) => labels[k]);
+  }
+  return custom?.keyboard ||
+    "Keyboard · Arrow keys: browse · Enter: confirm · Esc: back · Type names · Backspace: delete";
+}
+
+export function startInputHints(render, readPads = () => navigator.getGamepads?.() || [], custom = null) {
   let active = "keyboard";
   let selected = null;
   let first = true;
@@ -34,8 +47,7 @@ export function startInputHints(render, readPads = () => navigator.getGamepads?.
     previous = next;
     if (active === "controller" && !pads.some(pad => pad.index === selected?.index)) active = "keyboard";
     const labels = active === "controller" ? controllerLabels(selected?.id) : null;
-    const text = labels ? `${labels.name} · D-pad: browse · ${labels.confirm}: confirm · ${labels.back}: back · Use keyboard to type names`
-      : "Keyboard · Arrow keys: browse · Enter: confirm · Esc: back · Type names · Backspace: delete";
+    const text = hintText(labels, custom);
     if (text !== last) { render(text); last = text; }
   }, 150);
   return () => { clearInterval(timer); window.removeEventListener("keydown", keyboard, true); };
