@@ -584,8 +584,30 @@ const ImportShim shims[] = {
     O(SafeArrayPtrOfIndex, 3),
     O(SafeArrayAccessData, 2),
     O(SafeArrayUnaccessData, 1),
-    O(GetErrorInfo, 2)
+    O(GetErrorInfo, 2),
 #undef O
+// Executables that import OLEAUT32 by ordinal (Bully: Scholarship Edition's
+// SysAllocString is ord2) get the same shims under the loader's "ordN" names.
+#define N(ord, name, n) {"OLEAUT32.dll", "ord" #ord, n, o_##name}
+    N(2, SysAllocString, 1),
+    N(4, SysAllocStringLen, 2),
+    N(5, SysReAllocStringLen, 3),
+    N(6, SysFreeString, 1),
+    N(8, VariantInit, 1),
+    N(9, VariantClear, 1),
+    N(10, VariantCopy, 2),
+    N(11, VariantCopyInd, 2),
+    N(12, VariantChangeType, 4),
+    N(15, SafeArrayCreate, 3),
+    N(19, SafeArrayGetUBound, 3),
+    N(20, SafeArrayGetLBound, 3),
+    N(23, SafeArrayAccessData, 2),
+    N(24, SafeArrayUnaccessData, 1),
+    N(25, SafeArrayGetElement, 3),
+    N(26, SafeArrayPutElement, 3),
+    N(148, SafeArrayPtrOfIndex, 3),
+    N(200, GetErrorInfo, 2),
+#undef N
 };
 } // namespace
 void oleaut32_register() {

@@ -597,6 +597,7 @@ void dx_register_shims() {
     dsound_register();
     dshow_register();
     xact_register();
+    wmi_register();
     qmixer_register();
     mss32_register();
     redbook_register();

@@ -161,6 +161,11 @@ enum ComIface : uint16_t {
     IF_D3DSURFACE8,
     IF_D3DVERTEXBUFFER8,
     IF_D3DINDEXBUFFER8,
+    // WMI (wmi.cpp): just enough for the DirectX SDK's IsXInputDevice check.
+    IF_WBEM_LOCATOR,
+    IF_WBEM_SERVICES,
+    IF_WBEM_ENUM,
+    IF_WBEM_OBJECT,
     IF_COUNT
 };
 
@@ -230,6 +235,7 @@ enum ComKind : uint16_t {
     K_D3D9QUERY,      // an occlusion or event query
     K_D3D9SHADER,     // a vertex or pixel shader made by the device from bytecode
     K_XACT,           // the silent XACT engine and its banks, cues and waves
+    K_WMI,            // WMI's locator, namespace, enumerations and objects
     K_KIND_COUNT,     // not a kind: one past the last, for the check below
 };
 // com.cpp keeps one bit per kind in a uint64_t per interface.
@@ -357,11 +363,15 @@ struct ComObj {
     // played or stopped, then stopped: a silent sound ends the moment it starts.
     uint32_t xact_state = 0;
 
+    // --- K_WMI: objects an enumeration has still to hand out.
+    uint32_t wmi_left = 0;
+
     // --- K_DINPUT / K_DIDEVICE
     uint32_t di_version = 0;
-    bool di_wide = false;  // created through DirectInputCreateW: DIDEVICEINSTANCEW layouts
-    uint32_t dev_type = 0; // DIDEVTYPE_MOUSE / _KEYBOARD / _JOYSTICK
-    uint32_t samples = 0;  // Direct3D 9 surfaces and devices: multisample count, 0 for none
+    bool di_wide = false;       // created through DirectInputCreateW: DIDEVICEINSTANCEW layouts
+    uint32_t dev_type = 0;      // DIDEVTYPE_MOUSE / _KEYBOARD / _JOYSTICK
+    uint32_t samples = 0;       // Direct3D 9 surfaces and devices: multisample count, 0 for none
+    uint32_t sync_interval = 1; // Direct3D 9 devices: refreshes a Present waits, 0 for none
     bool acquired = false;
     uint32_t di_coop = 0;
     uint32_t data_format_size = 0;

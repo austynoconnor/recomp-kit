@@ -382,6 +382,9 @@ struct FxObject {
     mutable std::shared_ptr<const std::vector<uint8_t>> shared;
     std::string param;         // a parameter this object names instead
     uint32_t guest_string = 0; // the string, copied out for GetString
+    // The device shader object over `data`, made the first time a state
+    // manager has to be handed this program.
+    mutable uint32_t shader_view = 0;
 };
 struct FxEffect {
     std::string resource;
@@ -394,6 +397,9 @@ struct FxEffect {
     uint32_t technique = 0, pass = 0xffffffffu, device = 0;
     uint32_t pool = 0; // the ID3DXEffectPool object it was created with
     uint32_t self = 0; // its COM object id
+    // The guest's ID3DXEffectStateManager (SetStateManager), held with a
+    // reference; 0 for none.
+    uint32_t state_manager = 0;
     // Lookups the per-draw path makes, built on first use: parameter index by
     // name, and for each program (by code key) the parameter behind each of
     // its constant table entries (-1: none).
@@ -1237,7 +1243,152 @@ static void apply_state(FxEffect &fx, D9Pipeline &pl, const FxState &s, uint32_t
     }
 }
 
-static void apply_pass(FxEffect &fx) {
+// ---------------------------------------------------------------------------
+// The state manager
+// ---------------------------------------------------------------------------
+// With an ID3DXEffectStateManager set, D3DX hands every state, texture,
+// shader and constant a pass sets to the manager instead of the device. A
+// game's manager usually caches what is set and skips repeats, so a pass that
+// wrote past it would leave that cache wrong and the game's next draw with
+// the wrong state. This effect still writes the device record itself, then
+// tells the manager everything the pass changed in it: a manager that
+// forwards to the device writes the same values again, and one that caches
+// stays true.
+enum : int {
+    SM_ADDREF = 1,
+    SM_RELEASE = 2,
+    SM_SET_RENDER_STATE = 7,
+    SM_SET_TEXTURE = 8,
+    SM_SET_TEXTURE_STAGE_STATE = 9,
+    SM_SET_SAMPLER_STATE = 10,
+    SM_SET_VERTEX_SHADER = 13,
+    SM_SET_VERTEX_SHADER_CONSTANT_F = 14,
+    SM_SET_PIXEL_SHADER = 17,
+    SM_SET_PIXEL_SHADER_CONSTANT_F = 18,
+};
+static uint32_t sm_call(X86 *c, uint32_t mgr, int slot, int nargs = 0, uint32_t a1 = 0,
+                        uint32_t a2 = 0, uint32_t a3 = 0) {
+    if (!mgr || !gm_valid(mgr, 4))
+        return 0;
+    uint32_t vt = rd32(mgr);
+    if (!gm_valid(vt + 4u * (uint32_t)slot, 4))
+        return 0;
+    uint32_t fn = rd32(vt + 4u * (uint32_t)slot);
+    uint32_t a[4] = {mgr, a1, a2, a3};
+    return guest_call(c, fn, a, 1 + nargs);
+}
+
+// The parts of the device record a pass can change, as they were before it.
+struct FxPipelineSnapshot {
+    uint32_t rs[256];
+    uint32_t tss[8][33];
+    uint32_t sampler_state[16][14];
+    uint32_t sampler_tex[16];
+    uint64_t vs_key, ps_key;
+    float vconst[256][4];
+    float pconst[32][4];
+    explicit FxPipelineSnapshot(const D9Pipeline &pl) {
+        memcpy(rs, pl.rs, sizeof rs);
+        memcpy(tss, pl.tss, sizeof tss);
+        memcpy(sampler_state, pl.sampler_state, sizeof sampler_state);
+        memcpy(sampler_tex, pl.sampler_tex, sizeof sampler_tex);
+        vs_key = pl.vs_key;
+        ps_key = pl.ps_key;
+        memcpy(vconst, pl.vconst, sizeof vconst);
+        memcpy(pconst, pl.pconst, sizeof pconst);
+    }
+};
+
+// A guest buffer for constant uploads, grown as needed and kept.
+static uint32_t sm_scratch(uint32_t bytes) {
+    static uint32_t at = 0, size = 0;
+    if (bytes > size) {
+        if (at)
+            heap_free(at);
+        at = heap_alloc(bytes, true);
+        size = at ? bytes : 0;
+    }
+    return at;
+}
+
+static void sm_constants(X86 *c, uint32_t mgr, int slot, const float (*was)[4],
+                         const float (*now)[4], uint32_t count) {
+    for (uint32_t r = 0; r < count;) {
+        if (!memcmp(was[r], now[r], 16)) {
+            ++r;
+            continue;
+        }
+        uint32_t end = r + 1;
+        while (end < count && memcmp(was[end], now[end], 16))
+            ++end;
+        uint32_t buf = sm_scratch((end - r) * 16);
+        if (!buf)
+            return;
+        memcpy(g_mem + buf, now[r], (end - r) * 16);
+        sm_call(c, mgr, slot, 3, r, buf, end - r);
+        r = end;
+    }
+}
+
+static uint32_t sm_shader(const FxEffect &fx, const FxObject *o, bool pixel) {
+    if (!o)
+        return 0;
+    if (!o->shader_view) {
+        if (!o->shared)
+            o->shared = std::make_shared<const std::vector<uint8_t>>(o->data);
+        if (!o->key)
+            o->key = d9sh::code_key(o->data.data(), o->data.size());
+        o->shader_view = d9_shader_view(fx.device, o->shared, o->key, pixel);
+    }
+    return o->shader_view;
+}
+
+static void sm_notify(X86 *c, const FxEffect &fx, const FxPass &pass, const D9Pipeline &pl,
+                      const FxPipelineSnapshot &was) {
+    uint32_t mgr = fx.state_manager;
+    for (uint32_t i = 0; i < 256; ++i)
+        if (pl.rs[i] != was.rs[i])
+            sm_call(c, mgr, SM_SET_RENDER_STATE, 2, i, pl.rs[i]);
+    for (uint32_t s = 0; s < 8; ++s)
+        for (uint32_t t = 0; t < 33; ++t)
+            if (pl.tss[s][t] != was.tss[s][t])
+                sm_call(c, mgr, SM_SET_TEXTURE_STAGE_STATE, 3, s, t, pl.tss[s][t]);
+    for (uint32_t s = 0; s < 16; ++s) {
+        for (uint32_t t = 1; t < 14; ++t)
+            if (pl.sampler_state[s][t] != was.sampler_state[s][t])
+                sm_call(c, mgr, SM_SET_SAMPLER_STATE, 3, s, t, pl.sampler_state[s][t]);
+        if (pl.sampler_tex[s] != was.sampler_tex[s]) {
+            ComObj *t = com_get(pl.sampler_tex[s]);
+            sm_call(c, mgr, SM_SET_TEXTURE, 2, s, t ? t->identity : 0);
+        }
+    }
+    if (pl.vs_key != was.vs_key)
+        sm_call(c, mgr, SM_SET_VERTEX_SHADER, 1,
+                sm_shader(fx, pass_shader_object(fx, pass, FXS_VERTEXSHADER), false));
+    if (pl.ps_key != was.ps_key)
+        sm_call(c, mgr, SM_SET_PIXEL_SHADER, 1,
+                sm_shader(fx, pass_shader_object(fx, pass, FXS_PIXELSHADER), true));
+    sm_constants(c, mgr, SM_SET_VERTEX_SHADER_CONSTANT_F, was.vconst, pl.vconst, 256);
+    sm_constants(c, mgr, SM_SET_PIXEL_SHADER_CONSTANT_F, was.pconst, pl.pconst, 32);
+}
+
+static void apply_pass_states(FxEffect &fx);
+// Applies the current pass; with a state manager, also tells it what changed.
+static void apply_pass(FxEffect &fx, X86 *c) {
+    if (!fx.state_manager || !c) {
+        apply_pass_states(fx);
+        return;
+    }
+    if (fx.technique >= fx.techniques.size() ||
+        fx.pass >= fx.techniques[fx.technique].passes.size())
+        return;
+    D9Pipeline &pl = d9_pipeline(fx.device);
+    std::unique_ptr<FxPipelineSnapshot> was(new FxPipelineSnapshot(pl));
+    apply_pass_states(fx);
+    sm_notify(c, fx, fx.techniques[fx.technique].passes[fx.pass], pl, *was);
+}
+
+static void apply_pass_states(FxEffect &fx) {
     if (fx.technique >= fx.techniques.size())
         return;
     FxTechnique &tech = fx.techniques[fx.technique];
@@ -1318,8 +1469,6 @@ FX_STUB(SetString)
 FX_STUB(GetPixelShader)
 FX_STUB(GetVertexShader)
 FX_STUB(SetArrayRange)
-FX_STUB(SetStateManager)
-FX_STUB(GetStateManager)
 FX_STUB(BeginParameterBlock)
 FX_STUB(EndParameterBlock)
 FX_STUB(ApplyParameterBlock)
@@ -1830,13 +1979,44 @@ void Fx_BeginPass(X86 *c) {
         return;
     }
     fx->pass = arg(c, 1);
-    apply_pass(*fx);
+    apply_pass(*fx, c);
     com_ret(c, D3D_OKX);
 }
 void Fx_CommitChanges(X86 *c) {
     FxEffect *fx = this_fx(c);
     if (fx)
-        apply_pass(*fx);
+        apply_pass(*fx, c);
+    com_ret(c, D3D_OKX);
+}
+// (this, pManager): held with a reference, released when replaced.
+void Fx_SetStateManager(X86 *c) {
+    FxEffect *fx = this_fx(c);
+    if (!fx) {
+        com_ret(c, D3DERR_INVALIDCALLX);
+        return;
+    }
+    uint32_t mgr = arg(c, 1);
+    if (mgr && !gm_valid(mgr, 4))
+        mgr = 0;
+    if (mgr)
+        sm_call(c, mgr, SM_ADDREF);
+    uint32_t old = fx->state_manager;
+    fx->state_manager = mgr;
+    if (old)
+        sm_call(c, old, SM_RELEASE);
+    com_ret(c, D3D_OKX);
+}
+// (this, ppManager): the manager with a reference, or null.
+void Fx_GetStateManager(X86 *c) {
+    FxEffect *fx = this_fx(c);
+    uint32_t out = arg(c, 1);
+    if (!fx || !out) {
+        com_ret(c, D3DERR_INVALIDCALLX);
+        return;
+    }
+    if (fx->state_manager)
+        sm_call(c, fx->state_manager, SM_ADDREF);
+    com_out_ptr(out, fx->state_manager);
     com_ret(c, D3D_OKX);
 }
 void Fx_EndPass(X86 *c) {

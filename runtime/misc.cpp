@@ -45,6 +45,18 @@ uint32_t host_millis() {
         g_epoch_us = now_us();
     return (uint32_t)((now_us() - g_epoch_us) / 1000ull);
 }
+bool host_time_source_is_pinned();
+// A monotonic microsecond clock for QueryPerformanceCounter. It reads
+// host_millis() first, so the time source still sees the read (the boot host
+// ticks on it), and a pinned clock, which only has milliseconds, stays pinned.
+uint64_t host_micros() {
+    const uint32_t ms = host_millis();
+    if (host_time_source_is_pinned())
+        return (uint64_t)ms * 1000ull;
+    if (!g_epoch_us)
+        g_epoch_us = now_us();
+    return now_us() - g_epoch_us;
+}
 void host_set_time_source(uint32_t (*fn)()) {
     g_time_source = fn;
 }

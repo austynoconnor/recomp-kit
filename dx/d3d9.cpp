@@ -25,6 +25,8 @@
 #include "d3d9_shader.h"
 #include "d3d9_ffp.h"
 #include "host_d9.h"
+#include "../runtime/display_seam.h"
+#include "../runtime/win32.h"
 #include <unordered_map>
 #include <map>
 
@@ -292,6 +294,24 @@ void D9_GetAdapterMonitor(X86 *c) {
     set_eax(c, 1); // a non-null HMONITOR
 }
 
+// D3DPRESENT_PARAMETERS.PresentationInterval as the refreshes a Present waits
+// for: DEFAULT (0) and ONE wait one, TWO to FOUR (2, 4, 8) that many, and
+// IMMEDIATE (0x80000000) none.
+static uint32_t sync_interval_of(uint32_t interval) {
+    switch (interval) {
+    case 0x80000000u:
+        return 0;
+    case 2:
+        return 2;
+    case 4:
+        return 3;
+    case 8:
+        return 4;
+    default:
+        return 1;
+    }
+}
+
 void D9_CreateDevice(X86 *c) {
     ComObj *d3d = this_d3d9(c);
     uint32_t present = arg(c, 5), out = arg(c, 6);
@@ -314,6 +334,7 @@ void D9_CreateDevice(X86 *c) {
         dev->bpp = 32;
         dev->hwnd = rd32(present + 28);
         dev->samples = multisample_count(rd32(present + 16), rd32(present + 20));
+        dev->sync_interval = sync_interval_of(rd32(present + 52));
     }
     uint32_t view = com_view(dev, IF_D3DDEVICE9);
     if (!view) {
@@ -427,6 +448,7 @@ void Dev_Reset(X86 *c) {
     dev->width = rd32(present + 0);
     dev->height = rd32(present + 4);
     dev->samples = multisample_count(rd32(present + 16), rd32(present + 20));
+    dev->sync_interval = sync_interval_of(rd32(present + 52));
     device_forget_buffers(dev);
     ComObj *bb = device_backbuffer(dev);
     dev->render_target = bb ? bb->id : 0;
@@ -562,6 +584,21 @@ void Dev_Clear(X86 *c) {
 // (this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion). The back
 // buffer goes to the host as a 32-bit frame: the first thing this module puts
 // on screen.
+// A Present with a presentation interval returns at a vertical blank, and a
+// game paces its whole loop by that return (see dxgi.cpp's present). Bully:
+// Scholarship Edition's mission scripts depend on it: main.lur waits in 100 ms
+// steps of game time for story mode, then builds the cutscene table the first
+// mission reads, and the game clock moves by the frame time - so frames drawn
+// far faster than the display let the mission start before the table exists.
+// The wait is a scheduler sleep, so the game's other threads keep running.
+static void present_wait(ComObj *dev) {
+    if (!dev || !dev->sync_interval)
+        return;
+    const double delay = host_present_refresh_delay(int(dev->sync_interval));
+    if (delay > 0)
+        guest_sleep_ms(uint32_t(delay * 1000.0));
+}
+
 void Dev_Present(X86 *c) {
     ComObj *dev = this_device9(c);
     ComObj *bb = dev ? device_backbuffer(dev) : nullptr;
@@ -571,6 +608,7 @@ void Dev_Present(X86 *c) {
         host_present(nullptr, (int)bb->width, (int)bb->height, 32, nullptr, (int)bb->pitch);
         host_d9_present(bb->id, bb->width, bb->height);
         ddraw_external_present_end();
+        present_wait(dev);
         com_ret(c, D3D_OK9);
         return;
     }
@@ -592,6 +630,7 @@ void Dev_Present(X86 *c) {
         host_present(bbytes, (int)bb->width, (int)bb->height, 32, nullptr, (int)bb->pitch);
         ddraw_external_present_end();
     }
+    present_wait(dev);
     com_ret(c, D3D_OK9);
 }
 
@@ -2461,6 +2500,24 @@ static void create_shader(X86 *c, bool pixel) {
     }
     com_out_ptr(out, view_);
     com_ret(c, D3D_OK9);
+}
+uint32_t d9_shader_view(uint32_t device_id, std::shared_ptr<const std::vector<uint8_t>> bytes,
+                        uint64_t key, bool pixel) {
+    if (!bytes || bytes->empty())
+        return 0;
+    ComObj *o = com_new(K_D3D9SHADER);
+    if (!o)
+        return 0;
+    o->dev_d3d = device_id;
+    DeviceShader sh;
+    sh.bytes = std::move(bytes);
+    sh.key = key;
+    sh.pixel = pixel;
+    device_shaders()[o->id] = sh;
+    uint32_t view_ = com_view(o, pixel ? IF_D3DPIXELSHADER9 : IF_D3DVERTEXSHADER9);
+    if (!view_)
+        com_release(o);
+    return view_;
 }
 void Dev_CreateVertexShader(X86 *c) {
     create_shader(c, false);

@@ -2,7 +2,36 @@
 
 ## Unreleased
 
-- 2026-10-08 � Claude Opus 5.5: XACT cue and wave states. A prepared cue
+- 2026-10-09 — Claude Opus 5.5: game controllers through WMI. Games that
+  read pads through XInput first ask WMI which DirectInput joysticks are
+  XInput pads (the DirectX SDK's IsXInputDevice: Win32_PNPEntity DeviceIDs
+  with "IG_"). New `dx/wmi.cpp` answers that: CLSID_WbemLocator connects,
+  and an enumeration of Win32_PNPEntity lists one device, the kit's pad, as
+  a wired Xbox 360 controller (VID 045E, PID 028E) while the pad is served
+  through XInput; the DirectInput joystick then reports the matching product
+  GUID. OLEAUT32 shims are also registered under their ordinals ("ord2" is
+  SysAllocString), which Bully: Scholarship Edition imports by ordinal; its
+  WMI query never started without it. Bully now sees the pad and polls
+  XInputGetState (needs `[controls.native] dinput = true`).
+
+- 2026-10-09 — Claude Opus 5.5: ID3DXEffect::SetStateManager and
+  GetStateManager. The effect holds the guest's ID3DXEffectStateManager with
+  a reference, and after each pass it applies (BeginPass, CommitChanges) it
+  tells the manager every render state, texture stage state, sampler state,
+  texture, shader and float constant range the pass changed, so a manager
+  that caches device state stays true. Shaders are handed over as device
+  shader objects made once per effect program (`d9_shader_view`). Bully calls
+  the manager hundreds of thousands of times per run; its 3D world is still
+  black, so that has another cause.
+
+- 2026-10-09 — Claude Opus 5.5: Direct3D 9 Present waits for the device's
+  presentation interval (DEFAULT/ONE one refresh, TWO-FOUR more, IMMEDIATE
+  none) in the scheduler, as DXGI's Present already did, so a game's loop is
+  paced by the display. QueryPerformanceCounter now counts microseconds (at
+  the 1 MHz it reports) instead of whole milliseconds; a pinned clock still
+  only has milliseconds.
+
+- 2026-10-08 — Claude Opus 5.5: XACT cue and wave states. A prepared cue
   or wave now reports XACT_STATE_PREPARED until it is played or stopped,
   then STOPPED (it was STOPPED from the start). Bully's cutscene loader
   waits for its sound cue to report PREPARED before it calls the cutscene

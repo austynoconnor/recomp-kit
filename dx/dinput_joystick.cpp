@@ -48,6 +48,12 @@ const uint8_t GUID_RecompPadInstance_[16] =
     GUID_BYTES(0x52434D50, 0x4144, 0x11F0, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01);
 const uint8_t GUID_RecompPadProduct_[16] =
     GUID_BYTES(0x52434D50, 0x4144, 0x11F0, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02);
+// A wired Xbox 360 controller's PIDVID product GUID (VID 045E, PID 028E),
+// used while the same pad is also served through XInput: a game's
+// IsXInputDevice check matches it against WMI's DeviceID (wmi.cpp) and
+// leaves the pad to XInput, as it would on Windows.
+const uint8_t GUID_X360PadProduct_[16] =
+    GUID_BYTES(0x028E045E, 0x0000, 0x0000, 0x00, 0x00, 0x50, 0x49, 0x44, 0x56, 0x49, 0x44);
 
 void di_put_wide(uint32_t at, const char *name, uint32_t units) {
     uint32_t i = 0;
@@ -349,6 +355,10 @@ int match_format_object(uint32_t guid_addr, uint32_t type, const std::vector<boo
 // ===========================================================================
 // Pure helpers
 // ===========================================================================
+bool wmi_pad_is_xinput() {
+    return host_pad_mode() == 2 && (host_pad_native_apis() & 2) != 0;
+}
+
 bool joy_served() {
     return host_pad_mode() == 2 && (host_pad_native_apis() & 1) != 0;
 }
@@ -445,7 +455,8 @@ void joy_write_device_instance(uint32_t at, uint32_t size, bool wide, uint32_t d
     if (size >= DIDI_OFF_guidInstance + 16)
         memcpy(gm_ptr(at + DIDI_OFF_guidInstance), GUID_RecompPadInstance_, 16);
     if (size >= DIDI_OFF_guidProduct + 16)
-        memcpy(gm_ptr(at + DIDI_OFF_guidProduct), GUID_RecompPadProduct_, 16);
+        memcpy(gm_ptr(at + DIDI_OFF_guidProduct),
+               wmi_pad_is_xinput() ? GUID_X360PadProduct_ : GUID_RecompPadProduct_, 16);
     if (size >= DIDI_OFF_dwDevType + 4)
         wr32(at + DIDI_OFF_dwDevType, joy_devtype(di_version));
     const uint32_t units = 260;

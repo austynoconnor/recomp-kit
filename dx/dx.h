@@ -33,6 +33,10 @@ void d3dx9_register();
 void dsound_register();
 void dshow_register();
 void xact_register();
+void wmi_register(); // wmi.cpp: WbemLocator for IsXInputDevice checks
+// True while the host serves its pad through XInput: the DirectInput view of
+// it is then an Xbox 360 controller, and WMI lists it as one.
+bool wmi_pad_is_xinput();
 void dinput_register();
 void xinput_register();
 void qmixer_register();

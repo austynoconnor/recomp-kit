@@ -1804,7 +1804,10 @@ void k_QueryPerformanceCounter(X86 *c) {
     host_note_cadence("QueryPerformanceCounter");
     uint32_t p = arg(c, 0);
     if (p) {
-        uint64_t ticks = (uint64_t)host_millis() * 1000ull;
+        // Microseconds, at the frequency QueryPerformanceFrequency reports.
+        // It counted whole milliseconds before, so a frame limiter waiting for
+        // 33 333 ticks saw time arrive in 1000-tick steps.
+        uint64_t ticks = host_micros();
         wr32(p, (uint32_t)ticks);
         wr32(p + 4, (uint32_t)(ticks >> 32));
     }

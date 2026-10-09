@@ -149,3 +149,8 @@ struct D9Pipeline {
 
 // The record for one device, created on first use and kept for its lifetime.
 D9Pipeline &d9_pipeline(uint32_t device_id);
+// A device shader object (the IDirect3DVertexShader9 / IDirect3DPixelShader9
+// view a guest is handed) over bytecode the host already holds: what D3DX
+// hands an effect's state manager. 0 if it cannot be made.
+uint32_t d9_shader_view(uint32_t device_id, std::shared_ptr<const std::vector<uint8_t>> bytes,
+                        uint64_t key, bool pixel);

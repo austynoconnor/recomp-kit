@@ -272,6 +272,7 @@ void sched_run_checkpoint();
 // The host may pin it so a frame sees a stable time.
 // ---------------------------------------------------------------------------
 uint32_t host_millis();
+uint64_t host_micros();
 void host_set_time_source(uint32_t (*fn)());
 // What that clock IS, in the host's own words, for whatever has to record what
 // a run ran on. Installing a time source is not the same as pinning one - the
