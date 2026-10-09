@@ -503,6 +503,46 @@ static void test_joy_dinput8() {
     CHECK_EQ(call_method(dev, DID8_GetImageInfo, {sc(0x900)}), DI8_E_NOTIMPL);
 }
 
+// The system keyboard and mouse through DirectInput 8 report their
+// DI8DEVTYPE_ codes from GetCapabilities and GetDeviceInfo, as EnumDevices
+// does. Metal Gear Solid 2 picks each device's data format from that byte.
+static void test_dinput8_keyboard_mouse_types() {
+    cpu_reset();
+    pad_reset();
+    uint32_t di = make_dinput8(0x0800);
+    CHECK(di != 0);
+    if (!di)
+        return;
+    static const uint8_t kKeyboard[16] = {0x61, 0x2B, 0x1D, 0x6F, 0xA0, 0xD5, 0xCF, 0x11,
+                                          0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00};
+    static const uint8_t kMouse[16] = {0x60, 0x2B, 0x1D, 0x6F, 0xA0, 0xD5, 0xCF, 0x11,
+                                       0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00};
+    const struct {
+        const uint8_t *guid;
+        uint32_t type;
+    } cases[] = {{kKeyboard, 0x0113u}, {kMouse, 0x0112u}};
+    for (const auto &k : cases) {
+        put_guid(sc(0x40), k.guid);
+        wr32(sc(0x50), 0);
+        CHECK_EQ(call_method(di, DI_CreateDevice, {sc(0x40), sc(0x50), 0}), DI_OK);
+        uint32_t dev = rd32(sc(0x50));
+        CHECK(dev != 0);
+        if (!dev)
+            continue;
+        uint32_t caps = sc(0x200);
+        gm_zero(caps, SDK_DIDEVCAPS);
+        wr32(caps, SDK_DIDEVCAPS);
+        CHECK_EQ(call_method(dev, DID_GetCapabilities, {caps}), DI_OK);
+        CHECK_EQ(rd32(caps + 8), k.type);
+        uint32_t info = sc(0x800);
+        gm_zero(info, DIDEVICEINSTANCEA_SIZE);
+        wr32(info, DIDEVICEINSTANCEA_SIZE);
+        CHECK_EQ(call_method(dev, DID_GetDeviceInfo, {info}), DI_OK);
+        CHECK_EQ(rd32(info + DIDI_OFF_dwDevType), k.type);
+        call_method(dev, 2);
+    }
+}
+
 static void test_joy_device_state() {
     cpu_reset();
     pad_reset();
@@ -1092,6 +1132,7 @@ int main() {
         {"joystick pure helpers", test_joy_pure_helpers},
         {"joystick enumeration", test_joy_enum_devices},
         {"joystick through DirectInput 8", test_joy_dinput8},
+        {"DirectInput 8 keyboard and mouse types", test_dinput8_keyboard_mouse_types},
         {"joystick state", test_joy_device_state},
         {"joystick objects", test_joy_objects},
         {"joystick buffered data", test_joy_device_data},

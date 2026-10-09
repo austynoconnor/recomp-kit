@@ -245,6 +245,17 @@ void poll_device(ComObj *d) {
 // ===========================================================================
 // IDirectInputDeviceA
 // ===========================================================================
+// The device type a caller sees. A DirectInput 8 interface names the mouse
+// and keyboard DI8DEVTYPE_MOUSE (0x12) and DI8DEVTYPE_KEYBOARD (0x13), with
+// subtype 1, as EnumDevices does; older interfaces see the version 5 codes.
+// Metal Gear Solid 2 chooses each device's data format from this byte, and
+// with the version 5 codes it set none, so it never read the keyboard.
+static uint32_t reported_dev_type(const ComObj *d) {
+    if (d->di_version >= DIRECTINPUT_VERSION_8)
+        return d->dev_type == DIDEVTYPE_MOUSE ? 0x0112u : 0x0113u;
+    return d->dev_type;
+}
+
 void Device_GetCapabilities(X86 *c) {
     ComObj *d = this_device(c);
     uint32_t out = arg(c, 1);
@@ -267,7 +278,7 @@ void Device_GetCapabilities(X86 *c) {
         return;
     }
     wr32(out + DIDC_OFF_dwFlags, DIDC_ATTACHED);
-    wr32(out + DIDC_OFF_dwDevType, d->dev_type);
+    wr32(out + DIDC_OFF_dwDevType, reported_dev_type(d));
     if (size >= DIDEVCAPS_DX3_SIZE) {
         wr32(out + DIDC_OFF_dwAxes, d->dev_type == DIDEVTYPE_MOUSE ? 3u : 0u);
         wr32(out + DIDC_OFF_dwButtons, d->dev_type == DIDEVTYPE_MOUSE ? 4u : 256u);
@@ -634,7 +645,7 @@ void Device_GetDeviceInfo(X86 *c) {
     if (size >= 4 + 32)
         memcpy(gm_ptr(out + 20), g, 16);
     if (size >= 40)
-        wr32(out + 36, d->dev_type);
+        wr32(out + 36, reported_dev_type(d));
     // DIDEVICEINSTANCEW carries the two names as 260 UTF-16 units each, so
     // its fields past dwDevType sit at 40 and 560 and the record is 1100 bytes.
     if (d->di_wide) {

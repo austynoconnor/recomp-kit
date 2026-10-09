@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 2026-10-08 23:45 CDT — Claude Opus 5.5: merged `giggity-d3d8` at
+  1f9b87c (WebGPU indexed strips). DirectInput 8: the system keyboard and
+  mouse now report their `DI8DEVTYPE_` codes (0x113, 0x112) from
+  `GetCapabilities` and `GetDeviceInfo`, as `EnumDevices` already did.
+  Metal Gear Solid 2 picks each device's data format from that code; with
+  the old version 5 codes it set none, `Acquire` failed and the keyboard was
+  never read. With this, scripted keys reach its title screen and menus.
+  `d3d9_webgpu.cpp` reformatted (clang-format).
+
 - 2026-10-08 22:05 CDT — Claude Opus 5.5: `IDirect3DDevice8::CopyRects`
   copies between two surfaces of the same DXT format in whole 4x4 blocks
   (it used to skip every compressed copy). Metal Gear Solid 2 copies its
