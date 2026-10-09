@@ -28,6 +28,8 @@
 #include <mutex>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef __EMSCRIPTEN__
@@ -102,6 +104,8 @@ enum class Op : uint8_t {
     QueryBegin,
     QueryEnd,
     QueryDrop,
+    QueryPoll, // a = query, b = generation: publish its result to the cache
+    Present,   // a = backbuffer, b = width, c = height (the pumped queue)
     Probe,
     Call
 };
@@ -141,6 +145,31 @@ struct Batch {
     }
 };
 
+// Occlusion query results the render thread has published, so that the
+// game's GetData polls do not wait on it. In the browser the render thread is
+// the page's main thread, which runs only between browser events: a poll that
+// waited for it cost the game thread about a millisecond, and Star Wars
+// Battlefront II polls many queries a frame (a fifth of its time went there).
+// A generation per query keeps a poll queued before the query was issued
+// again from publishing the old result.
+struct QueryCache {
+    std::mutex m;
+    std::unordered_map<uint32_t, uint32_t> done; // query -> pixel count
+    std::unordered_map<uint32_t, uint32_t> gen;  // query -> generation
+    std::unordered_set<uint32_t> asked;          // a poll is queued
+};
+QueryCache &query_cache() {
+    static QueryCache *c = new QueryCache;
+    return *c;
+}
+void query_reissued(uint32_t id) {
+    QueryCache &q = query_cache();
+    std::lock_guard<std::mutex> lock(q.m);
+    q.done.erase(id);
+    q.asked.erase(id);
+    ++q.gen[id];
+}
+
 class RenderThread {
   public:
     explicit RenderThread(D9Backend *r) : r_(r) {
@@ -167,6 +196,17 @@ class RenderThread {
         // Hand work over often enough that the worker keeps pace with the game.
         if (filling_->commands.size() >= 48 || filling_->bytes.size() >= (1u << 20))
             hand_over();
+    }
+    // The browser's pumped queue answers on its own time; callers that must not
+    // wait for it hand work over and return.
+    bool pumped() const {
+        return pumped_;
+    }
+    void flush() {
+        if (threaded_)
+            hand_over();
+        else
+            submitted();
     }
     // Everything queued has been encoded; the caller may use the backend.
     template <class F> auto sync(F &&f) -> decltype(f()) {
@@ -196,6 +236,23 @@ class RenderThread {
             run_on_pump(&job);
             return result;
         }
+    }
+    // The pumped queue's present: one frame may be in flight. The game waits
+    // only for the frame before this one, so its next frame runs while the
+    // browser's main thread encodes and presents this one. Waiting for this
+    // frame's own present cost the browser game thread a tenth of its time.
+    void present_pipelined(uint32_t backbuffer, uint32_t w, uint32_t h) {
+        {
+            std::unique_lock<std::mutex> lock(m_);
+            idle_cv_.wait(lock, [this] { return presents_done_ >= presents_sent_; });
+            ++presents_sent_;
+        }
+        Command c{Op::Present};
+        c.a = backbuffer;
+        c.b = w;
+        c.c = h;
+        filling_->commands.push_back(c);
+        hand_over();
     }
     void run_on_pump(std::function<void()> *job) {
         Command c{Op::Call};
@@ -364,6 +421,25 @@ class RenderThread {
             case Op::QueryDrop:
                 r_->query_drop(cmd.a);
                 break;
+            case Op::QueryPoll: {
+                uint32_t count = 0;
+                const int r = r_->query_result(cmd.a, &count);
+                QueryCache &q = query_cache();
+                std::lock_guard<std::mutex> lock(q.m);
+                if (q.gen[cmd.a] != cmd.b)
+                    break; // issued again since this poll was queued
+                q.asked.erase(cmd.a);
+                if (r != 0)
+                    q.done[cmd.a] = r > 0 ? count : 1; // -1: unknown, report visible
+                break;
+            }
+            case Op::Present: {
+                r_->present(cmd.a, cmd.b, cmd.c);
+                std::lock_guard<std::mutex> lock(m_);
+                ++presents_done_;
+                idle_cv_.notify_all();
+                break;
+            }
             case Op::Probe:
                 r_->probe_next(cmd.a ? (const char *)(base + cmd.at) : nullptr);
                 break;
@@ -388,6 +464,7 @@ class RenderThread {
     std::vector<std::unique_ptr<Batch>> spare_;
     std::unique_ptr<Batch> filling_ = std::make_unique<Batch>();
     bool busy_ = false;
+    uint64_t presents_sent_ = 0, presents_done_ = 0; // the pumped queue's, under m_
 };
 
 RenderThread *render_thread() {
@@ -565,7 +642,12 @@ void host_d9_stretch(HostD9Surface src, const int32_t src_rect[4], HostD9Surface
     t->submitted();
 }
 void host_d9_present(uint32_t backbuffer, uint32_t width, uint32_t height) {
-    if (RenderThread *t = render_thread())
+    RenderThread *t = render_thread();
+    if (!t)
+        return;
+    if (t->pumped())
+        t->present_pipelined(backbuffer, width, height);
+    else
         t->sync([&] { backend()->present(backbuffer, width, height); });
 }
 int host_d9_read_presented(uint8_t *rgb, uint32_t cap, uint32_t *w, uint32_t *h) {
@@ -574,16 +656,43 @@ int host_d9_read_presented(uint8_t *rgb, uint32_t cap, uint32_t *w, uint32_t *h)
 }
 
 void host_d9_query_begin(uint32_t id) {
+    query_reissued(id);
     push(Op::QueryBegin, id);
 }
 void host_d9_query_end(uint32_t id) {
+    query_reissued(id);
     push(Op::QueryEnd, id);
 }
 int host_d9_query_result(uint32_t id, uint32_t *count) {
     RenderThread *t = render_thread();
-    return t && count ? t->sync([&] { return backend()->query_result(id, count); }) : -1;
+    if (!t || !count)
+        return -1;
+    if (!t->pumped())
+        return t->sync([&] { return backend()->query_result(id, count); });
+    // Pumped (the browser): answer from what the render thread published, and
+    // queue one poll at a time for a query that is not in yet.
+    QueryCache &q = query_cache();
+    uint32_t gen;
+    {
+        std::lock_guard<std::mutex> lock(q.m);
+        auto it = q.done.find(id);
+        if (it != q.done.end()) {
+            *count = it->second;
+            return 1;
+        }
+        if (!q.asked.insert(id).second)
+            return 0;
+        gen = q.gen[id];
+    }
+    Command c{Op::QueryPoll};
+    c.a = id;
+    c.b = gen;
+    t->batch().commands.push_back(c);
+    t->flush();
+    return 0;
 }
 void host_d9_query_drop(uint32_t id) {
+    query_reissued(id);
     push(Op::QueryDrop, id);
 }
 
