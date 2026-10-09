@@ -121,10 +121,11 @@ def load_controls(controls, touch, source):
     controls["mapped"] = mapped
 
     native = dict(controls.get("native", {}))
-    unknown_native = sorted(k for k in native if k not in ("xinput", "dinput", "axes", "buttons"))
+    unknown_native = sorted(k for k in native
+                            if k not in ("xinput", "dinput", "axes", "buttons", "axis_range"))
     if unknown_native:
-        raise ValueError("%s: [controls.native] may name only xinput, dinput, axes, buttons, not %s"
-                         % (source, ", ".join(unknown_native)))
+        raise ValueError("%s: [controls.native] may name only xinput, dinput, axes, buttons, "
+                         "axis_range, not %s" % (source, ", ".join(unknown_native)))
     native.setdefault("xinput", True)
     native.setdefault("dinput", True)
     if not isinstance(native["xinput"], bool) or not isinstance(native["dinput"], bool):
@@ -139,6 +140,15 @@ def load_controls(controls, touch, source):
     if not isinstance(buttons, list) or sorted(buttons) != sorted(PAD_BUTTONS):
         raise ValueError("%s: [controls.native] buttons must list all thirteen of %s exactly once, not %r"
                          % (source, ", ".join(PAD_BUTTONS), buttons))
+    # The range every joystick axis reports until the game sets DIPROP_RANGE.
+    # A game that never sets one was written against its own controller's
+    # driver default (Crazy Taxi expects about -128..127).
+    axis_range = native.setdefault("axis_range", [-32768, 32767])
+    if (not isinstance(axis_range, list) or len(axis_range) != 2
+            or not all(isinstance(v, int) and not isinstance(v, bool) for v in axis_range)
+            or not -2**31 <= axis_range[0] < axis_range[1] < 2**31):
+        raise ValueError("%s: [controls.native] axis_range must be [min, max] integers with "
+                         "min < max, not %r" % (source, axis_range))
     controls["native"] = native
     return controls
 
@@ -206,6 +216,8 @@ def load(game_dir):
     for key in ("title", "store"):
         if not isinstance(launcher[key], str):
             raise ValueError("%s: [launcher] %s must be a string" % (source, key))
+    if not isinstance(launcher.setdefault("stream_assets", False), bool):
+        raise ValueError("%s: [launcher] stream_assets must be a boolean" % source)
     min_free = launcher.setdefault("min_free_mb", 0)
     if not isinstance(min_free, int) or min_free < 0:
         raise ValueError("%s: [launcher] min_free_mb must be a non-negative integer" % source)

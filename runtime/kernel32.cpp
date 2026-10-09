@@ -108,6 +108,12 @@ struct HObj {
     bool write_pending = false;
     int write_flags = 0;    // the open flags the caller asked for
     std::string guest_name; // what to resolve again, as the caller spelled it
+    // H_FILE read-ahead: bytes [ahead_at, ahead_at + ahead_len) of the file,
+    // read in one piece so that small ReadFile calls do not each reach the
+    // host. See file_read.
+    std::vector<uint8_t> ahead;
+    int64_t ahead_at = 0;
+    size_t ahead_len = 0;
     // H_FIND
     std::vector<std::string> matches;
     // The host path each match actually came from. A listing can merge tiers,
@@ -808,6 +814,49 @@ void k_CreateFileA(X86 *c) {
     create_file_named(c, gm_str(arg(c, 0)));
 }
 
+// Games read their archives in small pieces (Crazy Taxi: 4 KB at a time). A
+// host read is cheap natively but, in the browser, a streamed file's read is a
+// call to another thread that waits on the network cache, so each piece cost
+// about 20 ms and a 12 MB archive took a minute. Reads below kAheadSmall are
+// served from a kAhead buffer per handle; larger reads go straight through.
+// The descriptor's position always ends where the guest's read ended, so
+// SetFilePointer, mappings and host services see the usual offset.
+static constexpr size_t kAhead = 256 * 1024;
+static constexpr uint32_t kAheadSmall = 64 * 1024;
+
+// A write or truncation through any handle on this host file makes the bytes
+// other handles read ahead stale.
+static void file_drop_read_ahead(const std::string &path) {
+    for (auto &entry : handles())
+        if (entry.second.kind == H_FILE && entry.second.path == path)
+            entry.second.ahead_len = 0;
+}
+
+static int64_t file_read(HObj *o, uint8_t *dst, uint32_t want) {
+    int64_t pos = want && want < kAheadSmall ? os_fd_seek(o->fd, 0, OS_SEEK_CUR) : -1;
+    if (pos < 0) {
+        o->ahead_len = 0;
+        return os_fd_read(o->fd, dst, want);
+    }
+    if (pos < o->ahead_at || pos + want > o->ahead_at + (int64_t)o->ahead_len) {
+        if (o->ahead.size() < kAhead)
+            o->ahead.resize(kAhead);
+        int64_t got = os_fd_read(o->fd, o->ahead.data(), kAhead);
+        if (got < 0) {
+            o->ahead_len = 0;
+            os_fd_seek(o->fd, pos, OS_SEEK_SET);
+            return got;
+        }
+        o->ahead_at = pos;
+        o->ahead_len = (size_t)got;
+    }
+    size_t within = (size_t)(pos - o->ahead_at);
+    size_t n = std::min<size_t>(want, o->ahead_len - within);
+    memcpy(dst, o->ahead.data() + within, n);
+    os_fd_seek(o->fd, pos + (int64_t)n, OS_SEEK_SET);
+    return (int64_t)n;
+}
+
 void k_ReadFile(X86 *c) {
     HObj *o = handle_get(arg(c, 0), H_FILE);
     uint32_t buf = arg(c, 1), want = arg(c, 2), pread = arg(c, 3);
@@ -827,7 +876,7 @@ void k_ReadFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
-    int64_t n = os_fd_read(o->fd, g_mem + buf, want);
+    int64_t n = file_read(o, g_mem + buf, want);
     if (recomp_env("TRACE_FILES"))
         LOGW("file: read handle=%08x want=%u got=%lld", arg(c, 0), want, (long long)n);
     if (n < 0) {
@@ -867,6 +916,7 @@ void k_WriteFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
+    file_drop_read_ahead(o->path);
     int64_t n = os_fd_write(o->fd, g_mem + buf, want);
     if (n < 0) {
         set_last_error(ERROR_ACCESS_DENIED_);
@@ -951,6 +1001,7 @@ void k_SetEndOfFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
+    file_drop_read_ahead(o->path);
     int64_t pos = os_fd_seek(o->fd, 0, OS_SEEK_CUR);
     set_eax(c, os_fd_truncate(o->fd, pos) == 0 ? 1 : 0);
 }
@@ -3023,7 +3074,17 @@ void sched_leave_critsec(uint32_t cs) {
     wr32(cs + CS_OFF_LOCK_COUNT, rec ? rec - 1 : 0xffffffffu);
     if (!rec) {
         wr32(cs + CS_OFF_OWNER, 0);
-        g_sched_cv.notify_all();
+        // Wake the parked threads only when one of them waits on this
+        // section. The C runtime locks and unlocks a stream around every
+        // fread and getc, so an unconditional notify woke every timed waiter
+        // (audio and input workers) thousands of times a second; in Crazy
+        // Taxi that made loading an archive several times slower, and slower
+        // still in the browser.
+        for (GuestThread *t : threads())
+            if (t->blocked && t->wait_kind == W_CRITSEC && t->wait_cs == cs) {
+                g_sched_cv.notify_all();
+                break;
+            }
     }
     g_sched_m.unlock();
 }
@@ -3512,7 +3573,7 @@ void k_SetThreadPriority(X86 *c) {
 }
 
 void k_ExitProcess(X86 *c) {
-    LOGW("ExitProcess(%u)", arg(c, 0));
+    LOGW("ExitProcess(%u) from %08x", arg(c, 0), rd32(c->r[R_ESP]));
     if (request_process_exit(arg(c, 0)))
         return; // never returns
     publish_process_exit(arg(c, 0));

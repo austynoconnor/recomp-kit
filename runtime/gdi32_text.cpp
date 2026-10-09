@@ -195,6 +195,10 @@ void extent(X86 *c) {
 void text_out(X86 *c) {
     uint32_t hdc = arg(c, 0), flags = arg(c, 3), rp = arg(c, 4), text = arg(c, 5), n = arg(c, 6),
              dx = arg(c, 7);
+    // ETO_OPAQUE and ETO_CLIPPED with no rectangle are ignored, as Windows
+    // does (the DirectX SDK's CD3DFont passes ETO_OPAQUE and NULL).
+    if (!rp)
+        flags &= ~6u;
     auto *dc = dc_of(hdc);
     int w, h;
     if (!dc || !dc_size(hdc, &w, &h) || n > GUEST_SIZE / 4 ||

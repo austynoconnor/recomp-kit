@@ -522,6 +522,10 @@ std::vector<uint8_t> build_vs(const VsState &s) {
         a.op(O_MOV, {dst(T_ATTROUT, 1), color1});
         if (s.fog == 4)
             a.op(O_MOV, {dst(T_RASTOUT, 1, M_X), swz(color1, WWWW)});
+        if (s.fog >= 1 && s.fog <= 3) {
+            a.op(O_MOV, {vd(0, M_Z), vr(5, WWWW)});
+            emit_fog(a, s);
+        }
         emit_texcoords(a, s, zero, one);
         return a.bytes();
     }
@@ -835,13 +839,20 @@ void vertex_state(const D9Pipeline &pl, const Inputs &in, VsState &s,
     }
     // Vertex fog. A pre-transformed vertex brings its own fog factor in the
     // specular alpha.
+    s.range_fog = pl.rs[48] != 0;
     if (pl.rs[28] && pl.rs[35] == 0) { // FOGENABLE, FOGTABLEMODE none
         if (in.positiont)
             s.fog = 4;
         else if (pl.rs[140] >= 1 && pl.rs[140] <= 3)
             s.fog = (uint8_t)pl.rs[140];
+    } else if (pl.rs[28] && pl.rs[35] >= 1 && pl.rs[35] <= 3) {
+        // Table (pixel) fog, from the eye depth: computed per vertex here and
+        // interpolated, which matches the per-pixel result for the linear
+        // mode and is close for the exponential ones. A pre-transformed
+        // vertex's depth is its w, 1 / RHW.
+        s.fog = (uint8_t)pl.rs[35];
+        s.range_fog = false;
     }
-    s.range_fog = pl.rs[48] != 0;
     for (int i = 0; i < 8; ++i) {
         uint32_t tci = pl.tss[i][11], flags = pl.tss[i][24];
         s.tci_gen[i] = (uint8_t)std::min<uint32_t>(tci >> 16, 15);

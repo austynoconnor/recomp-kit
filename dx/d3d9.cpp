@@ -555,6 +555,17 @@ void Dev_Clear(X86 *c) {
         LOGW("d3d9: clear %u: flags %x colour %08x rects %u, target %u (%ux%u, %u bpp)%s", g_clears,
              flags, color, count, s ? s->id : 0, s ? s->width : 0, s ? s->height : 0,
              s ? s->bpp : 0, (s && s->id == dev->palette_obj) ? ", the back buffer" : "");
+    if ((flags & 2u) && s) { // D3DCLEAR_ZBUFFER
+        std::vector<int32_t> zr;
+        if (count && rects && gm_fits(rects, count * 16u))
+            for (uint32_t i = 0; i < count * 4; ++i)
+                zr.push_back((int32_t)rd32(rects + 4 * i));
+        float z;
+        uint32_t zbits = arg(c, 5);
+        memcpy(&z, &zbits, 4);
+        d9_raster_clear_depth(dev->zbuffer_obj, s->width, s->height,
+                              zr.empty() ? nullptr : zr.data(), (uint32_t)(zr.size() / 4), z);
+    }
     uint8_t *bytes = resource_bytes(s);
     if ((flags & 1u) && bytes && s->bpp == 32) {
         uint32_t n = (count && rects) ? count : 1;

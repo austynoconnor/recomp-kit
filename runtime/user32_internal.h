@@ -57,6 +57,7 @@ struct Window {
 
 struct Msg {
     uint32_t hwnd, message, wparam, lparam, time, ptx, pty;
+    bool character_posted = false; // Host already queued this key's text event.
 };
 
 std::map<std::string, WndClass> &classes();

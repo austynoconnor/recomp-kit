@@ -1,0 +1,169 @@
+<!doctype html>
+<!-- The player page for one game's web build. tools/web_launcher.py places it,
+     with @APP@.js/.wasm/.data, in <launcher>/<game id>/; the game's files were
+     imported by the launcher into the browser's private storage at
+     <game id>/game, and the profile lives at <game id>/profile. The page must
+     be served cross-origin isolated (COOP same-origin, COEP require-corp). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@TITLE@</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 14px system-ui, sans-serif; overflow: hidden; }
+  #canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+            text-align: center; padding: 0 16px; white-space: pre-line; pointer-events: none; }
+  #status a { pointer-events: auto; color: #8cf; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1"></canvas>
+<div id="status">Loading…</div>
+<script>
+"use strict";
+const statusEl = document.getElementById("status");
+const canvas = document.getElementById("canvas");
+function status(text, back) {
+  statusEl.textContent = text;
+  if (back) {
+    const a = document.createElement("a");
+    a.href = "../";
+    a.textContent = "\nBack to the launcher";
+    statusEl.append(document.createElement("br"), a);
+  }
+  statusEl.hidden = !text;
+}
+const log = [];
+window.recompLog = log; // for tests
+// Keep diagnostics bounded during long runs; the browser console need not
+// retain every line emitted by translated code.
+function record(text) {
+  if (text.includes("[host] could not prepare streamed game files"))
+    status("Game data could not be prepared. Stop and choose Start game to retry.");
+  log.push(text);
+  if (log.length > 1000) log.splice(0, log.length - 1000);
+}
+
+async function gameId() {
+  const parts = location.pathname.split("/").filter(Boolean);
+  if (parts.length && parts[parts.length - 1].includes(".")) parts.pop();
+  return decodeURIComponent(parts[parts.length - 1] || "");
+}
+
+async function prepareGame(game) {
+  const worker = new Worker("../worker.js", { type: "module" });
+  let nextId = 0;
+  const pending = new Map();
+  worker.onmessage = ({ data }) => {
+    if (data.progress) {
+      const p = data.progress;
+      const percent = p.bytesTotal ? Math.floor(p.bytesDone / p.bytesTotal * 100) : 0;
+      status(`Downloading game · ${percent}%\n${data.startup ? `${(p.bytesDone / 1024 ** 2).toFixed(1)} of ${(p.bytesTotal / 1024 ** 2).toFixed(1)} MB` : `${(p.bytesDone / 1024 ** 3).toFixed(2)} of ${(p.bytesTotal / 1024 ** 3).toFixed(2)} GB`}\n${data.startup ? "Other game files load as they are needed." : "Your next visit will use the cached files."}`);
+      return;
+    }
+    const request = pending.get(data.id);
+    if (!request) return;
+    pending.delete(data.id);
+    if (data.error) request.reject(new Error(data.error));
+    else request.resolve(data.result);
+  };
+  worker.onerror = () => {
+    for (const request of pending.values()) request.reject(new Error("Game files could not be loaded. Try Start again."));
+    pending.clear();
+  };
+  const request = (cmd, extra = {}) => new Promise((resolve, reject) => {
+    const id = ++nextId;
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, cmd, game, ...extra });
+  });
+  try {
+    status("Checking game files…");
+    const cached = await request("status");
+    if (cached.status.state === "ready") return false;
+    if (!game.hostedAssets) throw new Error(`${game.title} has not been imported yet.`);
+    status("Preparing your first play…\nDownloading game files automatically.");
+    const manifestUrl = new URL(game.hostedAssets, new URL("../games.json", location.href)).href;
+    const streamed = game.streamAssets && game.assetBase;
+    const outcome = await request(streamed ? "streamSetup" : "import", { kind: "hosted", manifestUrl });
+    if (outcome.result === "noSpace") throw new Error("There isn't enough browser storage for this game.");
+    if (outcome.result !== "done") throw new Error(outcome.error || "Game download did not finish. Stop and try Start again to resume.");
+    return !!streamed;
+  } finally {
+    worker.terminate();
+  }
+}
+
+async function start() {
+  if (window.parent === window) throw new Error("Open the player page and choose Start game.");
+  if (!crossOriginIsolated) throw new Error("This page must be served cross-origin isolated (COOP/COEP headers).");
+  if (!navigator.gpu) throw new Error("This browser has no WebGPU.");
+  const id = await gameId();
+  const games = await fetch("../games.json").then((r) => r.json());
+  const game = games.find((g) => g.id === id);
+  if (!game) throw new Error(`No game "${id}" in the launcher's games.json.`);
+  document.title = game.title;
+
+  // Hosted games populate OPFS automatically; existing imported copies work too.
+  const streamed = await prepareGame(game);
+  status("Starting game…");
+
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+  if (!adapter) throw new Error("WebGPU gave no adapter.");
+  const wanted = ["texture-compression-bc", "depth32float-stencil8", "float32-filterable",
+                  "unorm16-texture-formats", "rg11b10ufloat-renderable"];
+  const requiredFeatures = wanted.filter((f) => adapter.features.has(f));
+  const requiredLimits = {};
+  for (const k of ["maxTextureDimension2D", "maxBufferSize", "maxStorageBufferBindingSize",
+                   "maxUniformBufferBindingSize", "maxBindGroups", "maxSampledTexturesPerShaderStage",
+                   "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage",
+                   "maxUniformBuffersPerShaderStage", "maxDynamicUniformBuffersPerPipelineLayout",
+                   "maxVertexBuffers", "maxVertexAttributes", "maxColorAttachments",
+                   "maxInterStageShaderVariables"])
+    if (k in adapter.limits) requiredLimits[k] = adapter.limits[k];
+  const device = await adapter.requestDevice({ requiredFeatures, requiredLimits });
+  device.lost.then((info) => status(`The graphics device was lost: ${info.message}`, true));
+  device.addEventListener("uncapturederror", (e) => console.error("WebGPU:", e.error.message));
+
+  const exe = `/opfs/${id}/game/${game.executable}`;
+  const Module = {
+    canvas,
+    preinitializedWebGPUDevice: device,
+    noInitialRun: true,
+    print: record,
+    printErr: record,
+    setStatus: (t) => status(t ? t : ""),
+    onAbort: (what) => status(`The game stopped: ${what}`, true),
+    preRun: [() => {
+      const m = Module;
+      m.ENV.RECOMP_PROFILE_DIR = `/opfs/${id}/profile`;
+      if (streamed) {
+        m.ENV.RECOMP_WEB_ASSET_BASE = new URL(game.assetBase, location.href).href;
+        m.ENV.RECOMP_WEB_ASSET_INDEX = `/opfs/${id}/game/.stream-index`;
+      }
+      const extra = new URLSearchParams(location.search);
+      for (const [k, v] of extra) if (k.startsWith("RECOMP_")) m.ENV[k] = v;
+    }],
+    onRuntimeInitialized() {
+      status("");
+      canvas.focus();
+      Module.callMain([`--exe=${exe}`]);
+    },
+  };
+  window.Module = Module;
+  const script = document.createElement("script");
+  script.src = "@APP@.js";
+  script.onerror = () => status("The game's web build is missing.", true);
+  document.body.append(script);
+}
+
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("click", () => canvas.focus());
+start().catch((e) => status(e.message, true));
+</script>
+<script type="module">
+import { startInputHints } from "./input-hints.js";
+startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin));
+</script>
+</body>
+</html>

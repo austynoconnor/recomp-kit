@@ -207,6 +207,25 @@ float wrap_coord(float t, uint32_t mode) {
     }
 }
 
+// Host-side depth, one float per pixel, keyed by the depth surface object.
+struct DepthBuffer {
+    uint32_t width = 0, height = 0;
+    std::vector<float> z;
+};
+std::unordered_map<uint32_t, DepthBuffer> &depth_buffers() {
+    static auto *m = new std::unordered_map<uint32_t, DepthBuffer>();
+    return *m;
+}
+std::vector<float> &depth_buffer(uint32_t id, uint32_t w, uint32_t h) {
+    DepthBuffer &d = depth_buffers()[id];
+    if (d.width != w || d.height != h) {
+        d.width = w;
+        d.height = h;
+        d.z.assign((size_t)w * h, 1.0f);
+    }
+    return d.z;
+}
+
 V4 sample(const D9Pipeline &pl, uint32_t stage, const V4 &uv) {
     V4 out;
     out[0] = out[1] = out[2] = out[3] = 1.0f;
@@ -218,13 +237,20 @@ V4 sample(const D9Pipeline &pl, uint32_t stage, const V4 &uv) {
         return out;
     }
     uint32_t au = pl.sampler_state[stage][1], av = pl.sampler_state[stage][2];
-    float u = wrap_coord(uv[0], au) * t->width - 0.5f;
-    float v = wrap_coord(uv[1], av) * t->height - 0.5f;
+    // D3DSAMP_MAGFILTER (5): POINT (1) or NONE (0) picks the nearest texel,
+    // the documented default; anything else is bilinear.
+    bool point = pl.sampler_state[stage][5] <= 1;
+    float u = wrap_coord(uv[0], au) * t->width - (point ? 0.0f : 0.5f);
+    float v = wrap_coord(uv[1], av) * t->height - (point ? 0.0f : 0.5f);
     int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
-    float fx = u - x0, fy = v - y0;
+    float fx = point ? 0.0f : u - x0, fy = point ? 0.0f : v - y0;
+    // A clamped axis repeats its edge texel; a wrapped (or mirrored) one
+    // takes the neighbour from the far side.
+    bool clamp_u = au == 3 || au == 4, clamp_v = av == 3 || av == 4;
     auto texel = [&](int x, int y, int k) -> float {
-        x = ((x % (int)t->width) + (int)t->width) % (int)t->width;
-        y = ((y % (int)t->height) + (int)t->height) % (int)t->height;
+        int w = (int)t->width, h = (int)t->height;
+        x = clamp_u ? std::min(std::max(x, 0), w - 1) : ((x % w) + w) % w;
+        y = clamp_v ? std::min(std::max(y, 0), h - 1) : ((y % h) + h) % h;
         return t->rgba[((size_t)y * t->width + (size_t)x) * 4 + k] / 255.0f;
     };
     for (int k = 0; k < 4; ++k) {
@@ -835,8 +861,9 @@ V4 fetch(const uint8_t *vp, const Elem &e) {
 }
 
 struct Out {
-    V4 pos;      // clip space
-    V4 attr[10]; // od0, od1, ot0..ot7
+    V4 pos;           // clip space
+    V4 attr[10];      // od0, od1, ot0..ot7
+    float fog = 1.0f; // oFog: 1 unfogged, 0 all fog colour
 };
 
 // ---------------------------------------------------------------------------
@@ -870,6 +897,25 @@ float blend_factor(uint32_t mode, const V4 &src, const float dst[4], int k) {
 }
 
 } // namespace
+
+void d9_raster_clear_depth(uint32_t depth_id, uint32_t width, uint32_t height, const int32_t *rects,
+                           uint32_t count, float z) {
+    if (!depth_id || !width || !height)
+        return;
+    std::vector<float> &d = depth_buffer(depth_id, width, height);
+    if (!rects || !count) {
+        std::fill(d.begin(), d.end(), z);
+        return;
+    }
+    for (uint32_t r = 0; r < count; ++r) {
+        int32_t x1 = std::max(rects[4 * r], 0), y1 = std::max(rects[4 * r + 1], 0);
+        int32_t x2 = std::min(rects[4 * r + 2], (int32_t)width);
+        int32_t y2 = std::min(rects[4 * r + 3], (int32_t)height);
+        for (int32_t y = y1; y < y2; ++y)
+            for (int32_t x = x1; x < x2; ++x)
+                d[(size_t)y * width + (size_t)x] = z;
+    }
+}
 
 void d9_raster_invalidate(uint32_t surface_id) {
     decoded().erase(surface_id);
@@ -965,9 +1011,11 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
                     if (e.usage == d.usage && e.index == d.usage_index &&
                         e.offset + 4u <= call.stride)
                         m.in[d.index & 15] = fetch(vp, e);
+        m.ofog[0] = 1.0f; // a shader that writes no fog leaves the vertex unfogged
         m.run();
         Out o;
         o.pos = m.opos;
+        o.fog = std::min(std::max(m.ofog[0], 0.0f), 1.0f);
         o.attr[0] = m.od[0];
         o.attr[1] = m.od[1];
         for (int k = 0; k < 8; ++k)
@@ -1011,6 +1059,42 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
         }
     };
     uint8_t *pixels = rt.data;
+    // Fog is applied after the pixel shader, as the fixed blend Direct3D 9
+    // keeps for shader models up to 2.0: the colour moves towards
+    // D3DRS_FOGCOLOR as the interpolated factor falls.
+    bool fog = pl.rs[28] != 0;
+    float fog_rgb[3] = {((pl.rs[34] >> 16) & 255) / 255.0f, ((pl.rs[34] >> 8) & 255) / 255.0f,
+                        (pl.rs[34] & 255) / 255.0f};
+
+    // The depth test, against a host-side float buffer kept per depth
+    // surface (d9_raster_clear_depth fills it). D3DRS_ZENABLE (7), ZFUNC (23,
+    // D3DCMP_*), ZWRITEENABLE (14); the viewport's MinZ/MaxZ map the depth.
+    std::vector<float> *depth = nullptr;
+    if (pl.rs[7] && device->zbuffer_obj)
+        depth = &depth_buffer(device->zbuffer_obj, rt.width, rt.height);
+    uint32_t zfunc = pl.rs[23];
+    bool zwrite = pl.rs[14] != 0;
+    float zmin = pl.viewport_z[0], zmax = pl.viewport_z[1];
+    auto z_pass = [&](float z, float stored) {
+        switch (zfunc) {
+        case 1:
+            return false;
+        case 2:
+            return z < stored;
+        case 3:
+            return z == stored;
+        case 4:
+            return z <= stored;
+        case 5:
+            return z > stored;
+        case 6:
+            return z != stored;
+        case 7:
+            return z >= stored;
+        default:
+            return true;
+        }
+    };
 
     uint32_t written = 0;
     float first_w = 0.0f;
@@ -1018,7 +1102,7 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
     V4 sample_colour;
     auto draw_triangle = [&](const Out &a, const Out &b, const Out &c) {
         const Out *v[3] = {&a, &b, &c};
-        float sx[3], sy[3], iw[3];
+        float sx[3], sy[3], iw[3], sz[3];
         for (int i = 0; i < 3; ++i) {
             float w = v[i]->pos[3];
             if (w <= 1e-6f)
@@ -1026,6 +1110,7 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
             iw[i] = 1.0f / w;
             sx[i] = vpx + (v[i]->pos[0] * iw[i] + 1.0f) * 0.5f * vpw;
             sy[i] = vpy + (1.0f - v[i]->pos[1] * iw[i]) * 0.5f * vph;
+            sz[i] = zmin + v[i]->pos[2] * iw[i] * (zmax - zmin);
         }
         float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]);
         if (std::fabs(area) < 1e-8f)
@@ -1040,17 +1125,41 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
         int x1 = std::min((int)rt.width - 1, (int)std::ceil(std::max({sx[0], sx[1], sx[2]})));
         int y0 = std::max(0, (int)std::floor(std::min({sy[0], sy[1], sy[2]})));
         int y1 = std::min((int)rt.height - 1, (int)std::ceil(std::max({sy[0], sy[1], sy[2]})));
+        // The top-left fill rule: a pixel centre exactly on an edge belongs
+        // to the triangle only when that edge is a top or a left one, so two
+        // triangles sharing an edge never both draw it (with blending on, a
+        // doubled edge shows as a seam). Edge i is the one opposite vertex i,
+        // directed so the interior is on its positive side.
+        bool topleft[3];
+        for (int i = 0; i < 3; ++i) {
+            int ea = (i + 1) % 3, eb = (i + 2) % 3;
+            if (area < 0)
+                std::swap(ea, eb);
+            float dx = sx[eb] - sx[ea], dy = sy[eb] - sy[ea];
+            topleft[i] = (dy == 0 && dx > 0) || dy < 0;
+        }
+        auto covered = [&](float w, int i) { return w > 0 || (w == 0 && topleft[i]); };
         for (int y = y0; y <= y1; ++y) {
             for (int x = x0; x <= x1; ++x) {
-                float px = x + 0.5f, py = y + 0.5f;
-                float w0 = ((sx[1] - px) * (sy[2] - py) - (sx[2] - px) * (sy[1] - py)) / area;
-                float w1 = ((sx[2] - px) * (sy[0] - py) - (sx[0] - px) * (sy[2] - py)) / area;
+                // Direct3D 9 puts pixel centres on integer coordinates.
+                float px = (float)x, py = (float)y;
+                float e0 = (sx[1] - px) * (sy[2] - py) - (sx[2] - px) * (sy[1] - py);
+                float e1 = (sx[2] - px) * (sy[0] - py) - (sx[0] - px) * (sy[2] - py);
+                float w0 = e0 / area, w1 = e1 / area;
                 float w2 = 1.0f - w0 - w1;
-                if (w0 < 0 || w1 < 0 || w2 < 0)
+                if (!covered(w0, 0) || !covered(w1, 1) || !covered(w2, 2))
                     continue;
                 float q = w0 * iw[0] + w1 * iw[1] + w2 * iw[2];
                 if (q <= 0)
                     continue;
+                float *zp = nullptr;
+                float z = 0;
+                if (depth) {
+                    z = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];
+                    zp = &(*depth)[(size_t)y * rt.width + (size_t)x];
+                    if (!z_pass(z, *zp))
+                        continue;
+                }
                 Machine m;
                 m.p = &ps;
                 m.pl = &pl;
@@ -1076,6 +1185,15 @@ void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &
                     col[k] = std::min(std::max(col[k], 0.0f), 1.0f);
                 if (alpha_test && !alpha_pass(col[3]))
                     continue;
+                if (fog) {
+                    float f =
+                        (w0 * iw[0] * v[0]->fog + w1 * iw[1] * v[1]->fog + w2 * iw[2] * v[2]->fog) /
+                        q;
+                    for (int k = 0; k < 3; ++k)
+                        col[k] = col[k] * f + fog_rgb[k] * (1.0f - f);
+                }
+                if (zp && zwrite)
+                    *zp = z;
                 if (!written++)
                     sample_colour = col;
                 uint8_t *o = pixels + (size_t)y * rt.pitch + (size_t)x * 4;
