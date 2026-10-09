@@ -5929,8 +5929,39 @@ def main():
             fh.write("__attribute__((constructor)) static void %sregister(void)\n"
                      "{\n    recomp_module_register(&%smodule);\n}\n" % (P, P))
         else:
-            fh.write("""int recomp_is_call_return(uint32_t target)
+            fh.write("""/* Every guest RET asks whether it lands after a CALL. One bit per byte of
+ * the span the call sites cover, built once at load, answers that without a
+ * binary search over all of them (1% of the browser's game thread). */
+static unsigned char *recomp_call_return_bits;
+static uint32_t recomp_call_return_lo, recomp_call_return_span;
+__attribute__((constructor)) static void recomp_call_return_bits_init(void)
 {
+    uint32_t i, lo, span;
+    unsigned char *bits;
+    if (!recomp_call_return_count)
+        return;
+    lo = recomp_call_returns[0];
+    span = recomp_call_returns[recomp_call_return_count - 1] - lo + 1u;
+    if (span > (64u << 20))
+        return; /* the binary search below still answers */
+    bits = (unsigned char *)calloc(span / 8u + 1u, 1);
+    if (!bits)
+        return;
+    for (i = 0; i < recomp_call_return_count; ++i) {
+        uint32_t o = recomp_call_returns[i] - lo;
+        bits[o >> 3] |= (unsigned char)(1u << (o & 7u));
+    }
+    recomp_call_return_lo = lo;
+    recomp_call_return_span = span;
+    recomp_call_return_bits = bits;
+}
+
+int recomp_is_call_return(uint32_t target)
+{
+    if (recomp_call_return_bits) {
+        uint32_t o = target - recomp_call_return_lo;
+        return o < recomp_call_return_span && ((recomp_call_return_bits[o >> 3] >> (o & 7u)) & 1u);
+    }
     uint32_t lo = 0, hi = recomp_call_return_count;
     while (lo < hi) {
         uint32_t mid = lo + (hi - lo) / 2;
