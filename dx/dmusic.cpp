@@ -5,15 +5,17 @@
 // for the path's DirectSound buffer, 3D buffer, the primary buffer's
 // listener and the synth port. Those buffers are real dsound.cpp buffers.
 //
-// There is no synthesizer. Segments, MIDI messages and DLS downloads are
-// accepted and recorded but make no sound; a game that plays only through
-// the synth is silent here. Every call into an unimplemented method is
-// logged once under its name.
+// The synth port plays the DLS instruments a game downloads itself, with the
+// MIDI and patch messages it sends through SendPMsg (dls_synth.cpp).
+// Segments are accepted but not played. Every call into an unimplemented
+// method is logged once under its name.
 #include "com.h"
+#include "dls_synth.h"
 #include "dx.h"
 #include "../runtime/guest.h"
 #include "../runtime/imports.h"
 #include "../runtime/memory.h"
+#include "../runtime/win32.h"
 #include "../platform/os.h"
 
 #include <stdio.h>
@@ -274,6 +276,29 @@ bool dm_trace() {
 uint32_t g_dm_traced = 0;
 const uint32_t kDmTraceMax = 600;
 
+// RECOMP_DMUSIC_DUMP=<dir> writes every download to <dir>/dl_<id>.bin and
+// appends every performance message to <dir>/pmsg.bin, each preceded by the
+// host millisecond it arrived at, for working out a game's use offline.
+const char *dm_dump_dir() {
+    static const char *dir = getenv("RECOMP_DMUSIC_DUMP");
+    return dir && *dir ? dir : nullptr;
+}
+void dm_dump(const char *name, uint32_t guest, uint32_t bytes, bool append, uint32_t stamp) {
+    const char *dir = dm_dump_dir();
+    if (!dir || !gm_valid(guest, bytes))
+        return;
+    std::string path = std::string(dir) + "/" + name;
+    FILE *f = fopen(path.c_str(), append ? "ab" : "wb");
+    if (!f)
+        return;
+    if (append) {
+        uint32_t head[2] = {stamp, bytes};
+        fwrite(head, 4, 2, f);
+    }
+    fwrite(gm_ptr(guest), 1, bytes, f);
+    fclose(f);
+}
+
 // IDirectMusicPortDownload. A download buffer is guest memory the game fills
 // with a DMUS_DOWNLOADINFO (dwDLType, dwDLId, ...) and its data; Download
 // records it and GetBuffer finds it again by that id.
@@ -345,14 +370,23 @@ void PD_Download(X86 *c) {
         LOGW("dmusic trace: download type %u id %u entries %u size %u (buffer %u)", rd32(m),
              rd32(m + 4), rd32(m + 8), rd32(m + 12), d->dl_size);
     }
-    log_once("dmusic.download",
-             "dmusic: DLS downloads are kept but no synthesizer plays them (silent)");
+    if (dm_dump_dir() && d->dl_size >= 16) {
+        char name[32];
+        snprintf(name, sizeof name, "dl_%u.bin", d->dl_id);
+        dm_dump(name, d->dl_mem, d->dl_size, false, 0);
+    }
+    if (!dls::download(d->dl_id, d->dl_mem, d->dl_size) && d->dl_size >= 4)
+        log_once("dmusic.download", "dmusic: a DLS download of type %u is kept but not played",
+                 rd32(d->dl_mem));
     set_eax(c, S_OK);
 }
 void PD_Unload(X86 *c) {
     ComObj *d = com_this(arg(c, 1));
-    if (d && d->kind == K_DMDOWNLOAD)
+    if (d && d->kind == K_DMDOWNLOAD) {
+        if (d->dl_id)
+            dls::unload(d->dl_id);
         d->dl_id = 0;
+    }
     set_eax(c, S_OK);
 }
 const ComMethod g_portdownload[] = {
@@ -386,6 +420,8 @@ const ComMethod g_download[] = {
     {"GetBuffer", 3, DL_GetBuffer},
 };
 void download_destroy(ComObj *d) {
+    if (d->dl_id)
+        dls::unload(d->dl_id);
     if (d->dl_mem)
         heap_free(d->dl_mem);
     d->dl_mem = 0;
@@ -733,7 +769,6 @@ void Perf_GetBumperLength(X86 *c) {
 // SendPMsg takes ownership of the message: it is freed, unplayed.
 void Perf_SendPMsg(X86 *c) {
     uint32_t msg = arg(c, 1);
-    log_once("dmusic.send", "dmusic: performance messages are accepted but not played");
     if (dm_trace() && msg && gm_valid(msg, 0x40) && g_dm_traced++ < kDmTraceMax) {
         // DMUS_PMSG: rtTime at 8, mtTime 0x10, dwFlags 0x14, dwPChannel 0x18,
         // dwType 0x28; the type's own fields from 0x38.
@@ -743,6 +778,9 @@ void Perf_SendPMsg(X86 *c) {
              rd32(msg + 0x10), rd32(msg + 0x38), rd32(msg + 0x3c), rd32(msg + 0x40),
              gm_valid(msg, 0x48) ? rd32(msg + 0x44) : 0);
     }
+    if (msg && gm_valid(msg, 4) && rd32(msg) <= 0x1000)
+        dm_dump("pmsg.bin", msg, rd32(msg), true, host_millis());
+    dls::pmsg(msg);
     if (msg)
         heap_free(msg);
     set_eax(c, msg ? S_OK : E_POINTER);
@@ -1036,6 +1074,7 @@ ComObj *perf_create() {
 
 void dmusic_reset() {
     g_clock_origin = 0;
+    dls::reset();
 }
 
 void dmusic_register() {

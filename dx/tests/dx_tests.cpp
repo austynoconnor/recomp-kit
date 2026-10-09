@@ -13,6 +13,7 @@
 // That means the tests also check the stack discipline, which is where a
 // wrong argc in a vtable shows up.
 #include "../com.h"
+#include "../dls_synth.h"
 #include "../dx.h"
 #include "../host_api.h"
 #include "../../runtime/display_seam.h"
@@ -3406,6 +3407,127 @@ static void test_dmusic_audio_paths() {
               0x80000000u);
         CHECK_EQ(rd32(out), 0u);
     }
+}
+
+// The synth port as MGS2 drives it: a wave download and an instrument
+// download that names it, a patch message selecting that instrument on a
+// performance channel, then MIDI through SendPMsg. The note plays the wave on
+// a host channel at the pitch its key asks for, a bend retunes it, and a
+// note on a patch that was never downloaded is silent.
+static void test_dmusic_dls_notes() {
+    static const uint8_t clsid_perf[16] = {0x81, 0x28, 0xac, 0xd2, 0x9b, 0xb3, 0xd1, 0x11,
+                                           0x87, 0x04, 0x00, 0x60, 0x08, 0x93, 0xb1, 0xbd};
+    static const uint8_t iid_perf8[16] = {0x37, 0x41, 0x9c, 0x67, 0x2e, 0xc6, 0x47, 0x41,
+                                          0xb2, 0xb4, 0x9d, 0x56, 0x9a, 0xcb, 0x25, 0x4c};
+    static const uint8_t iid_portdl[16] = {0x7a, 0x28, 0xac, 0xd2, 0x9b, 0xb3, 0xd1, 0x11,
+                                           0x87, 0x04, 0x00, 0x60, 0x08, 0x93, 0xb1, 0xbd};
+    uint32_t g = sc(0x3000);
+    memcpy(g_mem + g, clsid_perf, 16);
+    memcpy(g_mem + g + 16, iid_perf8, 16);
+    memcpy(g_mem + g + 32, iid_portdl, 16);
+    uint32_t out = sc(0x3100), ds_ptr = sc(0x3110), params = sc(0x3120);
+    uint32_t cocreate = tramp("ole32.dll", "CoCreateInstance");
+    uint32_t create8 = tramp("DSOUND.dll", "DirectSoundCreate8");
+    CHECK_EQ(call_shim(create8, {0, ds_ptr, 0}), DS_OK);
+    CHECK_EQ(call_shim(cocreate, {g, 0, 3, g + 16, out}), DS_OK);
+    uint32_t perf = rd32(out);
+    CHECK(perf != 0);
+    if (!perf)
+        return;
+    wr32(params, 0x28);
+    wr32(params + 8, 4);
+    wr32(params + 0x14, 44100);
+    CHECK_EQ(call_method(perf, 44, {out, ds_ptr, 0, 7, 16, 0x31, params}), DS_OK); // InitAudio
+    CHECK_EQ(call_method(perf, 28, {0, out, 0, 0}), DS_OK);                        // PChannelInfo
+    uint32_t port = rd32(out);
+    CHECK_EQ(call_method(port, 0, {g + 32, out}), DS_OK);
+    uint32_t dl = rd32(out);
+    CHECK(dl != 0);
+    if (!dl)
+        return;
+    // Allocates a download buffer, lets `fill` write it, and downloads it.
+    auto download = [&](uint32_t size, auto fill) {
+        CHECK_EQ(call_method(dl, 4, {size, out}), DS_OK); // AllocateBuffer
+        uint32_t d = rd32(out);
+        CHECK_EQ(call_method(d, 3, {out, out + 4}), DS_OK); // GetBuffer
+        uint32_t m = rd32(out);
+        fill(m);
+        CHECK_EQ(call_method(dl, 7, {d}), DS_OK); // Download
+    };
+    // Wave 7: 100 samples of 16-bit mono at 22050 Hz.
+    download(320, [](uint32_t m) {
+        wr32(m + 0, 2); // DMUS_DOWNLOADINFO_WAVE
+        wr32(m + 4, 7); // dwDLId
+        wr32(m + 8, 2); // offset table entries
+        wr32(m + 12, 320);
+        wr32(m + 16, 24); // DMUS_WAVE
+        wr32(m + 20, 56); // DMUS_WAVEDATA
+        wr32(m + 32, 1);  // ulWaveDataIdx
+        wr16(m + 36, 1);  // WAVE_FORMAT_PCM
+        wr16(m + 38, 1);
+        wr32(m + 40, 22050);
+        wr32(m + 44, 44100);
+        wr16(m + 48, 2);
+        wr16(m + 50, 16);
+        wr32(m + 56, 200);
+        for (uint32_t i = 0; i < 100; ++i)
+            wr16(m + 60 + 2 * i, (uint16_t)(i * 300));
+    });
+    // Instrument 8, patch 0x105 (bank LSB 1, program 5): one region over every
+    // key, unity note 60, playing wave 7.
+    download(128, [](uint32_t m) {
+        wr32(m + 0, 3); // DMUS_DOWNLOADINFO_INSTRUMENT2
+        wr32(m + 4, 8);
+        wr32(m + 8, 2);
+        wr32(m + 12, 128);
+        wr32(m + 16, 24); // DMUS_INSTRUMENT
+        wr32(m + 20, 48); // DMUS_REGION
+        wr32(m + 24, 0x105);
+        wr32(m + 28, 1); // ulFirstRegionIdx
+        wr16(m + 48 + 2, 127);
+        wr16(m + 48 + 6, 127);
+        wr32(m + 48 + 28, 1);  // WAVELINK.ulChannel
+        wr32(m + 48 + 32, 7);  // WAVELINK.ulTableIndex
+        wr32(m + 48 + 36, 20); // WSMPL.cbSize
+        wr16(m + 48 + 40, 60); // usUnityNote
+    });
+    CHECK_EQ(dls::waves(), 1u);
+    CHECK_EQ(dls::instruments(), 1u);
+    auto send = [&](uint32_t type, uint32_t pchannel, uint8_t a, uint8_t b, uint8_t c) {
+        CHECK_EQ(call_method(perf, 16, {0x40, out}), DS_OK); // AllocPMsg
+        uint32_t msg = rd32(out);
+        wr32(msg + 0x14, type == 7 ? 2u : 0x32u);
+        wr32(msg + 0x18, pchannel);
+        wr32(msg + 0x28, type);
+        wr8(msg + 0x38, a);
+        wr8(msg + 0x39, b);
+        wr8(msg + 0x3a, c);
+        CHECK_EQ(call_method(perf, 11, {msg}), DS_OK); // SendPMsg
+    };
+    size_t plays = g_plays.size();
+    send(0, 16, 0x90, 60, 127); // no patch selected yet: silent
+    CHECK_EQ(g_plays.size(), plays);
+    send(7, 16, 5, 0, 1);       // DMUS_PATCH_PMSG: program 5, MSB 0, LSB 1
+    send(0, 16, 0x90, 72, 127); // an octave above the unity note
+    CHECK_EQ(g_plays.size(), plays + 1);
+    if (g_plays.size() == plays + 1) {
+        const PlayRecord &r = g_plays.back();
+        CHECK_EQ(r.rate, 22050);
+        CHECK_EQ(r.bits, 16);
+        CHECK_EQ(r.channels, 1);
+        CHECK_EQ(r.bytes, 200u);
+        CHECK_EQ(r.loop, 0);
+        CHECK(r.pcm.size() == 200 && r.pcm[2] == (300 & 0xff));
+        CHECK(r.volume < -400 && r.volume > -430); // velocity 127 at GM volume 100
+        CHECK_EQ(r.pan, 0);
+        CHECK_EQ(g_audio_rates[r.channel], 44100u);
+        send(0, 16, 0xe0, 0x7f, 0x7f); // bend fully up: two semitones
+        CHECK(g_audio_rates[r.channel] > 49400 && g_audio_rates[r.channel] < 49600);
+        send(0, 16, 0xb0, 10, 0); // pan hard left
+        CHECK(g_audio_pans[r.channel] <= -3000);
+    }
+    CHECK_EQ(dls::notes_started(), 1u);
+    CHECK_EQ(call_method(perf, 38), DS_OK); // CloseDown
 }
 
 // ---------------------------------------------------------------------------
@@ -13443,6 +13565,7 @@ int main() {
         {"GDI primary blit", test_gdi_primary_blit},
         {"CoCreateInstance DirectSound", test_cocreate_directsound},
         {"DirectMusic audio paths", test_dmusic_audio_paths},
+        {"DirectMusic DLS notes", test_dmusic_dls_notes},
         {"DirectShow audio stream", test_dshow_audio_stream},
         {"DirectShow graph playback", test_dshow_graph_playback},
         {"DirectShow FilterGraph RenderFile", test_dshow_filtergraph_renderfile},

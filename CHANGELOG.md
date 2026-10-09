@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- 2026-10-09 04:10 CDT — Claude Opus 5.5: DirectMusic notes
+  (`dx/dls_synth.cpp`). The synth port now plays the DLS instruments a game
+  downloads itself. Wave downloads (type 2: `DMUS_WAVE` and its PCM) and
+  instrument downloads (types 1 and 3: `DMUS_INSTRUMENT`, its chain of
+  `DMUS_REGION`s with key and velocity ranges, wave link, unity note, fine
+  tune, attenuation and loop) are parsed in place in guest memory and
+  dropped on `Unload`. `SendPMsg` plays MIDI messages (note on/off, volume
+  CC 7, expression CC 11, pan CC 10, all-notes-off, program change, pitch
+  bend), `DMUS_PATCH_PMSG` patch selection (bank MSB/LSB + program) and the
+  note-on of `DMUS_NOTE_PMSG`. Each note is one host audio channel (up to
+  32, the oldest stolen) playing the region's wave at
+  rate x 2^((key - unity)/12 + fine tune + bend), with velocity and the
+  channel controllers as DLS (x/127)^2 gain curves. A note-off stops a
+  looping region; a one-shot plays out, as its long DLS release would let
+  it. Looping regions start at the loop (the attack before it is skipped,
+  logged once). `RECOMP_DMUSIC_DUMP=<dir>` writes each download and every
+  performance message to files for offline study. MGS2 (240 s from title to
+  the menus): 1097 downloads (574 waves, 523 instruments, 267 patches), and
+  every note it sent found its instrument. Test: "DirectMusic DLS notes".
+
 - 2026-10-09 03:40 CDT — Claude Opus 5.5: two trace switches for the
   sound and movie work, both off unless set. `RECOMP_DMUSIC_TRACE=1` logs the
   first 600 DirectMusic port downloads (DLS type, id, offset-table entries,
