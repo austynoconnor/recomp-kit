@@ -353,6 +353,10 @@ struct ComObj {
     float pos3d[3] = {0, 0, 0}, vel3d[3] = {0, 0, 0};
     uint32_t notify_count = 0;
 
+    // --- K_XACT: a cue's or wave's XACT_STATE_* bits. Prepared until it is
+    // played or stopped, then stopped: a silent sound ends the moment it starts.
+    uint32_t xact_state = 0;
+
     // --- K_DINPUT / K_DIDEVICE
     uint32_t di_version = 0;
     bool di_wide = false;  // created through DirectInputCreateW: DIDEVICEINSTANCEW layouts

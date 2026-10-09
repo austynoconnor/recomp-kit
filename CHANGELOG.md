@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-08 — Claude Opus 5.5: XACT cue and wave states. A prepared cue
+  or wave now reports XACT_STATE_PREPARED until it is played or stopped,
+  then STOPPED (it was STOPPED from the start). Bully's cutscene loader
+  waits for its sound cue to report PREPARED before it calls the cutscene
+  loaded, so mission 1-01's opening cutscene load never finished and the
+  game sat on the "Welcome to Bullworth" loading screen. Play variants
+  that hand out an object still hand out one that has already finished.
+
 - 2026-10-08 â€” Claude Opus 5.5: Direct3D 9 shader constant banks.
   Set/Get{Vertex,Pixel}ShaderConstantI and ...B record the integer and
   boolean registers per device, and Get{Vertex,Pixel}ShaderConstantF read

@@ -3,8 +3,9 @@
 // A game creates the engine with CoCreateInstance(CLSID_XACTEngine), hands
 // it its global settings and then loads sound banks and wave banks and plays
 // cues by index. This engine accepts all of it and plays nothing: banks load,
-// cue indices resolve, and every cue or wave a game plays has already
-// finished, which is what a game sees from a sound that has ended. That keeps
+// cue indices resolve, a prepared cue or wave reports PREPARED until it is
+// played, and every cue or wave a game plays has already finished, which is
+// what a game sees from a sound that has ended. That keeps
 // a game whose audio initialisation must succeed running, silently, until a
 // real XACT renderer exists.
 //
@@ -33,8 +34,8 @@ const uint8_t CLSID_XACTDebugEngine_[16] = {0x1d, 0x2b, 0x6a, 0x02, 0x04, 0xf2, 
 const uint8_t IID_IXACTEngine_[16] = {0x9a, 0x1b, 0x2c, 0xe7, 0x17, 0xd7, 0xc0, 0x41,
                                       0x81, 0xa6, 0x50, 0xeb, 0x56, 0xe8, 0x06, 0x49};
 
-const uint32_t XACT_CUESTATE_STOPPED = 0x20;
 const uint32_t XACT_STATE_PREPARED = 0x04;
+const uint32_t XACT_STATE_STOPPED = 0x20;
 const uint16_t XACTINDEX_INVALID = 0xffff;
 
 void ok(X86 *c) {
@@ -53,13 +54,16 @@ ComObj *create_engine() {
     return com_new(K_XACT);
 }
 
-// Hands out a new silent object through `out` as `iface`.
-void make(X86 *c, ComIface iface, uint32_t out) {
+// Hands out a new silent object through `out` as `iface`, in `state` (the
+// XACT_STATE_* bits its GetState reports; banks ignore it).
+void make(X86 *c, ComIface iface, uint32_t out, uint32_t state = XACT_STATE_PREPARED) {
     if (!out || !gm_valid(out, 4)) {
         set_eax(c, E_INVALIDARG);
         return;
     }
     ComObj *o = com_new(K_XACT);
+    if (o)
+        o->xact_state = state;
     uint32_t view = o ? com_view(o, iface) : 0;
     wr32(out, view);
     set_eax(c, view ? S_OK : E_OUTOFMEMORY);
@@ -168,7 +172,7 @@ void SB_Prepare(X86 *c) {
 void SB_Play(X86 *c) {
     uint32_t out = arg(c, 4);
     if (out)
-        make(c, IF_XACT_CUE, out);
+        make(c, IF_XACT_CUE, out, XACT_STATE_STOPPED);
     else
         set_eax(c, S_OK);
 }
@@ -193,12 +197,22 @@ void WB_Prepare(X86 *c) {
     make(c, IF_XACT_WAVE, arg(c, 5));
 }
 void WB_Play(X86 *c) {
-    make(c, IF_XACT_WAVE, arg(c, 5));
+    make(c, IF_XACT_WAVE, arg(c, 5), XACT_STATE_STOPPED);
 }
 
 // --- IXACTCue and IXACTWave --------------------------------------------
-void stopped(X86 *c) {
-    put(arg(c, 1), XACT_CUESTATE_STOPPED);
+// A cue or wave is PREPARED from Prepare until Play or Stop, then STOPPED.
+// Games wait on both edges: Bully's cutscene loader will not call a cutscene
+// loaded until its sound cue reports PREPARED, and its speech waits end on
+// STOPPED.
+void get_state(X86 *c) {
+    ComObj *o = com_this_arg(c);
+    put(arg(c, 1), o ? o->xact_state : XACT_STATE_STOPPED);
+    set_eax(c, S_OK);
+}
+void finish(X86 *c) {
+    if (ComObj *o = com_this_arg(c))
+        o->xact_state = XACT_STATE_STOPPED;
     set_eax(c, S_OK);
 }
 void C_GetVariableIndex(X86 *c) {
@@ -260,9 +274,9 @@ const ComMethod g_wavebank[] = {
     {"GetState", 2, state_prepared},
 };
 const ComMethod g_cue[] = {
-    {"Play", 1, ok},
-    {"Stop", 2, ok},
-    {"GetState", 2, stopped},
+    {"Play", 1, finish},
+    {"Stop", 2, finish},
+    {"GetState", 2, get_state},
     {"Destroy", 1, destroy},
     {"SetMatrixCoefficients", 4, ok},
     {"GetVariableIndex", 2, C_GetVariableIndex},
@@ -273,10 +287,10 @@ const ComMethod g_cue[] = {
 };
 const ComMethod g_wave[] = {
     {"Destroy", 1, destroy},
-    {"Play", 1, ok},
-    {"Stop", 2, ok},
+    {"Play", 1, finish},
+    {"Stop", 2, finish},
     {"Pause", 2, ok},
-    {"GetState", 2, stopped},
+    {"GetState", 2, get_state},
     {"SetPitch", 2, ok},
     {"SetVolume", 2, ok},
     {"SetMatrixCoefficients", 4, ok},
