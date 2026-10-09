@@ -17,6 +17,7 @@
 #include "../runtime/native_seam.h"
 
 #include <string.h>
+#include <cstdio>
 #include <iterator>
 #include <algorithm>
 #include "../platform/os.h"
@@ -396,6 +397,29 @@ void Device_Unacquire(X86 *c) {
     com_ret(c, DI_OK);
 }
 
+// RECOMP_TRACE_PAD also traces the keyboard: every read whose keys differ from
+// the read before, with the reads in between counted, so a trace shows how
+// many of the game's polls saw a key held.
+static void trace_key_state(const uint8_t *keys) {
+    static const bool on = recomp_env("TRACE_PAD") != nullptr;
+    if (!on)
+        return;
+    static uint8_t last[256];
+    static uint32_t same;
+    if (!memcmp(last, keys, 256)) {
+        ++same;
+        return;
+    }
+    memcpy(last, keys, 256);
+    fprintf(stderr, "[recomp] dinput: keyboard read at %llu ms after %u unchanged:",
+            (unsigned long long)(os_monotonic_ns() / 1000000), same);
+    same = 0;
+    for (int k = 0; k < 256; ++k)
+        if (keys[k])
+            fprintf(stderr, " %02x", k);
+    fputc('\n', stderr);
+}
+
 // Return the current keyboard or mouse state using the acquired device format.
 // Guest buffer sizes and device acquisition are checked before writing state.
 void Device_GetDeviceState(X86 *c) {
@@ -425,6 +449,7 @@ void Device_GetDeviceState(X86 *c) {
             size = 256;
         for (uint32_t k = 0; k < size; ++k)
             wr8(out + k, d->last_keys[k]);
+        trace_key_state(d->last_keys);
         com_ret(c, DI_OK);
         return;
     }
