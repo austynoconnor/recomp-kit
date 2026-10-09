@@ -409,6 +409,9 @@ struct FxEffect {
     // other effects of the pool, valid while pool_generation matches.
     std::unordered_map<uint32_t, std::vector<struct FxParam *>> peers;
     uint64_t peers_generation = 0;
+    // g_param_stamp when the pass was last applied: CommitChanges sends only
+    // the parameters written since.
+    uint64_t applied_stamp = 0;
 };
 // Changes whenever an effect is created or destroyed.
 static uint64_t g_effect_generation = 1;
@@ -907,25 +910,35 @@ static FxParam *param_named(FxEffect &fx, const std::string &name) {
 }
 
 // The texture a sampler parameter reads, through the name its texture state
-// carries.
-static uint32_t sampler_texture(FxEffect &fx, const FxParam &sampler) {
+// carries. Null when the sampler names no texture: D3DX then leaves the
+// stage's texture as the game set it on the device.
+static FxParam *sampler_texture(FxEffect &fx, const FxParam &sampler) {
     for (const FxState &s : sampler.sampler)
         if (s.op == FXS_SAMPLER_TEXTURE) {
             auto it = fx.objects.find(s.object());
             if (it == fx.objects.end() || it->second.param.empty())
                 continue;
             if (FxParam *tex = param_named(fx, it->second.param))
-                return tex->texture;
+                return tex;
         }
-    return 0;
+    return nullptr;
 }
 
 struct D9Pipeline;
 static void apply_state(FxEffect &fx, D9Pipeline &pl, const FxState &s, uint32_t sampler_stage);
 
+// What BeginPass set, changed or not, for the state manager: D3DX hands a
+// manager every state and texture of the pass, and a manager that caches
+// state relies on hearing them again.
+static bool g_fx_track = false;
+static bool g_fx_rs_touched[256];
+static uint32_t g_fx_stages_touched = 0;
+
+// `since`: nonzero binds only the parameters written after that stamp, as
+// CommitChanges does; what the game set on the device meanwhile stays.
 static uint32_t bind_constants(FxEffect &fx, const std::vector<uint8_t> &code, float (*reg)[4],
-                               uint32_t limit, D9Pipeline &pl, uint32_t *missing,
-                               uint64_t key = 0) {
+                               uint32_t limit, D9Pipeline &pl, uint32_t *missing, uint64_t key = 0,
+                               uint64_t since = 0) {
     uint32_t bound = 0;
     if (!key)
         key = d9sh::code_key(code.data(), code.size());
@@ -941,9 +954,16 @@ static uint32_t bind_constants(FxEffect &fx, const std::vector<uint8_t> &code, f
         FxParam *p = resolved[ci] < 0 ? nullptr : &fx.params[(size_t)resolved[ci]];
         if (c.set == 3) { // a sampler: register index is the stage
             if (p && c.index < 16) {
-                pl.sampler_tex[c.index] = sampler_texture(fx, *p);
-                for (const FxState &s : p->sampler)
-                    apply_state(fx, pl, s, c.index);
+                FxParam *tex = sampler_texture(fx, *p);
+                if (!since || p->stamp > since || (tex && tex->stamp > since)) {
+                    if (tex) {
+                        pl.sampler_tex[c.index] = tex->texture;
+                        if (g_fx_track)
+                            g_fx_stages_touched |= 1u << c.index;
+                    }
+                    for (const FxState &s : p->sampler)
+                        apply_state(fx, pl, s, c.index);
+                }
                 ++bound;
             } else {
                 ++*missing;
@@ -957,6 +977,8 @@ static uint32_t bind_constants(FxEffect &fx, const std::vector<uint8_t> &code, f
             continue;
         }
         ++bound;
+        if (since && p->stamp <= since)
+            continue;
         if (c.cls == FXC_MATRIX_ROWS || c.cls == FXC_MATRIX_COLUMNS) {
             uint32_t pr = p->t.rows ? p->t.rows : 1, pc = p->t.cols ? p->t.cols : 1;
             for (uint32_t r = 0; r < c.count && c.index + r < limit; ++r) {
@@ -1225,6 +1247,8 @@ static void apply_state(FxEffect &fx, D9Pipeline &pl, const FxState &s, uint32_t
         if (!state_value(fx, pl, s, &v))
             return;
         uint32_t rs = kFxRenderState[s.op];
+        if (g_fx_track)
+            g_fx_rs_touched[rs] = true;
         if (pl.rs[rs] != v || !pl.rs_set[rs]) {
             pl.rs[rs] = v;
             pl.rs_set[rs] = true;
@@ -1343,11 +1367,12 @@ static uint32_t sm_shader(const FxEffect &fx, const FxObject *o, bool pixel) {
     return o->shader_view;
 }
 
+// `full` (BeginPass): also what the pass set to the value it already had.
 static void sm_notify(X86 *c, const FxEffect &fx, const FxPass &pass, const D9Pipeline &pl,
-                      const FxPipelineSnapshot &was) {
+                      const FxPipelineSnapshot &was, bool full) {
     uint32_t mgr = fx.state_manager;
     for (uint32_t i = 0; i < 256; ++i)
-        if (pl.rs[i] != was.rs[i])
+        if (pl.rs[i] != was.rs[i] || (full && g_fx_rs_touched[i]))
             sm_call(c, mgr, SM_SET_RENDER_STATE, 2, i, pl.rs[i]);
     for (uint32_t s = 0; s < 8; ++s)
         for (uint32_t t = 0; t < 33; ++t)
@@ -1357,26 +1382,28 @@ static void sm_notify(X86 *c, const FxEffect &fx, const FxPass &pass, const D9Pi
         for (uint32_t t = 1; t < 14; ++t)
             if (pl.sampler_state[s][t] != was.sampler_state[s][t])
                 sm_call(c, mgr, SM_SET_SAMPLER_STATE, 3, s, t, pl.sampler_state[s][t]);
-        if (pl.sampler_tex[s] != was.sampler_tex[s]) {
+        if (pl.sampler_tex[s] != was.sampler_tex[s] || (full && (g_fx_stages_touched >> s & 1))) {
             ComObj *t = com_get(pl.sampler_tex[s]);
             sm_call(c, mgr, SM_SET_TEXTURE, 2, s, t ? t->identity : 0);
         }
     }
-    if (pl.vs_key != was.vs_key)
+    if (pl.vs_key != was.vs_key || full)
         sm_call(c, mgr, SM_SET_VERTEX_SHADER, 1,
                 sm_shader(fx, pass_shader_object(fx, pass, FXS_VERTEXSHADER), false));
-    if (pl.ps_key != was.ps_key)
+    if (pl.ps_key != was.ps_key || full)
         sm_call(c, mgr, SM_SET_PIXEL_SHADER, 1,
                 sm_shader(fx, pass_shader_object(fx, pass, FXS_PIXELSHADER), true));
     sm_constants(c, mgr, SM_SET_VERTEX_SHADER_CONSTANT_F, was.vconst, pl.vconst, 256);
     sm_constants(c, mgr, SM_SET_PIXEL_SHADER_CONSTANT_F, was.pconst, pl.pconst, 32);
 }
 
-static void apply_pass_states(FxEffect &fx);
-// Applies the current pass; with a state manager, also tells it what changed.
-static void apply_pass(FxEffect &fx, X86 *c) {
+static void apply_pass_states(FxEffect &fx, bool commit);
+// Applies the current pass (BeginPass), or with `commit` the parameters
+// written since (CommitChanges); with a state manager, also tells it what
+// changed.
+static void apply_pass(FxEffect &fx, X86 *c, bool commit = false) {
     if (!fx.state_manager || !c) {
-        apply_pass_states(fx);
+        apply_pass_states(fx, commit);
         return;
     }
     if (fx.technique >= fx.techniques.size() ||
@@ -1384,11 +1411,17 @@ static void apply_pass(FxEffect &fx, X86 *c) {
         return;
     D9Pipeline &pl = d9_pipeline(fx.device);
     std::unique_ptr<FxPipelineSnapshot> was(new FxPipelineSnapshot(pl));
-    apply_pass_states(fx);
-    sm_notify(c, fx, fx.techniques[fx.technique].passes[fx.pass], pl, *was);
+    if (!commit) {
+        g_fx_track = true;
+        memset(g_fx_rs_touched, 0, sizeof g_fx_rs_touched);
+        g_fx_stages_touched = 0;
+    }
+    apply_pass_states(fx, commit);
+    g_fx_track = false;
+    sm_notify(c, fx, fx.techniques[fx.technique].passes[fx.pass], pl, *was, !commit);
 }
 
-static void apply_pass_states(FxEffect &fx) {
+static void apply_pass_states(FxEffect &fx, bool commit) {
     if (fx.technique >= fx.techniques.size())
         return;
     FxTechnique &tech = fx.techniques[fx.technique];
@@ -1396,6 +1429,14 @@ static void apply_pass_states(FxEffect &fx) {
         return;
     FxPass &pass = tech.passes[fx.pass];
     D9Pipeline &pl = d9_pipeline(fx.device);
+    if (commit) {
+        const uint64_t since = fx.applied_stamp ? fx.applied_stamp : 1;
+        uint32_t missing = 0;
+        bind_constants(fx, pl.vs.vec(), pl.vconst, 256, pl, &missing, pl.vs_key, since);
+        bind_constants(fx, pl.ps.vec(), pl.pconst, 32, pl, &missing, pl.ps_key, since);
+        fx.applied_stamp = g_param_stamp;
+        return;
+    }
     const FxObject *vso = pass_shader_object(fx, pass, FXS_VERTEXSHADER);
     const FxObject *pso = pass_shader_object(fx, pass, FXS_PIXELSHADER);
     // The bytes are copied only when the program changes.
@@ -1425,12 +1466,16 @@ static void apply_pass_states(FxEffect &fx) {
         if (s.op == FXS_SAMPLER_TEXTURE && s.index < 16) {
             auto it = fx.objects.find(s.object());
             if (it != fx.objects.end() && !it->second.param.empty())
-                if (FxParam *tex = param_named(fx, it->second.param))
+                if (FxParam *tex = param_named(fx, it->second.param)) {
                     pl.sampler_tex[s.index] = tex->texture;
+                    if (g_fx_track)
+                        g_fx_stages_touched |= 1u << s.index;
+                }
         }
     uint32_t missing = 0;
     uint32_t bound = bind_constants(fx, pl.vs.vec(), pl.vconst, 256, pl, &missing, pl.vs_key);
     bound += bind_constants(fx, pl.ps.vec(), pl.pconst, 32, pl, &missing, pl.ps_key);
+    fx.applied_stamp = g_param_stamp;
     static uint32_t reported = 0;
     if (++reported <= 16) {
         char samplers[160] = "";
@@ -1985,7 +2030,7 @@ void Fx_BeginPass(X86 *c) {
 void Fx_CommitChanges(X86 *c) {
     FxEffect *fx = this_fx(c);
     if (fx)
-        apply_pass(*fx, c);
+        apply_pass(*fx, c, true);
     com_ret(c, D3D_OKX);
 }
 // (this, pManager): held with a reference, released when replaced.

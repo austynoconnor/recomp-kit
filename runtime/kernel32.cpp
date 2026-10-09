@@ -894,15 +894,28 @@ static void disk_pace(HObj *o, int64_t pos, int64_t n) {
     static int64_t last_end = -1;
     static double debt_us;
     if (o != last_obj || pos != last_end)
-        debt_us += seek_us;
+        debt_us += seek_us; // counted again below for the trace
     if (rate > 0 && n > 0)
         debt_us += (double)n * 1000.0 / rate; // KB/s -> us per byte * 1e6 / 1e3
+    bool seek = o != last_obj || pos != last_end;
     last_obj = o;
     last_end = pos + (n > 0 ? n : 0);
+    static uint64_t reads, seeks, bytes, slept_ms, logged_ms;
+    reads++;
+    seeks += seek;
+    bytes += n > 0 ? (uint64_t)n : 0;
     if (debt_us >= 1000.0) {
         uint32_t ms = (uint32_t)(debt_us / 1000.0);
         debt_us -= ms * 1000.0;
+        slept_ms += ms;
         sched_sleep_ms(ms);
+    }
+    static const bool trace = recomp_env("TRACE_DISK") != nullptr;
+    if (trace && slept_ms >= logged_ms + 1000) {
+        logged_ms = slept_ms;
+        LOGW("disk: %llu reads, %llu seeks, %llu KB, %llu ms paced", (unsigned long long)reads,
+             (unsigned long long)seeks, (unsigned long long)(bytes >> 10),
+             (unsigned long long)slept_ms);
     }
 }
 

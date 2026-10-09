@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- 2026-10-09 — Claude Opus 5.5: ID3DXEffect and its state manager follow
+  D3DX more closely. BeginPass now tells the manager every texture, render
+  state and shader the pass sets, even ones that already had that value,
+  and CommitChanges sends only the parameters written since the pass was
+  applied. A game whose manager caches state (Bully: Scholarship Edition's
+  Gamebryo) never heard a texture it already "had", flushed its cached NULL
+  to the device, and drew those objects with no texture: tree leaves and
+  characters showed as black patches. They now draw. A sampler with no
+  texture state no longer clears the stage's texture.
+
+- 2026-10-09 — Claude Opus 5.5: the Vulkan, WebGPU and Metal Direct3D 9
+  renderers key vertex layouts and pipelines by the declaration's contents,
+  not its object id. A game that makes a new but identical declaration per
+  object (Bully) made a new pipeline for each; under lavapipe that grew
+  host memory by about 1 GB per 10 s of play until the run was killed.
+  Pipelines now level off (169 in a Bully session). Probe lines also show
+  alpha test state, sampler formats, textures replaced by a placeholder and
+  how many texels are transparent; D3D9_STATS adds views, descriptor pools,
+  modules and samplers; RECOMP_TRACE_DISK reports paced reads.
+
 - 2026-10-09 — Claude Opus 5.5: Direct3D 9 honours the back buffer format
   the game asks for (A8R8G8B8 or X8R8G8B8; anything else stays X8R8G8B8).
   The back buffer was always X8R8G8B8, so Gamebryo's FastCopy of its

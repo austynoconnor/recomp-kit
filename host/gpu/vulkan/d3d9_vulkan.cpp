@@ -710,8 +710,7 @@ class VkRenderer final : public D9Backend {
         const uint32_t *rs = d.render_state;
 
         // Vertex layout.
-        uint64_t vkey =
-            mix(mix((uint64_t)d.decl_id << 32 | d.decl_size, vs_key), fnv(d.decl, d.decl_size));
+        uint64_t vkey = mix(mix((uint64_t)d.decl_size, vs_key), fnv(d.decl, d.decl_size));
         {
             uint64_t strides = 0;
             for (int i = 0; i < 8; ++i)
@@ -883,6 +882,13 @@ class VkRenderer final : public D9Backend {
                     tv = VK_NULL_HANDLE; // a texture the pass writes cannot be read from
                 if (tv)
                     t->used = serial_;
+                if (!tv && probing())
+                    fprintf(stderr, "probe placeholder draw %llu s%u tex %u: %s\n",
+                            (unsigned long long)draws_ + 1, st, d.sampler_texture[st],
+                            !t                                                 ? "no texture"
+                            : !t->sample_view                                  ? "no view"
+                            : (t->cube != cube_slot || t->depth != depth_slot) ? "kind"
+                                                                               : "pass writes it");
                 view = tv ? tv : depth_slot ? placeholder_depth() : placeholder(cube_slot);
                 smp = depth_slot ? shadow_sampler() : sampler(d.sampler_state + st * 14);
             } else {
@@ -942,8 +948,14 @@ class VkRenderer final : public D9Backend {
         if (probing()) {
             std::string texs;
             for (int s = 0; s < 16; ++s)
-                if (d.sampler_texture[s])
+                if (d.sampler_texture[s]) {
                     texs += " s" + std::to_string(s) + "=" + std::to_string(d.sampler_texture[s]);
+                    if (Tex *pt = tex_ptr(d.sampler_texture[s]))
+                        texs += "(f" + std::to_string(pt->desc.format) + " " +
+                                std::to_string(pt->desc.width) + "x" +
+                                std::to_string(pt->desc.height) + " vf" +
+                                std::to_string((int)pt->info.format) + ")";
+                }
             fprintf(stderr, "probe samplers %llu:%s\n", (unsigned long long)draws_ + 1,
                     texs.c_str());
         }
@@ -951,12 +963,13 @@ class VkRenderer final : public D9Backend {
             fprintf(stderr,
                     "probe draw %llu: rt %u depth %u vp %d,%d %dx%d prim %u x%u start %u ib %u vs "
                     "%016llx ps %016llx "
-                    "tex0 %u tex1 %u z %u/%u cull %u blend %u %s\n",
+                    "tex0 %u tex1 %u z %u/%u cull %u blend %u atest %u/%u/%u %s\n",
                     (unsigned long long)draws_, d.target.color[0].id, d.target.depth.id,
                     d.viewport[0], d.viewport[1], d.viewport[2], d.viewport[3], d.primitive,
                     d.primitive_count, d.start, d.index_buffer, (unsigned long long)vs_key,
                     (unsigned long long)ps_key, d.sampler_texture[0], d.sampler_texture[1],
                     rs[RS_ZENABLE], rs[RS_ZWRITEENABLE], rs[RS_CULLMODE], rs[RS_ALPHABLENDENABLE],
+                    rs[RS_ALPHATESTENABLE], rs[RS_ALPHAFUNC], rs[RS_ALPHAREF],
                     d.label ? d.label : "-");
     }
 
@@ -1309,6 +1322,7 @@ class VkRenderer final : public D9Backend {
         VkImageView v = VK_NULL_HANDLE;
         if (vkCreateImageView(vk_, &vci, nullptr, &v) != VK_SUCCESS)
             return VK_NULL_HANDLE;
+        ++stat_views_;
         return v;
     }
     VkImageView make_view(const Tex &t, VkImageViewType type, uint32_t level, uint32_t levels,
@@ -2230,6 +2244,7 @@ class VkRenderer final : public D9Backend {
     }
     static constexpr uint32_t kSetsPerPool = 1024;
     VkDescriptorPool make_descriptor_pool() {
+        ++stat_pools_;
         VkDescriptorPoolSize sizes[2] = {
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 4 * kSetsPerPool},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 * kSetsPerPool}};
@@ -2468,20 +2483,21 @@ class VkRenderer final : public D9Backend {
             std::vector<uint8_t> bgra((size_t)w * h * 4), rgb((size_t)w * h * 3);
             if (!read_image(t.image, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, w, h, 4, bgra.data()))
                 continue;
-            size_t lit = 0;
+            size_t lit = 0, clear = 0;
             for (size_t i = 0, n = (size_t)w * h; i < n; ++i) {
                 rgb[i * 3] = bgra[i * 4 + 2];
                 rgb[i * 3 + 1] = bgra[i * 4 + 1];
                 rgb[i * 3 + 2] = bgra[i * 4];
                 lit += (bgra[i * 4] | bgra[i * 4 + 1] | bgra[i * 4 + 2]) > 8;
+                clear += bgra[i * 4 + 3] <= 8;
             }
             char path[1024];
             snprintf(path, sizeof path, "%s/probe%s%s_%u_%ux%u_%s.ppm", host_dump_dir(),
                      probe_tag_.empty() ? "" : "_", probe_tag_.c_str(), kv.first, w, h,
                      (t.desc.usage & HOST_D9_USAGE_RENDERTARGET) ? "rt" : "tex");
             host_write_ppm(path, rgb.data(), (int)w, (int)h);
-            fprintf(stderr, "probe texture %u %ux%u fmt %08x usage %u: %zu of %zu lit\n", kv.first,
-                    w, h, t.desc.format, t.desc.usage, lit, (size_t)w * h);
+            fprintf(stderr, "probe texture %u %ux%u fmt %08x usage %u: %zu of %zu lit, %zu clear\n",
+                    kv.first, w, h, t.desc.format, t.desc.usage, lit, (size_t)w * h, clear);
         }
     }
     void dump(Tex &t, uint32_t w, uint32_t h) {
@@ -2590,7 +2606,10 @@ class VkRenderer final : public D9Backend {
                 gpu * 1000.0 / frames, waited * 1000.0 / frames);
         for (auto &s : skips_)
             fprintf(stderr, ", %s %llu", s.first.c_str(), (unsigned long long)s.second);
-        fprintf(stderr, "\n");
+        fprintf(stderr,
+                ", %zu frames, %zu in flight, %llu views, %llu pools, %zu modules, %zu samplers\n",
+                all_frames_.size(), in_flight_.size(), (unsigned long long)stat_views_,
+                (unsigned long long)stat_pools_, modules_.size(), samplers_.size());
     }
 
     // ---- state -------------------------------------------------------------------
@@ -2636,6 +2655,7 @@ class VkRenderer final : public D9Backend {
     VkFence oneshot_fence_ = VK_NULL_HANDLE;
 
     std::vector<std::unique_ptr<Frame>> all_frames_;
+    uint64_t stat_views_ = 0, stat_pools_ = 0;
     std::vector<Frame *> free_frames_;
     std::deque<Frame *> in_flight_;
     Frame *cur_ = nullptr;

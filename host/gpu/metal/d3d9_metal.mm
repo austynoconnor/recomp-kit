@@ -664,8 +664,7 @@ class Renderer final : public D9Backend {
         for (auto &a : ascale)
             for (float &x : a)
                 x = 1.0f;
-        uint64_t vkey =
-            mix(mix((uint64_t)d.decl_id << 32 | d.decl_size, vs_key), fnv(d.decl, d.decl_size));
+        uint64_t vkey = mix(mix((uint64_t)d.decl_size, vs_key), fnv(d.decl, d.decl_size));
         {
             uint64_t strides = 0;
             for (int i = 0; i < 8; ++i)
