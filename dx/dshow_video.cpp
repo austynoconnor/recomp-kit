@@ -30,6 +30,7 @@
 #include "../runtime/win32.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <iterator>
 #include <map>
@@ -150,6 +151,17 @@ uint32_t guest_slot(uint32_t obj, int slot) {
         return 0;
     return rd32(vt + 4u * (uint32_t)slot);
 }
+// RECOMP_DSHOW_TRACE=1 logs the first calls into the game's renderer.
+bool dsv_trace() {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("RECOMP_DSHOW_TRACE");
+        on = v && *v && *v != '0';
+    }
+    return on != 0;
+}
+uint32_t g_dsv_traced = 0;
+
 uint32_t guest_method(X86 *c, uint32_t obj, int slot, std::initializer_list<uint32_t> rest) {
     uint32_t fn = guest_slot(obj, slot);
     if (!fn)
@@ -157,7 +169,10 @@ uint32_t guest_method(X86 *c, uint32_t obj, int slot, std::initializer_list<uint
     std::vector<uint32_t> a;
     a.push_back(obj);
     a.insert(a.end(), rest.begin(), rest.end());
-    return guest_call(c, fn, a.data(), (int)a.size());
+    uint32_t hr = guest_call(c, fn, a.data(), (int)a.size());
+    if (dsv_trace() && g_dsv_traced++ < 200)
+        LOGW("dshow trace: guest %08x slot %d (fn %08x) -> %08x", obj, slot, fn, hr);
+    return hr;
 }
 void guest_addref(X86 *c, uint32_t obj) {
     if (obj)

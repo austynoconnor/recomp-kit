@@ -17,6 +17,7 @@
 #include "../platform/os.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <algorithm>
 #include <iterator>
@@ -260,6 +261,19 @@ const ComMethod g_port[] = {
     {"GetFormat", 4, Port_GetFormat},
 };
 
+// RECOMP_DMUSIC_TRACE=1 logs the first downloads and performance messages,
+// which is what a synthesizer for a given game has to understand.
+bool dm_trace() {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("RECOMP_DMUSIC_TRACE");
+        on = v && *v && *v != '0';
+    }
+    return on != 0;
+}
+uint32_t g_dm_traced = 0;
+const uint32_t kDmTraceMax = 600;
+
 // IDirectMusicPortDownload. A download buffer is guest memory the game fills
 // with a DMUS_DOWNLOADINFO (dwDLType, dwDLId, ...) and its data; Download
 // records it and GetBuffer finds it again by that id.
@@ -325,6 +339,12 @@ void PD_Download(X86 *c) {
         return;
     }
     d->dl_id = d->dl_size >= 8 ? rd32(d->dl_mem + 4) : 0;
+    if (dm_trace() && g_dm_traced++ < kDmTraceMax && d->dl_size >= 16) {
+        // DMUS_DOWNLOADINFO: dwDLType, dwDLId, dwNumOffsetTableEntries, cbSize.
+        uint32_t m = d->dl_mem;
+        LOGW("dmusic trace: download type %u id %u entries %u size %u (buffer %u)", rd32(m),
+             rd32(m + 4), rd32(m + 8), rd32(m + 12), d->dl_size);
+    }
     log_once("dmusic.download",
              "dmusic: DLS downloads are kept but no synthesizer plays them (silent)");
     set_eax(c, S_OK);
@@ -714,6 +734,15 @@ void Perf_GetBumperLength(X86 *c) {
 void Perf_SendPMsg(X86 *c) {
     uint32_t msg = arg(c, 1);
     log_once("dmusic.send", "dmusic: performance messages are accepted but not played");
+    if (dm_trace() && msg && gm_valid(msg, 0x40) && g_dm_traced++ < kDmTraceMax) {
+        // DMUS_PMSG: rtTime at 8, mtTime 0x10, dwFlags 0x14, dwPChannel 0x18,
+        // dwType 0x28; the type's own fields from 0x38.
+        LOGW("dmusic trace: pmsg type %u size %u flags %x pchannel %u rt %u mt %u data %08x "
+             "%08x %08x %08x",
+             rd32(msg + 0x28), rd32(msg), rd32(msg + 0x14), rd32(msg + 0x18), rd32(msg + 8),
+             rd32(msg + 0x10), rd32(msg + 0x38), rd32(msg + 0x3c), rd32(msg + 0x40),
+             gm_valid(msg, 0x48) ? rd32(msg + 0x44) : 0);
+    }
     if (msg)
         heap_free(msg);
     set_eax(c, msg ? S_OK : E_POINTER);

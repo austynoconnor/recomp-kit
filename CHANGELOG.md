@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 2026-10-09 03:40 CDT — Claude Opus 5.5: two trace switches for the
+  sound and movie work, both off unless set. `RECOMP_DMUSIC_TRACE=1` logs the
+  first 600 DirectMusic port downloads (DLS type, id, offset-table entries,
+  size) and `IDirectMusicPerformance::SendPMsg` messages (type, size, flags,
+  pchannel, times, MIDI bytes). `RECOMP_DSHOW_TRACE=1` logs the first 200
+  calls `dshow_video.cpp` makes into a game's renderer and their results.
+  Checked in MGS2: the intro movie (`pac/op_sub.pac`, 512x320) now plays
+  through the game's own renderer; twelve dumps 8 s apart show the title,
+  the opening scenes and the credits in order.
+
 - 2026-10-09 02:20 CDT — Claude Opus 5.5: DirectShow movies into a renderer
   the game implements (`dx/dshow_video.cpp`). A graph the game builds by hand
   (MGS2: its own CBaseRenderer, `AddSourceFilter` on an MPEG-1 file,
