@@ -1637,7 +1637,26 @@ bool web_stream_files() {
     fclose(list);
     if (!valid)
         return false;
-    std::string exe = "/stream/" + g_web_exe.substr(g_web_exe.find_last_of('/') + 1);
+    // The executable keeps its place under the install root ([game]
+    // executable_dir), so the guest finds its own folder and the files beside
+    // it the way an installed copy does.
+    std::string sub = RECOMP_EXECUTABLE_DIR;
+    for (char &ch : sub)
+        if (ch == '\\')
+            ch = '/';
+    while (!sub.empty() && sub.front() == '/')
+        sub.erase(0, 1);
+    while (!sub.empty() && sub.back() == '/')
+        sub.pop_back();
+    std::string exe = "/stream/";
+    if (!sub.empty()) {
+        for (size_t slash = sub.find('/'); slash != std::string::npos;
+             slash = sub.find('/', slash + 1))
+            os_mkdir((exe + sub.substr(0, slash)).c_str());
+        os_mkdir((exe + sub).c_str());
+        exe += sub + "/";
+    }
+    exe += g_web_exe.substr(g_web_exe.find_last_of('/') + 1);
     // A memory-backed file inside the remote directory preserves the verified
     // executable without a second download or a write into the read-only backend.
     FILE *source = fopen(g_web_exe.c_str(), "rb");

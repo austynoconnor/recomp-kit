@@ -4009,6 +4009,47 @@ static void test_dshow_refused_source_completes() {
     }
     call_method(graph, 2);
     CHECK_EQ(com_live_count(), live);
+
+    // An MPEG-1 file that cannot be played (here a sequence header with no
+    // picture size; on the web, a build without FFmpeg) is skipped the same
+    // way, rather than leaving the game waiting for a movie that never runs.
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s/recomp-dshow-XXXXXX", os_temp_dir());
+    CHECK(os_mkdtemp(dir) == 0);
+    std::string file = std::string(dir) + "/broken.m1v";
+    FILE *f = fopen(file.c_str(), "wb");
+    CHECK(f != nullptr);
+    if (!f)
+        return;
+    const uint8_t broken[16] = {0x00, 0x00, 0x01, 0xb3};
+    fwrite(broken, 1, sizeof broken, f);
+    fclose(f);
+    win32_init(dir);
+    memcpy(g_mem + iid, quartz(0xa9).data(), 16); // IID_IGraphBuilder
+    CHECK_EQ(call_shim(tramp("ole32.dll", "CoCreateInstance"), {clsid, 0, 1, iid, ppv}), S_OK_);
+    graph = rd32(ppv);
+    CHECK(graph != 0);
+    if (graph) {
+        const char *movie = "broken.m1v";
+        for (size_t i = 0; i <= strlen(movie); ++i)
+            wr16(wpath + 2 * (uint32_t)i, (uint16_t)movie[i]);
+        wr32(pfilter, 0xdeadbeef);
+        CHECK(call_method(graph, 14, {wpath, 0, pfilter}) != S_OK_); // AddSourceFilter
+        CHECK_EQ(rd32(pfilter), 0u);
+        memcpy(g_mem + iid, quartz(0xc0).data(), 16); // IID_IMediaEventEx
+        CHECK_EQ(call_method(graph, 0, {iid, pev}), S_OK_);
+        uint32_t ev2 = rd32(pev);
+        if (ev2) {
+            wr32(code, 0);
+            CHECK_EQ(call_method(ev2, 8, {code, p1, p2, 0}), S_OK_); // GetEvent
+            CHECK_EQ(rd32(code), 1u);                                // EC_COMPLETE
+            call_method(ev2, 2);
+        }
+        call_method(graph, 2);
+    }
+    CHECK_EQ(com_live_count(), live);
+    remove(file.c_str());
+    os_rmdir(dir);
 }
 
 // Three 32x16 red pictures at 25 fps, an MPEG-1 elementary stream as a

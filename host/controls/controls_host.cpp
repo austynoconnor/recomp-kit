@@ -338,25 +338,8 @@ void release_everything() {
     vpad().set_source(kPadSourceTouch, g_router.pad());
 
 #if RECOMP_CONTROLS_PAD == 2 && RECOMP_CONTROLS_MOUSE_STICK != 0
-    // Mouse movement as the native pad's left or right stick.
-    {
-        PadState mouse;
-        if (g_mouse_last_pump && now > g_mouse_last_pump && !g_editor.is_open()) {
-            float x = 0, y = 0;
-            mouse_stick_output(g_mouse_dx, g_mouse_dy, (now - g_mouse_last_pump) / 1e9,
-                               RECOMP_CONTROLS_MOUSE_SPEED, &x, &y);
-            if (RECOMP_CONTROLS_MOUSE_STICK == 1) {
-                mouse.lx = x;
-                mouse.ly = y;
-            } else {
-                mouse.rx = x;
-                mouse.ry = y;
-            }
-        }
-        g_mouse_last_pump = now;
-        g_mouse_dx = g_mouse_dy = 0;
-        vpad().set_source(kPadSourceMouse, mouse);
-    }
+    // The mouse's stick lets go too.
+    vpad().set_source(kPadSourceMouse, PadState());
 #endif
 }
 
@@ -643,6 +626,28 @@ void host_pump(uint64_t now) {
                     g_controller_present ? "present" : "absent");
     }
     vpad().set_source(kPadSourceTouch, g_router.pad());
+
+#if RECOMP_CONTROLS_PAD == 2 && RECOMP_CONTROLS_MOUSE_STICK != 0
+    // Mouse movement as the native pad's left or right stick.
+    {
+        PadState mouse;
+        if (g_mouse_last_pump && now > g_mouse_last_pump && !g_editor.is_open()) {
+            float x = 0, y = 0;
+            mouse_stick_output(g_mouse_dx, g_mouse_dy, (now - g_mouse_last_pump) / 1e9,
+                               RECOMP_CONTROLS_MOUSE_SPEED, &x, &y);
+            if (RECOMP_CONTROLS_MOUSE_STICK == 1) {
+                mouse.lx = x;
+                mouse.ly = y;
+            } else {
+                mouse.rx = x;
+                mouse.ry = y;
+            }
+        }
+        g_mouse_last_pump = now;
+        g_mouse_dx = g_mouse_dy = 0;
+        vpad().set_source(kPadSourceMouse, mouse);
+    }
+#endif
 
 #if RECOMP_CONTROLS_PAD == 1
     // The mapped binding turns the merged pad into keys/mouse; other pad

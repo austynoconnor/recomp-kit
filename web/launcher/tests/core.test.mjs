@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   wildcardMatch, excluded, planImport, sha256Hex, Sha256, crc32, ZipReader, zipWrite,
-  importGame, gameStatus, humanBytes, MANIFEST, STAMP,
+  importGame, gameStatus, humanBytes, MANIFEST, STAMP, exePath,
 } from "../core.js";
 
 const enc = new TextEncoder();
@@ -67,6 +67,26 @@ test("wildcards and exclusion", () => {
   assert.ok(wildcardMatch("*", ""));
   assert.ok(excluded("__redist/x/y.exe", ["__redist"]));
   assert.ok(!excluded("data/__redist/x.exe", ["__redist"]));
+});
+
+test("plan: an executable in its own folder (executableDir)", async () => {
+  const binGame = { ...game, executableDir: "bin", requiredDirs: ["bin", "data"] };
+  const src = memorySource({
+    "GOG/MGS/bin/GAME.EXE": EXE, "GOG/MGS/data/a.bin": enc.encode("a"),
+    "GOG/MGS/stray/GAME.EXE": EXE,
+  });
+  const plan = planImport(binGame, await src.list());
+  assert.equal(plan.base, "GOG/MGS");
+  assert.equal(plan.exe, "bin/GAME.EXE");
+  assert.deepEqual(plan.missing, []);
+  assert.equal(exePath(binGame), "bin/GAME.EXE");
+  assert.equal(exePath(game), "GAME.EXE");
+  // The executable alone, without its folder, is not this game's install.
+  const flat = memorySource({ "x/GAME.EXE": EXE });
+  assert.equal(planImport(binGame, await flat.list()).error, "noExecutable");
+  const store = new MemoryStore();
+  assert.equal((await importGame(binGame, src, store, {})).result, "done");
+  assert.equal((await gameStatus(binGame, store)).state, "ready");
 });
 
 test("sha256 and crc32 match the platform", () => {

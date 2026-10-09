@@ -59,6 +59,22 @@ class WebLauncherTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 web_launcher.hosted_assets([game], {"stub": root}, out)
 
+    def test_hosted_assets_find_an_executable_in_its_folder(self):
+        # [game] executable_dir: the pinned executable is checked below the
+        # install root, and every file is still listed from the root.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "game"
+            (root / "bin").mkdir(parents=True)
+            (root / "data").mkdir()
+            (root / "data/a.dat").write_bytes(b"asset")
+            (root / "bin/STUB.EXE").write_bytes(b"test executable")
+            game = {"id": "stub", "executable": "STUB.EXE", "executableDir": "bin",
+                    "sha256": hashlib.sha256(b"test executable").hexdigest(),
+                    "requiredDirs": ["bin", "data"], "exclude": []}
+            routes = web_launcher.hosted_assets([game], {"stub": root}, Path(tmp) / "site")
+            self.assertIn("/_game-assets/stub/bin/STUB.EXE", routes)
+            self.assertIn("/_game-assets/stub/data/a.dat", routes)
+
     def test_exported_assets_are_copied_with_relative_urls(self):
         # --export-assets: the site carries the game files itself, for a static
         # host; URLs are relative to assets.json and nothing is routed.

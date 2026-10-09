@@ -37,6 +37,9 @@ def game_entry(cfg):
         "id": game["id"],
         "title": launcher["title"],
         "executable": game["executable"],
+        # The folder under the install root that holds the executable ("" when
+        # it sits at the root), as [game] executable_dir.
+        "executableDir": game.get("executable_dir", ""),
         "sha256": game["sha256"],
         "requiredDirs": cfg["setup"]["required_dirs"],
         "exclude": cfg["bundle"]["exclude"],
@@ -85,7 +88,7 @@ def hosted_assets(games, asset_dirs, out, export=False):
         if game["id"] not in asset_dirs:
             continue
         root = Path(asset_dirs[game["id"]]).resolve()
-        exe = root / game["executable"]
+        exe = root / game.get("executableDir", "") / game["executable"]
         if not exe.is_file() or hashlib.sha256(exe.read_bytes()).hexdigest() != game["sha256"]:
             raise ValueError("hosted assets need the pinned executable: %s" % exe)
         if any(not (root / d).is_dir() for d in game["requiredDirs"]):

@@ -125,7 +125,8 @@ async function start() {
   device.lost.then((info) => status(`The graphics device was lost: ${info.message}`, true));
   device.addEventListener("uncapturederror", (e) => console.error("WebGPU:", e.error.message));
 
-  const exe = `/opfs/${id}/game/${game.executable}`;
+  const exeDir = (game.executableDir || "").split("\\").join("/").replace(/^\/+|\/+$/g, "");
+  const exe = `/opfs/${id}/game/${exeDir ? exeDir + "/" : ""}${game.executable}`;
   const Module = {
     canvas,
     preinitializedWebGPUDevice: device,

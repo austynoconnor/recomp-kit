@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- 2026-10-09 04:40 CDT — Claude Opus 5.5: the web build for a game whose
+  executable sits in a subfolder (`[game] executable_dir`, MGS2's `bin/`).
+  `tools/web_launcher.py` passes `executableDir` in `games.json` and checks
+  the pinned executable under it when hosting files; the launcher's
+  `planImport`/`gameStatus` (`web/launcher/core.js`, new `exePath`) find the
+  install root above that folder; `web/player/runtime.html` starts the
+  executable from it; and a streamed run (`host/sdl/main.cpp`) keeps the
+  executable at `/stream/<executable_dir>/` instead of the stream root, so
+  the guest finds `bin\mgs2.ini` beside it. Before this the MGS2 page asked
+  for `mgs2.ini` at the install root forever. Fixed the mouse stick
+  (`[controls.native] mouse_stick`) in `host/controls/controls_host.cpp`: its
+  block sat in `release_everything` where `now` does not exist, which broke
+  every app build with a native pad and a mouse stick (the web build);
+  it now runs in `host_pump`, and releasing everything clears the mouse
+  stick. `AddSourceFilter` on an MPEG-1 file this build cannot decode (no
+  FFmpeg, as on the web) falls back to skipping the movie with EC_COMPLETE
+  instead of leaving the game waiting. Tests: "plan: an executable in its own
+  folder (executableDir)" (node), `test_hosted_assets_find_an_executable_in_
+  its_folder` (Python), and "DirectShow refused source completes" now covers
+  an undecodable MPEG-1 file.
+
 - 2026-10-09 04:10 CDT — Claude Opus 5.5: DirectMusic notes
   (`dx/dls_synth.cpp`). The synth port now plays the DLS instruments a game
   downloads itself. Wave downloads (type 2: `DMUS_WAVE` and its PCM) and

@@ -58,25 +58,37 @@ function unsafe(relative) {
     relative.split("/").some((part) => part === "..");
 }
 
+// The executable's path below the install root: "<executableDir>/<name>",
+// or just the name when the game keeps it at the root.
+export function exePath(game) {
+  const dir = (game.executableDir || "").split("\\").join("/").replace(/^\/+|\/+$/g, "");
+  return dir ? `${dir}/${game.executable}` : game.executable;
+}
+
 // Which of the source's entries are the game: {base, files, dirs, missing, exe}.
-// `entries` are {path, size, mtime, isDir}; paths use "/".
+// `entries` are {path, size, mtime, isDir}; paths use "/". The install root
+// is the folder the executable's own folder chain (executableDir) hangs from.
 export function planImport(game, entries) {
-  const exeName = game.executable.toLowerCase();
+  const want = exePath(game).toLowerCase().split("/");
   let exe = null;
   let exeDepth = Infinity;
   for (const e of entries) {
     if (e.isDir || junk(e.path) || unsafe(e.path)) continue;
     const parts = e.path.split("/");
-    if (parts[parts.length - 1].toLowerCase() !== exeName) continue;
-    const depth = parts.length - 1;
+    if (parts.length < want.length) continue;
+    const tail = parts.slice(parts.length - want.length).map((p) => p.toLowerCase());
+    if (tail.join("/") !== want.join("/")) continue;
+    const depth = parts.length - want.length;
     if (depth < exeDepth && depth <= 3) {
       exe = e;
       exeDepth = depth;
     }
   }
   if (!exe) return { error: "noExecutable" };
-  const base = exe.path.includes("/") ? exe.path.slice(0, exe.path.lastIndexOf("/")) : "";
+  const parts = exe.path.split("/");
+  const base = parts.slice(0, parts.length - want.length).join("/");
   const prefix = base ? base + "/" : "";
+  const exeName = want.join("/");
   const files = [];
   const tops = new Set();
   let exeRelative = null;
@@ -434,7 +446,8 @@ export async function gameStatus(game, store) {
   const stamp = ((await store.readText(STAMP)) || "").trim();
   const manifest = JSON.parse((await store.readText(MANIFEST)) || '{"files":{}}');
   const names = Object.keys(manifest.files);
-  if (!names.some((n) => n.toLowerCase() === game.executable.toLowerCase())) return { state: "notFound" };
+  const exeName = exePath(game).toLowerCase();
+  if (!names.some((n) => n.toLowerCase() === exeName)) return { state: "notFound" };
   const tops = new Set(names.filter((n) => n.includes("/")).map((n) => n.split("/")[0].toLowerCase()));
   const missing = (game.requiredDirs || []).filter((d) => !tops.has(d.toLowerCase()));
   if (stamp !== game.sha256) return { state: stamp ? "wrongVersion" : "incomplete", missing };

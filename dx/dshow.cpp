@@ -1357,8 +1357,13 @@ void GB_AddSourceFilter(X86 *c) {
         std::string guest = read_wide(arg(c, 1));
         std::string host = win32_host_path(guest, false);
         if (!host.empty() && dsv::is_movie_file(host)) {
-            com_ret(c, dsv::add_source(c, t.g->id, guest, host, out));
-            return;
+            uint32_t hr = dsv::add_source(c, t.g->id, guest, host, out);
+            // A movie this build cannot decode (no FFmpeg, as on the web) is
+            // skipped below like any other, so the game does not wait for it.
+            if (!(hr & 0x80000000u)) {
+                com_ret(c, hr);
+                return;
+            }
         }
     }
     if (t.s) {
