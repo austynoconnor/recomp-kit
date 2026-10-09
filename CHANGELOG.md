@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- 2026-10-09 15:36 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: fixes from the first hand test of the Star Wars
+  Battlefront II web build (freezes, repeating sound, a menu cursor that
+  drifted from the mouse and doubled after leaving the page).
+  - **Stall logger** (`platform/stall.h`, `platform/stall.cpp`): any frame
+    slower than `RECOMP_STALL_MS` (default 100 ms) prints one `[stall]` line
+    to the log and the browser console splitting the time into file reads
+    (`CreateFile`/`ReadFile`), render waits (the d3d9 queue's idle and
+    present waits, WebGPU calls proxied to the page thread) and the rest
+    ("game or busy machine"). The performance overlay gains a fifth line,
+    `STALL n  worst-ms CAUSE`, orange once any stall happened.
+  - **Audio** (`host/audio/mixer.cpp`): a DirectSound streaming buffer the
+    game stops refilling now goes quiet after one more lap instead of
+    replaying its last contents; it plays again on the next write.
+  - **Menu cursor** (`[controls] cursor = "tracked"`, default `"free"`;
+    `tools/game_config.py`, `tools/gen_game_config.py`,
+    `host/input_gate.cpp`, `host/sdl/main.cpp`): for games that draw their
+    own cursor from relative motion and expose no cursor position, the host
+    keeps its own copy (pushed to the top-left corner first) and sends the
+    difference to the real pointer, so the game's cursor sits under the
+    mouse after leaving and re-entering the page. Raw motion under pointer
+    lock is scaled to game pixels. In a browser the system cursor stays
+    hidden over the canvas while the game draws its own.
+  - Tests: native suites 25 of 25 and Python 421 passed, 5 skipped, on
+    Linux. Headless
+    Chrome through `serve-swbf2-web.cmd` on port 8092: the game cursor
+    follows clicks to Instant Action, Dagobah, Launch, Republic and Spawn,
+    and stays under the pointer after it leaves and re-enters the page;
+    gameplay at 57-63 new frames a second with no stall over 100 ms once
+    playing; stalls only while loading (1.7 s once, then a few 250 to
+    450 ms frames, mostly game work, two of them waiting on the GPU queue).
+
 - 2026-10-09 12:48 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: `giggity-d3d8` 31b8075 merged in (web game pads, Cache
   Storage for streamed pieces and the program, compressed program files,
