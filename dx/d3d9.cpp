@@ -2010,18 +2010,43 @@ void Res_GetDevice(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
-// Lock hands the guest the storage this resource was created with. Unlock is
-// a no-op: there is nothing to upload to yet.
+// A buffer keeps its guest copy for life: Lock returns a pointer into it at
+// once, and Unlock copies back and uploads only the bytes locked. Staging the
+// whole buffer on every lock (allocate, copy in, copy out, free, upload all of
+// it) cost Crazy Taxi several full copies of a 32 KB buffer per draw.
 static void buffer_lock(X86 *c) {
     ComObj *o = com_this_arg(c);
-    uint32_t offset = arg(c, 1), out = arg(c, 3);
+    uint32_t offset = arg(c, 1), size = arg(c, 2), out = arg(c, 3);
     if (!o || !out) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
-    uint32_t staged = offset < o->blob.size() ? stage_lock(o) : 0;
-    com_out_ptr(out, staged ? staged + offset : 0);
-    com_ret(c, staged ? D3D_OK9 : E_OUTOFMEMORY);
+    const uint32_t total = (uint32_t)o->blob.size();
+    if (offset >= total) {
+        com_out_ptr(out, 0);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    if (!o->pixels) {
+        o->pixels = heap_alloc(total, false, 16);
+        if (!o->pixels) {
+            com_out_ptr(out, 0);
+            com_ret(c, E_OUTOFMEMORY);
+            return;
+        }
+        memcpy(gm_ptr(o->pixels), o->blob.data(), total);
+    }
+    // Size 0 locks the rest of the buffer.
+    const uint32_t hi = size && size <= total - offset ? offset + size : total;
+    if (o->lock_count++ == 0) {
+        o->lock_lo = offset;
+        o->lock_hi = hi;
+    } else {
+        o->lock_lo = std::min(o->lock_lo, offset);
+        o->lock_hi = std::max(o->lock_hi, hi);
+    }
+    com_out_ptr(out, o->pixels + offset);
+    com_ret(c, D3D_OK9);
 }
 void VB_Lock(X86 *c) {
     buffer_lock(c);
@@ -2030,7 +2055,15 @@ void IB_Lock(X86 *c) {
     buffer_lock(c);
 }
 void Buf_Unlock(X86 *c) {
-    stage_unlock(com_this_arg(c));
+    ComObj *o = com_this_arg(c);
+    if (o && o->lock_count > 0 && --o->lock_count == 0 && o->pixels) {
+        const uint32_t hi = std::min<uint32_t>(o->lock_hi, (uint32_t)o->blob.size());
+        if (hi > o->lock_lo) {
+            memcpy(o->blob.data() + o->lock_lo, gm_ptr(o->pixels) + o->lock_lo, hi - o->lock_lo);
+            d9_raster_invalidate(o->id);
+            gpu_after_unlock(o, o->lock_lo, hi);
+        }
+    }
     com_ret(c, D3D_OK9);
 }
 // D3DVERTEXBUFFER_DESC / D3DINDEXBUFFER_DESC: Format, Type, Usage, Pool, Size.

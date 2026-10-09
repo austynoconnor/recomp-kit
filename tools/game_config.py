@@ -130,10 +130,15 @@ def load_controls(controls, touch, source):
     native.setdefault("dinput", True)
     if not isinstance(native["xinput"], bool) or not isinstance(native["dinput"], bool):
         raise ValueError("%s: [controls.native] xinput and dinput must be booleans" % source)
+    # One DIJOYSTATE axis per pad axis (left X, left Y, right X, right Y, left
+    # trigger, right trigger). "+y" / "-y" map a control onto one half of an
+    # axis (combined pedals); an axis fed twice reads the larger deflection.
     axes = native.setdefault("axes", ["x", "y", "z", "rz", "rx", "ry"])
-    if not isinstance(axes, list) or sorted(axes) != sorted(NATIVE_AXES):
-        raise ValueError("%s: [controls.native] axes must list all six of %s exactly once, not %r"
-                         % (source, ", ".join(NATIVE_AXES), axes))
+    if (not isinstance(axes, list) or len(axes) != 6
+            or not all(isinstance(a, str) and a.lstrip("+-") in NATIVE_AXES
+                       and len(a) - len(a.lstrip("+-")) <= 1 for a in axes)):
+        raise ValueError("%s: [controls.native] axes must name six of %s (optionally "
+                         "+/- for a half axis), not %r" % (source, ", ".join(NATIVE_AXES), axes))
     buttons = native.setdefault(
         "buttons", ["square", "cross", "circle", "triangle", "l1", "r1", "l2", "r2", "select",
                    "start", "l3", "r3", "ps"])

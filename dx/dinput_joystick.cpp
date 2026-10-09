@@ -88,7 +88,11 @@ const char *const kSlotNames[JOY_AXES] = {"x", "y", "z", "rx", "ry", "rz"};
 
 // The configured orders, parsed from the host's comma-separated lists.
 struct NativeOrder {
-    int axis_slot[JOY_AXES];     // pad axis (lx ly rx ry l2 r2) -> DIJOYSTATE slot, or -1
+    int axis_slot[JOY_AXES]; // pad axis (lx ly rx ry l2 r2) -> DIJOYSTATE slot, or -1
+    // 0: the pad axis spans the whole slot. +1 / -1 ("+y", "-y"): it drives
+    // one half only, centre when released and that end when fully pressed,
+    // so two triggers can share an axis as combined pedals.
+    int axis_half[JOY_AXES];
     int button_bit[JOY_BUTTONS]; // DirectInput button -> pad bit, or -1
 };
 
@@ -112,13 +116,24 @@ NativeOrder native_order() {
     NativeOrder o;
     for (int &v : o.axis_slot)
         v = -1;
+    for (int &v : o.axis_half)
+        v = 0;
     for (int &v : o.button_bit)
         v = -1;
     std::vector<std::string> axes = split_list(host_pad_native_axes());
-    for (size_t i = 0; i < axes.size() && i < JOY_AXES; ++i)
+    for (size_t i = 0; i < axes.size() && i < JOY_AXES; ++i) {
+        std::string name = axes[i];
+        int half = 0;
+        if (!name.empty() && (name[0] == '+' || name[0] == '-')) {
+            half = name[0] == '+' ? 1 : -1;
+            name.erase(0, 1);
+        }
         for (int s = 0; s < JOY_AXES; ++s)
-            if (axes[i] == kSlotNames[s])
+            if (name == kSlotNames[s]) {
                 o.axis_slot[i] = s;
+                o.axis_half[i] = half;
+            }
+    }
     std::vector<std::string> buttons = split_list(host_pad_native_buttons());
     for (size_t i = 0; i < buttons.size() && i < JOY_BUTTONS; ++i)
         for (int b = 0; b < (int)std::size(kButtonNames); ++b)
@@ -165,6 +180,16 @@ double stick_position(int16_t v) {
 double trigger_position(double fraction) {
     return fraction * 2.0 - 1.0;
 }
+// Where pad axis `a` puts its slot, from its full-range position `t`
+// (-1..1). A half-axis mapping takes the control's pressed travel: a
+// trigger's whole range, a stick's positive side.
+double mapped_position(const NativeOrder &o, int a, double t) {
+    const int half = o.axis_half[a];
+    if (!half)
+        return t;
+    const double travel = a >= 4 ? (t + 1.0) / 2.0 : (t > 0 ? t : 0.0);
+    return half * travel;
+}
 
 // rgdwPOV: hundredths of a degree clockwise from north, or -1 when centred.
 // Opposite directions cancel.
@@ -188,14 +213,21 @@ void fill_state(uint8_t *buf, const HostPadState &s, const JoyAxisRange ranges[6
     double pos[JOY_AXES] = {stick_position(s.lx),           stick_position(s.ly),
                             stick_position(s.rx),           stick_position(s.ry),
                             trigger_position(s.l2 / 255.0), trigger_position(s.r2 / 255.0)};
+    // A slot fed by several pad axes reads whichever is furthest from centre.
     bool fed[JOY_AXES] = {false};
+    double at[JOY_AXES] = {0};
     for (int a = 0; a < JOY_AXES; ++a) {
         int slot = order.axis_slot[a];
         if (slot < 0)
             continue;
-        put32((uint32_t)slot * 4, (uint32_t)scale_axis(pos[a], ranges[slot]));
+        const double t = mapped_position(order, a, pos[a]);
+        if (!fed[slot] || std::fabs(t) > std::fabs(at[slot]))
+            at[slot] = t;
         fed[slot] = true;
     }
+    for (int slot = 0; slot < JOY_AXES; ++slot)
+        if (fed[slot])
+            put32((uint32_t)slot * 4, (uint32_t)scale_axis(at[slot], ranges[slot]));
     // An axis nothing feeds rests at its centre.
     for (int slot = 0; slot < JOY_AXES; ++slot)
         if (!fed[slot])
@@ -398,6 +430,7 @@ bool joy_event(const HostPadEvent &e, const JoyAxisRange ranges[6], uint32_t *of
         if (slot < 0)
             return false;
         double t = e.index < 4 ? e.value / 32767.0 : trigger_position(e.value / 32767.0);
+        t = mapped_position(order, (int)e.index, t);
         *ofs = (uint32_t)slot * 4;
         *data = (uint32_t)scale_axis(t, ranges[slot]);
         return true;

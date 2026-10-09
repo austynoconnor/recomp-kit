@@ -269,6 +269,55 @@
   `SetMemory` and `SetVolume`; the host decoder keeps reading the file
   itself. Checked by compiling the changed files with Emscripten's clang
   (`-Wall -Wextra -Werror`); no native compiler is installed on this machine.
+
+- 2026-10-08 21:10 CDT (branch giggity-d3d8) — Claude Opus 5.5: the WebGPU
+  renderer no longer leaks browser GPU memory, Direct3D 9 games with dynamic
+  vertex buffers run several times faster in the browser, and pad triggers
+  can share an axis as analog pedals.
+  - Browser memory (`host/gpu/webgpu/webgpu_device.{h,cpp}`,
+    `d3d9_webgpu.cpp`): freed textures and buffers were only released. A
+    browser frees WebGPU memory on `destroy()` or at garbage collection, so
+    the compositor's per-frame UI textures and replaced vertex buffers piled
+    up in Chrome's GPU process (about 210 to 330 MB/s, to 3 to 6 GB; Crazy
+    Taxi and Battlefront II both saw it). `WebGpuDevice::destroy` now
+    destroys them, deferred until no open command buffer can use them
+    (`free_doomed` at the commit that leaves nothing recording); the D3D9
+    backend destroys dropped or resized buffers after the open encoder's
+    submit, and its occlusion-query buffers and query sets when read back.
+    Crazy Taxi's GPU process: about 350 MB, flat; whole browser about 1.5 GB
+    instead of 4.3 to 6 GB.
+  - Streamed vertex/index buffers (`d3d9_webgpu.cpp`): a buffer rewritten
+    while the frame being recorded still drew from it used to force a queue
+    submission (Crazy Taxi: about 2,100 a frame, each with a new bind group
+    and a full re-upload). Such a buffer is now marked streamed: each draw
+    copies just the vertices it reads (worked out from the index range,
+    `vertex_span`) or its index range from the CPU shadow into the frame's
+    ring, and the draw is shifted to match (`encode_primitives(d, shift)`).
+    The frame's uniform and vertex ring bytes are gathered on the CPU and
+    written with one queue write per chunk just before the submit
+    (`flush_ring`).
+  - The device's `set_bytes` staging ring (`webgpu_device.cpp`) counts the
+    open recordings that use each chunk and reuses any chunk none uses,
+    instead of resetting only when nothing at all is recording (which let it
+    grow while the presenter and the game overlapped).
+  - Vertex/index buffer locks (`dx/d3d9.cpp`, `dx/com.h` `lock_lo/lock_hi`):
+    a buffer keeps its guest copy for life; Lock returns a pointer into it
+    at once and Unlock copies back and uploads only the locked bytes (size 0
+    = to the end). Every lock used to allocate a guest copy of the whole
+    buffer, copy it in and out, free it and upload all of it. Crazy Taxi:
+    buffer uploads 67 MB a frame to 0.9 MB; city 6 to 46 to 50 fps in
+    headless Chrome (the game's cap), GPU time 2.5 ms a frame.
+  - Half-axis pad mapping (`dx/dinput_joystick.cpp`, `tools/game_config.py`):
+    a `[controls.native] axes` entry may be `+name` or `-name`; that control
+    then drives one half of the axis (centre released, that end fully
+    pressed; a trigger's whole travel, a stick's positive side). An axis
+    fed by several controls reads the one furthest from centre, and axes may
+    now repeat. Crazy Taxi maps the triggers to `+y`/`-y` because the game
+    reads analog gas and brake as lY's two halves (combined pedals).
+  - `RECOMP_D3D9_STATS` reports also give streamed bytes, buffer and texture
+    write sizes, bind groups and the largest texture.
+  - Tests: pad_tests "joystick half axes (combined pedals)".
+
 - 2026-10-08 20:15 CDT (branch giggity-d3d8) — Claude Opus 5.5: faster
   loading, natively and above all in the browser.
   - `runtime/kernel32.cpp` `sched_leave_critsec`: LeaveCriticalSection wakes
