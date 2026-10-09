@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- 2026-10-09 00:27 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: browser speed fixes cherry-picked from `giggity-swbf2`
+  (9867fc0..02da5a5). With them Star Wars Battlefront II went from 20-25
+  to 44-46 game frames a second in a level in headless Chrome.
+  - `host/gpu/d3d9_host.cpp`: in the browser, occlusion query results come
+    from a cache the main thread fills (`Op::QueryPoll`), one poll queued
+    per query, with a generation per query against stale answers, instead
+    of a blocking main-thread round trip per `GetData`.
+  - `host/gpu/d3d9_host.cpp`: the browser's present is pipelined
+    (`Op::Present`); the game waits only for the previous frame's present.
+  - `host/present_thread.cpp`, `host/present_frame.h`: the presenter keeps
+    the overlay's size instead of asking the device on every acquire.
+  - `runtime/kernel32.cpp`: in the browser `sched_checkpoint` reads the
+    clock every 16th pass; `runtime/imports.cpp`: the import trace entry is
+    a bounded copy instead of `snprintf`.
+  - `tools/recomp/translate.py`, `runtime/intrinsics.h`,
+    `tools/game_config.py`: opt-in `[translate] ftol2 = <address>` runs the
+    MSVC CRT's `_ftol2` natively, in line at direct calls. Nothing changes
+    for a game that does not set it.
+  - `tools/recomp/translate.py`: `recomp_is_call_return` answers from a
+    bitmap built at load instead of a binary search on every guest RET
+    (takes effect at the next `--regenerate`).
+  - Tests: native suites 24 of 24 and Python 418 passed, 5 skipped, on
+    Linux. The `_ftol2` runtime cases skip without a game image and were
+    run standalone on `giggity-swbf2`.
+
 - 2026-10-08 22:35 CDT (branch giggity-d3d8) — Claude Opus 5.5: WebGPU
   indexed strips (cherry-picked from giggity-swbf2 b4c5bf8).
   - `host/gpu/webgpu/d3d9_webgpu.cpp`: an indexed triangle or line strip
