@@ -40,9 +40,11 @@ struct D9Pipeline {
     uint32_t vs_obj = 0, ps_obj = 0; // device shader objects SetVertexShader / SetPixelShader bound
     float vconst[256][4] = {};       // vertex shader float registers
     float pconst[32][4] = {};        // pixel shader float registers
-    uint32_t sampler_tex[16] = {};   // COM object id of the texture per sampler
-    uint32_t sampler_state[16][14] = {}; // D3DSAMPLERSTATETYPE, indexed as the enum
-    uint32_t rs[256] = {};               // render states, by D3DRENDERSTATETYPE
+    int32_t viconst[16][4] = {}, piconst[16][4] = {}; // integer registers (recorded, see d3d9.cpp)
+    uint32_t vbconst[16] = {}, pbconst[16] = {};      // boolean registers, 0 or 1
+    uint32_t sampler_tex[16] = {};                    // COM object id of the texture per sampler
+    uint32_t sampler_state[16][14] = {};              // D3DSAMPLERSTATETYPE, indexed as the enum
+    uint32_t rs[256] = {};                            // render states, by D3DRENDERSTATETYPE
     bool rs_set[256] = {};
     // Changes whenever sampler_state, rs or rs_set may have: a draw passes it
     // on so the host can skip copying state it already holds. 0: unknown.

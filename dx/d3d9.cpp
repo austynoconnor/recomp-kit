@@ -392,20 +392,10 @@ D9_STUB(SetNPatchMode, 2)
 D9_STUB(GetNPatchMode, 1)
 D9_STUB(ProcessVertices, 6)
 D9_STUB(GetVertexDeclaration, 2)
-D9_STUB(GetVertexShaderConstantF, 4)
-D9_STUB(SetVertexShaderConstantI, 4)
-D9_STUB(GetVertexShaderConstantI, 4)
-D9_STUB(SetVertexShaderConstantB, 4)
-D9_STUB(GetVertexShaderConstantB, 4)
 D9_STUB(GetStreamSource, 5)
 D9_STUB(SetStreamSourceFreq, 3)
 D9_STUB(GetStreamSourceFreq, 3)
 D9_STUB(GetIndices, 2)
-D9_STUB(GetPixelShaderConstantF, 4)
-D9_STUB(SetPixelShaderConstantI, 4)
-D9_STUB(GetPixelShaderConstantI, 4)
-D9_STUB(SetPixelShaderConstantB, 4)
-D9_STUB(GetPixelShaderConstantB, 4)
 D9_STUB(DrawRectPatch, 4)
 D9_STUB(DrawTriPatch, 4)
 D9_STUB(DeletePatch, 2)
@@ -2942,6 +2932,63 @@ static void write_registers(float (*table)[4], uint32_t limit, uint32_t start, u
 }
 
 // (this, StartRegister, pConstantData, Vector4fCount)
+// The integer and boolean registers, and reading any bank back. They are
+// recorded per device so a game reads back what it set; the renderers still
+// take i and b registers from the shader's own defi / defb.
+static void read_registers(const float (*table)[4], uint32_t limit, uint32_t start, uint32_t data,
+                           uint32_t count) {
+    for (uint32_t i = 0; i < count && start + i < limit && data; ++i)
+        for (uint32_t k = 0; k < 4; ++k) {
+            uint32_t bits;
+            memcpy(&bits, &table[start + i][k], 4);
+            wr32(data + (i * 4 + k) * 4, bits);
+        }
+}
+static void int_registers(int32_t (*table)[4], uint32_t start, uint32_t data, uint32_t count,
+                          bool write) {
+    for (uint32_t i = 0; i < count && start + i < 16 && data; ++i)
+        for (uint32_t k = 0; k < 4; ++k) {
+            uint32_t at = data + (i * 4 + k) * 4;
+            if (write)
+                table[start + i][k] = (int32_t)rd32(at);
+            else
+                wr32(at, (uint32_t)table[start + i][k]);
+        }
+}
+static void bool_registers(uint32_t *table, uint32_t start, uint32_t data, uint32_t count,
+                           bool write) {
+    for (uint32_t i = 0; i < count && start + i < 16 && data; ++i) {
+        if (write)
+            table[start + i] = rd32(data + i * 4) ? 1u : 0u;
+        else
+            wr32(data + i * 4, table[start + i]);
+    }
+}
+// (this, StartRegister, pData, Count) for every one of these.
+#define D9_CONSTS(name, body)                                                                      \
+    void Dev_##name(X86 *c) {                                                                      \
+        ComObj *dev = this_device9(c);                                                             \
+        if (!dev || !arg(c, 2)) {                                                                  \
+            com_ret(c, D3DERR_INVALIDCALL);                                                        \
+            return;                                                                                \
+        }                                                                                          \
+        D9Pipeline &pl = d9_pipeline(dev->id);                                                     \
+        uint32_t start = arg(c, 1), data = arg(c, 2), count = arg(c, 3);                           \
+        body;                                                                                      \
+        com_ret(c, D3D_OK9);                                                                       \
+    }
+D9_CONSTS(GetVertexShaderConstantF, read_registers(pl.vconst, 256, start, data, count))
+D9_CONSTS(GetPixelShaderConstantF, read_registers(pl.pconst, 32, start, data, count))
+D9_CONSTS(SetVertexShaderConstantI, int_registers(pl.viconst, start, data, count, true))
+D9_CONSTS(GetVertexShaderConstantI, int_registers(pl.viconst, start, data, count, false))
+D9_CONSTS(SetPixelShaderConstantI, int_registers(pl.piconst, start, data, count, true))
+D9_CONSTS(GetPixelShaderConstantI, int_registers(pl.piconst, start, data, count, false))
+D9_CONSTS(SetVertexShaderConstantB, bool_registers(pl.vbconst, start, data, count, true))
+D9_CONSTS(GetVertexShaderConstantB, bool_registers(pl.vbconst, start, data, count, false))
+D9_CONSTS(SetPixelShaderConstantB, bool_registers(pl.pbconst, start, data, count, true))
+D9_CONSTS(GetPixelShaderConstantB, bool_registers(pl.pbconst, start, data, count, false))
+#undef D9_CONSTS
+
 void Dev_SetVertexShaderConstantF(X86 *c) {
     ComObj *dev = this_device9(c);
     if (dev)

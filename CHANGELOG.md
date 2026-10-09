@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-08 — Claude Opus 5.5: Direct3D 9 shader constant banks.
+  Set/Get{Vertex,Pixel}ShaderConstantI and ...B record the integer and
+  boolean registers per device, and Get{Vertex,Pixel}ShaderConstantF read
+  the float registers back (all were stubs leaving the output unset). The
+  renderers still take i/b registers from a shader's own defi/defb; feeding
+  the recorded values into the generated GPU shaders is still to do (Bully
+  has not called these through the main menu).
+
 - 2026-10-08 — Claude Opus 5.5: merged `giggity-d3d8` (8f9f537) into
   `giggity-bully`: 256 KB ReadFile read-ahead for small reads, the
   critical-section wake fix and spin-wait checkpoint, Direct3D 8 and
