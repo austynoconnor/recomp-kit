@@ -124,15 +124,17 @@ and make are managed by that build. `RECOMP_VIDEO` defaults to ON for
 macOS, iOS, Android and Linux, and on Windows with the prerequisites above;
 OFF omits FFmpeg entirely. Native Windows and Windows cross-build CI enable it.
 
-The web preset (`--target web`) also enables it. Emscripten's `emcc` builds
+A web build (`--target web`) enables it only when the game's `game.toml`
+asks: `[launcher] web_video = "mpeg1"` or `"all"` (the default is
+`"off"`). Emscripten's `emcc` builds
 FFmpeg as plain C with `--enable-cross-compile --target-os=none
 --arch=x86_32 --disable-asm --disable-x86asm --disable-inline-asm
 --disable-pthreads --disable-runtime-cpudetect --disable-shared
 --enable-static` and `-pthread` in the C and linker flags (the game's module
-uses shared memory). Unless `-DRECOMP_WEB_VIDEO_ALL_CODECS=ON`, the web
-build enables only `--enable-decoder=mpeg1video --enable-parser=mpegvideo`
-in place of the full decoder/demuxer list, because a page downloads every
-decoder it links.
+uses shared memory). With `"mpeg1"` the web build enables only
+`--enable-decoder=mpeg1video --enable-parser=mpegvideo` in place of the
+full decoder/demuxer list, because a page downloads every decoder it
+links; `"all"` keeps the full list.
 
 Automatic optional dependency discovery and external compression/UI/media
 libraries are disabled to avoid dependencies on Homebrew or other local

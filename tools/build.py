@@ -93,6 +93,13 @@ def game_defines(game_dir, build_root):
     return ["-DRECOMP_GAME_DIR=%s" % Path(game_dir).as_posix(), "-DPOP_BUILD_ROOT=%s" % Path(build_root).as_posix()]
 
 
+def web_video_defines(cfg):
+    """FFmpeg for the web build only when the game asks for it ([launcher] web_video)."""
+    video = cfg["launcher"]["web_video"]
+    return ["-DRECOMP_VIDEO=%s" % ("OFF" if video == "off" else "ON"),
+            "-DRECOMP_WEB_VIDEO_ALL_CODECS=%s" % ("ON" if video == "all" else "OFF")]
+
+
 def configure(preset, extra=(), build_dir=None):
     """Configure a preset; `build_dir` overrides the preset's binary directory."""
     command = [cmake_tool("cmake"), "--preset", preset, "-DPython3_EXECUTABLE=" + sys.executable]
@@ -488,6 +495,8 @@ def main():
                 # A link-only build ships no texture pack, and its CI has no numpy.
                 if args.target == "app" and not args.stub:
                     texture_pack(args.game_dir, args.build_root)
+                if args.target == "web" and not args.stub:
+                    defines = defines + web_video_defines(cfg)
                 configure(preset, defines, build_dir=build_dir)
                 build(preset, TARGETS[args.target], args.jobs, build_dir=build_dir, config=args.config)
                 if args.target == "web":

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-09 10:10 CDT — Claude Opus 5.5: merged `giggity-d3d8` `aad7107`
+  (the generic web fixes from this branch, with FFmpeg in the web build
+  made opt-in). The `web` preset is back to `RECOMP_VIDEO` OFF; a game
+  turns movies on for its web build with `[launcher] web_video = "mpeg1"`
+  (MGS2) or `"all"` in `game.toml`, which `tools/build.py` passes to CMake.
+  The desktop decoder list here keeps `mpeg1video` for the DirectShow
+  movie path.
+
 - 2026-10-09 09:30 CDT — Claude Opus 5.5: the web build plays movies,
   keeps what it downloads, sends its program compressed and reads game pads.
   Movies: the `web` preset turns `RECOMP_VIDEO` on, and
@@ -252,6 +260,40 @@
     version-resource checks for an image without one, and names ordinal
     imports "ordN" as the loader does even where pefile knows the name.
   - Merge note: `giggity-d3d8` also adds `wsprintfA`; keep one entry.
+- 2026-10-09 10:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: generic web fixes from `giggity-mgs2` (d034c3c), for
+  every game's web build. Game pads: `web_main` (`host/sdl/main.cpp`)
+  started SDL without `SDL_INIT_GAMEPAD`, so no pad reached any game in a
+  browser; it now starts the gamepad subsystem as the desktop host does (in
+  MGS2 the log then reports "gamepad connected" and the left stick moves the
+  player). Downloads: `web/player/fetch-backend.js` keeps every one-MiB
+  piece of streamed game data in Cache Storage (`recomp-pieces-v1`), keyed
+  by the file's ETag (else Last-Modified, else size); the store opens in the
+  background, so the backend is registered before the function first yields
+  (awaiting it first left WasmFS allocating files on a missing backend when
+  the disk was slow: "Cannot read properties of undefined (reading
+  'allocFile')"); writes happen in the background, stop past 80% of the
+  quota and never fail a read. `web/player/runtime.html` loads the program
+  through `instantiateWasm` from Cache Storage (`recomp-program-v1`) with an
+  If-Modified-Since check, and uses the stored copy when the server cannot
+  be reached; a program of 100+ MB is larger than Chrome's HTTP cache keeps
+  per entry. Compression: `tools/web_launcher.py --web-build` writes
+  `<name>.gz` (and `.br` with the `brotli` module) beside each
+  `.js`/`.wasm`/`.data` when it saves 10% or more, `--serve` sends it with
+  `Content-Encoding` and answers 304 for unchanged files, and hosted game
+  files carry an ETag. FFmpeg in the web build is off unless a game asks:
+  new `game.toml` `[launcher] web_video` = "off" (default), "mpeg1" (only the
+  MPEG-1 video decoder) or "all" (the desktop list); `tools/build.py`
+  passes `RECOMP_VIDEO` and `RECOMP_WEB_VIDEO_ALL_CODECS` for the web target,
+  and `cmake/Dependencies.cmake` builds FFmpeg with `emcc` as static
+  libraries linked into the `.wasm`. Measured with MGS2 in headless Chrome:
+  a reload fetched 0 game pieces (102 the first time) and got a 304 for the
+  program; its 189 MB program is sent as 22 MB. Tests: fetch-backend (Cache
+  Storage across visits, a full or missing store, the backend existing
+  before the store opens), web launcher (compressed program, 304, ETag),
+  web player (program kept in Cache Storage), game config and build.py
+  (`web_video`).
+
 - 2026-10-09 00:27 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: browser speed fixes cherry-picked from `giggity-swbf2`
   (9867fc0..02da5a5). With them Star Wars Battlefront II went from 20-25

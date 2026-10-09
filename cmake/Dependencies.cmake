@@ -102,9 +102,9 @@ if(RECOMP_VIDEO)
   else()
     set(RECOMP_FFMPEG_LINKAGE --enable-shared --disable-static)
   endif()
-  # A web page downloads every decoder it links, so by default the web
-  # build carries only MPEG-1 video (the DirectShow movie path); the full
-  # list stays one option away for games that need Bink or Windows Media.
+  # A web page downloads every decoder it links. A game turns video on for
+  # its web build with [launcher] web_video in game.toml (tools/build.py):
+  # "mpeg1" links only MPEG-1 video, "all" the desktop list below.
   option(RECOMP_WEB_VIDEO_ALL_CODECS "Link every FFmpeg codec into the web build" OFF)
   if(EMSCRIPTEN AND NOT RECOMP_WEB_VIDEO_ALL_CODECS)
     set(RECOMP_FFMPEG_CODECS --enable-decoder=mpeg1video --enable-parser=mpegvideo)

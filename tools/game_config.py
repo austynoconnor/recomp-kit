@@ -62,6 +62,8 @@ HEAP_END = 0x0e000000        # runtime/x86.h GUEST_HEAP_END; the mods' heap star
 GUEST_SIZE_DEFAULT = 0x10000000   # runtime/x86.h GUEST_SIZE: the arena, 256 MB unless a module needs more
 AUX_REQUIRED_KEYS = ("name", "path", "sha256", "base", "size")
 
+WEB_VIDEO = ("off", "mpeg1", "all")
+
 
 def windows_version(value):
     """Decode major.minor[.build]; keep the historical 9x default and 6.1 SP1."""
@@ -246,6 +248,10 @@ def load(game_dir):
             raise ValueError("%s: [launcher] %s must be a string" % (source, key))
     if not isinstance(launcher.setdefault("stream_assets", False), bool):
         raise ValueError("%s: [launcher] stream_assets must be a boolean" % source)
+    # FFmpeg in the web build: "off" (the default), "mpeg1" (MPEG-1 video
+    # only, the DirectShow movie path) or "all" (the desktop decoder list).
+    if launcher.setdefault("web_video", "off") not in WEB_VIDEO:
+        raise ValueError("%s: [launcher] web_video must be one of %s" % (source, ", ".join(WEB_VIDEO)))
     min_free = launcher.setdefault("min_free_mb", 0)
     if not isinstance(min_free, int) or min_free < 0:
         raise ValueError("%s: [launcher] min_free_mb must be a non-negative integer" % source)

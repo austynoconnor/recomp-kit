@@ -115,7 +115,7 @@
       "inherits": "base",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
       "cacheVariables": {
-        "RECOMP_VIDEO": "ON",
+        "RECOMP_VIDEO": "OFF",
         "CMAKE_C_FLAGS": "-pthread",
         "CMAKE_CXX_FLAGS": "-pthread",
         "CMAKE_EXE_LINKER_FLAGS": "-pthread"
@@ -125,7 +125,6 @@
       "name": "web-stub",
       "inherits": "web",
       "cacheVariables": {
-        "RECOMP_VIDEO": "OFF",
         "POP_TRANSLATE": "STUB"
       }
     },
