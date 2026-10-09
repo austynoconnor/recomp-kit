@@ -311,6 +311,14 @@ const double kMpeg1Rates[9] = {0,  24000.0 / 1001, 24, 25, 30000.0 / 1001, 30,
                                50, 60000.0 / 1001, 60};
 } // namespace
 
+bool mpeg1_decoder_available() {
+#ifdef RECOMP_HAVE_FFMPEG
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool mpeg1_scan(const uint8_t *data, size_t size, Mpeg1Info *out) {
     if (!data || size < 12 || !out || data[0] != 0 || data[1] != 0 || data[2] != 1 ||
         data[3] != 0xb3)

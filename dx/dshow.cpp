@@ -38,6 +38,7 @@
 #include "com.h"
 #include "dx.h"
 #include "dshow_video.h"
+#include "mf_media.h"
 #include "host_api.h"
 #include "mp3_source.h"
 #include "../runtime/memory.h"
@@ -1353,7 +1354,7 @@ void GB_AddSourceFilter(X86 *c) {
     if (out && gm_valid(out, 4))
         wr32(out, 0);
     // An MPEG-1 video file plays into the game's renderer instead.
-    if (t.g && arg(c, 1) && gm_valid(arg(c, 1), 2)) {
+    if (t.g && arg(c, 1) && gm_valid(arg(c, 1), 2) && mf::mpeg1_decoder_available()) {
         std::string guest = read_wide(arg(c, 1));
         std::string host = win32_host_path(guest, false);
         if (!host.empty() && dsv::is_movie_file(host)) {

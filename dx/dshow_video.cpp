@@ -778,6 +778,13 @@ uint32_t add_source(X86 *c, uint32_t graph_id, const std::string &guest_path,
     (void)c;
     if (out && gm_valid(out, 4))
         wr32(out, 0);
+    // Without a decoder, the file is not read at all: on the web every byte
+    // of it would be a download.
+    if (!mf::mpeg1_decoder_available()) {
+        log_once("dshow.nodecoder", "dshow: this build has no MPEG-1 video decoder; movies are "
+                                    "skipped");
+        return 0x80040241u; // VFW_E_CANNOT_RENDER
+    }
     FILE *f = fopen(host_path.c_str(), "rb");
     if (!f)
         return 0x80070002u; // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)

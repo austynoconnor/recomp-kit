@@ -74,6 +74,9 @@ bool mpeg1_scan(const uint8_t *data, size_t size, Mpeg1Info *out);
 // hint that nothing here uses, so normalising it costs nothing. Returns the
 // number of headers changed.
 int mpeg1_fix_aspect(std::vector<uint8_t> &bytes);
+// False in a build without FFmpeg's MPEG-1 decoder (the web build), so a
+// caller can skip a movie before reading it.
+bool mpeg1_decoder_available();
 
 class Mpeg1Stream {
   public:

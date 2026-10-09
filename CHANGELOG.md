@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 2026-10-09 05:20 CDT — Claude Opus 5.5: a build without FFmpeg (the web
+  build) no longer reads a movie it cannot decode: `mf::mpeg1_decoder_
+  available()` is checked before `AddSourceFilter` looks at or reads the
+  file, so the movie is skipped with EC_COMPLETE at once. In the browser the
+  MGS2 intro had pulled its whole 65 MB `op_sub.pac` for nothing. Checked
+  in headless Chrome (MGS2, 3 minutes from the logos to the Tanker's
+  opening): 58 fps average, Chrome 1.6 GB typical and 2.0 GB peak, 1.6 CPU
+  cores, 71 one-MiB pieces of game data fetched.
+
 - 2026-10-09 04:40 CDT — Claude Opus 5.5: the web build for a game whose
   executable sits in a subfolder (`[game] executable_dir`, MGS2's `bin/`).
   `tools/web_launcher.py` passes `executableDir` in `games.json` and checks
