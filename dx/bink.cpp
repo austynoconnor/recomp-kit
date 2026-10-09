@@ -72,6 +72,8 @@ struct BinkPlayer {
     AVFormatContext *input = nullptr;
     AVIOContext *io = nullptr;
     int file_fd = -1;
+    uint32_t guest_io = 0;     // the game's BINKIO, when it streams the file itself
+    int64_t guest_position = 0; // bytes consumed from that stream
     int64_t file_start = 0, file_length = 0, file_position = 0;
     AVCodecContext *video = nullptr, *audio = nullptr;
     AVFrame *frame = nullptr, *audio_frame = nullptr;
@@ -106,6 +108,8 @@ struct BinkPlayer {
         }
         if (file_fd >= 0)
             os_fd_close(file_fd);
+        if (guest_io)
+            heap_free(guest_io);
     }
 };
 std::map<uint32_t, std::unique_ptr<BinkPlayer>> g_players;
@@ -164,6 +168,98 @@ int64_t seek_file_window(void *opaque, int64_t offset, int whence) {
         return AVERROR(errno);
     p.file_position = position;
     return position;
+}
+
+// The game's own Bink I/O (BinkSetIO). Some games stream a video out of an
+// archive on their own thread and hand Bink only a reader: Star Wars
+// Battlefront II passes an empty name and a BINKIO whose callbacks copy out of
+// a ring buffer its streamer fills. Those callbacks are guest code, so they run
+// on the shim's guest thread (g_cpu, set by every Bink import that can read).
+// The stream is strictly sequential: ReadFrame (slot 1) waits for the bytes,
+// yielding with Sleep(0), and returns 0 once the stream has ended; ReadHeader
+// (slot 0) takes bytes only when that many are already buffered, which is how
+// the tail shorter than one read is collected.
+X86 *g_cpu = nullptr;
+uint32_t g_guest_io_open = 0; // BinkSetIO's open procedure
+constexpr uint32_t BINKIO_BYTES = 0x200;
+
+int guest_io_take(BinkPlayer &p, uint32_t slot, uint32_t dest, uint32_t bytes) {
+    uint32_t fn = rd32(p.guest_io + slot * 4);
+    if (!fn || !g_cpu)
+        return 0;
+    // ReadHeader(bio, offset, dest, size); ReadFrame(bio, frame, offset, dest, size).
+    // An offset of -1 means "where the last read stopped".
+    const uint32_t header[4] = {p.guest_io, 0xffffffffu, dest, bytes};
+    const uint32_t frame[5] = {p.guest_io, 0, 0xffffffffu, dest, bytes};
+    uint32_t got = slot == 0 ? guest_call(g_cpu, fn, header, 4) : guest_call(g_cpu, fn, frame, 5);
+    return got > bytes ? 0 : (int)got;
+}
+
+int read_guest_io(void *opaque, uint8_t *buffer, int bytes) {
+    auto &p = *static_cast<BinkPlayer *>(opaque);
+    if (bytes <= 0)
+        return AVERROR(EINVAL);
+    uint32_t want = (uint32_t)std::min(bytes, 32 * 1024);
+    uint32_t dest = heap_alloc(want, false, 16);
+    if (!dest)
+        return AVERROR(ENOMEM);
+    int got = guest_io_take(p, 1, dest, want);
+    // The stream ended with less than one read left: take what remains by
+    // halving the size ReadHeader is asked for.
+    for (uint32_t n = want / 2; got == 0 && n; n /= 2)
+        got = guest_io_take(p, 0, dest, n);
+    if (got > 0)
+        memcpy(buffer, g_mem + dest, (size_t)got);
+    heap_free(dest);
+    if (got <= 0)
+        return AVERROR_EOF;
+    p.guest_position += got;
+    return got;
+}
+
+// Forward seeks read and discard; the stream cannot go back.
+int64_t seek_guest_io(void *opaque, int64_t offset, int whence) {
+    auto &p = *static_cast<BinkPlayer *>(opaque);
+    whence &= ~AVSEEK_FORCE;
+    if (whence == AVSEEK_SIZE)
+        return -1;
+    int64_t target = whence == SEEK_SET ? offset : whence == SEEK_CUR ? p.guest_position + offset : -1;
+    if (target < p.guest_position)
+        return AVERROR(ESPIPE);
+    uint8_t scratch[4096];
+    while (p.guest_position < target) {
+        int n = read_guest_io(&p, scratch, (int)std::min<int64_t>(sizeof scratch, target - p.guest_position));
+        if (n < 0)
+            return n;
+    }
+    return p.guest_position;
+}
+
+bool open_guest_io(BinkPlayer &p, uint32_t name, uint32_t flags) {
+    p.guest_io = heap_alloc(BINKIO_BYTES, true, 16);
+    if (!p.guest_io)
+        return video_error("cannot allocate the game's video reader");
+    memset(g_mem + p.guest_io, 0, BINKIO_BYTES);
+    if (!guest_call(g_cpu, g_guest_io_open, p.guest_io, name, flags))
+        return video_error("the game's video reader refused to open");
+    p.input = avformat_alloc_context();
+    if (!p.input)
+        return video_error("cannot allocate video input");
+    constexpr int buffer_bytes = 32 * 1024;
+    auto *buffer = static_cast<uint8_t *>(av_malloc(buffer_bytes));
+    if (!buffer)
+        return video_error("cannot allocate video I/O buffer");
+    p.io = avio_alloc_context(buffer, buffer_bytes, 0, &p, read_guest_io, nullptr, seek_guest_io);
+    if (!p.io) {
+        av_freep(&buffer);
+        return video_error("cannot allocate video I/O context");
+    }
+    p.io->seekable = 0;
+    p.input->pb = p.io;
+    p.input->flags |= AVFMT_FLAG_CUSTOM_IO;
+    const AVInputFormat *bink = av_find_input_format("bink");
+    int rc = avformat_open_input(&p.input, nullptr, bink, nullptr);
+    return rc < 0 ? decoder_error("open input", rc) : true;
 }
 
 // Byte zero is the handle's current offset, and AVSEEK_SIZE reports the rest
@@ -280,6 +376,7 @@ bool read_packet(BinkPlayer &p) {
 }
 
 void BinkOpen(X86 *c) {
+    g_cpu = c;
     set_eax(c, 0);
     g_error[0] = 0;
     uint32_t name = arg(c, 0), flags = arg(c, 1);
@@ -298,6 +395,10 @@ void BinkOpen(X86 *c) {
             return;
         guest = win32_guest_path(path);
         LOGV("bink: file handle %08x at offset %lld", name, (long long)offset);
+    } else if (g_guest_io_open && (!name || (gm_valid(name, 1) && !rd8(name)))) {
+        if (!open_guest_io(*p, name, flags))
+            return;
+        guest = "(the game's reader)";
     } else {
         if (!name || !gm_valid(name, 1)) {
             video_error("invalid video filename");
@@ -442,6 +543,7 @@ void service_audio(uint32_t rec, BinkPlayer &p) {
 // Decode exactly one visible frame. Audio prefetch may already have retained
 // its compressed packet, but never changes the guest frame counter.
 void BinkDoFrame(X86 *c) {
+    g_cpu = c;
     set_eax(c, 0);
     uint32_t rec = arg(c, 0);
     BinkPlayer *p = player_for(rec);
@@ -501,6 +603,7 @@ void BinkDoFrame(X86 *c) {
 }
 
 void BinkNextFrame(X86 *c) {
+    g_cpu = c;
     uint32_t rec = arg(c, 0);
     if (BinkPlayer *p = player_for(rec)) {
         if (host_close_requested())
@@ -517,6 +620,7 @@ void BinkNextFrame(X86 *c) {
 // count at +0xb4. A decoded frame dirties the whole image; before decode,
 // clear the count so the guest never blits an uninitialised frame.
 void BinkGetRects(X86 *c) {
+    g_cpu = c;
     set_eax(c, 0);
     uint32_t rec = arg(c, 0);
     BinkPlayer *p = player_for(rec);
@@ -537,6 +641,7 @@ void BinkGetRects(X86 *c) {
 // remaining until the next frame. Repeated pause/resume calls are harmless;
 // unsigned subtraction also handles the host's millisecond counter wrapping.
 void BinkPause(X86 *c) {
+    g_cpu = c;
     if (BinkPlayer *p = player_for(arg(c, 0))) {
         if (arg(c, 1)) {
             if (!p->paused) {
@@ -555,6 +660,7 @@ void BinkPause(X86 *c) {
 // The wait ends at that counter's boundary using host time, never a guest
 // rendering clock; unsigned subtraction also handles host_millis wrapping.
 void BinkWait(X86 *c) {
+    g_cpu = c;
     uint32_t rec = arg(c, 0);
     BinkPlayer *p = player_for(rec);
     if (p)
@@ -570,6 +676,7 @@ void BinkWait(X86 *c) {
 }
 
 void BinkService(X86 *c) {
+    g_cpu = c;
     set_eax(c, 0);
     uint32_t rec = arg(c, 0);
     if (BinkPlayer *p = player_for(rec))
@@ -579,6 +686,7 @@ void BinkService(X86 *c) {
 // Validate the entire destination rectangle before writing any row, using
 // wide arithmetic so a guest offset or pitch cannot wrap into valid memory.
 void BinkCopyToBuffer(X86 *c) {
+    g_cpu = c;
     set_eax(c, 0);
     BinkPlayer *p = player_for(arg(c, 0));
     if (!p || !p->have_frame || p->failed)
@@ -608,6 +716,7 @@ void BinkCopyToBuffer(X86 *c) {
 }
 
 void BinkClose(X86 *c) {
+    g_cpu = c;
     uint32_t rec = arg(c, 0);
     if (g_players.erase(rec))
         heap_free(rec);
@@ -710,12 +819,16 @@ void BinkDX9SurfaceType(X86 *c) {
 
 // Bink's I/O and memory hooks. A game may install its own file reader
 // (BinkSetIO) and allocator (BinkSetMemory) before BinkOpen; the host's
-// decoder reads the file itself, so these are recorded and otherwise ignored.
-// BinkOpen still resolves the name or the file handle (and its offset) the
-// game passes, which is how a video inside a container is found.
+// decoder reads the file itself when the game names one (or passes a file
+// handle and offset, which is how a video inside a container is found).
+// A nameless open goes through the game's reader instead (open_guest_io).
 void BinkSetIO(X86 *c) {
+#ifdef RECOMP_HAVE_FFMPEG
+    // Used only when BinkOpen gets no name to resolve (see open_guest_io).
+    g_guest_io_open = arg(c, 0);
+#endif
     if (arg(c, 0))
-        LOGV("bink: custom I/O %08x ignored; the host reads the file", arg(c, 0));
+        LOGV("bink: custom I/O %08x recorded for nameless opens", arg(c, 0));
     ret0(c);
 }
 void BinkSetIOSize(X86 *c) {
