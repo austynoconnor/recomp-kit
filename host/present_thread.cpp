@@ -588,11 +588,9 @@ struct Service : std::enable_shared_from_this<Service> {
         if (!target)
             target = std::make_shared<Target>();
         target->device = fake ? nullptr : device;
-        const gpu::TextureDesc overlay_desc = !fake && target->scene.overlay
-                                                  ? device->describe(target->scene.overlay)
-                                                  : gpu::TextureDesc{};
-        if (target->scene.w != w || target->scene.h != h ||
-            (!fake && (overlay_desc.width != gw || overlay_desc.height != gh))) {
+        const bool overlay_fits =
+            target->scene.overlay && target->overlay_w == gw && target->overlay_h == gh;
+        if (target->scene.w != w || target->scene.h != h || (!fake && !overlay_fits)) {
             target->release_scene();
             while (true) {
                 bool failed = fail_allocations > 0;
@@ -616,6 +614,8 @@ struct Service : std::enable_shared_from_this<Service> {
                         overlay = {fake_texture_ids++};
                     }
                     target->scene = {world, overlay, w, h};
+                    target->overlay_w = gw;
+                    target->overlay_h = gh;
                     break;
                 }
                 if (w == gw && h == gh) {
@@ -624,6 +624,7 @@ struct Service : std::enable_shared_from_this<Service> {
                             "unavailable\n",
                             gw, gh);
                     target->scene = {};
+                    target->overlay_w = target->overlay_h = 0;
                     break; // reserve a failed writer too; its GPU prefixes still retire safely
                 }
                 w = std::max(gw, w / 2);
