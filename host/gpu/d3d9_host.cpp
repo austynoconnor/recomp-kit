@@ -105,6 +105,7 @@ enum class Op : uint8_t {
     QueryEnd,
     QueryDrop,
     QueryPoll, // a = query, b = generation: publish its result to the cache
+    Present,   // a = backbuffer, b = width, c = height (the pumped queue)
     Probe,
     Call
 };
@@ -235,6 +236,23 @@ class RenderThread {
             run_on_pump(&job);
             return result;
         }
+    }
+    // The pumped queue's present: one frame may be in flight. The game waits
+    // only for the frame before this one, so its next frame runs while the
+    // browser's main thread encodes and presents this one. Waiting for this
+    // frame's own present cost the browser game thread a tenth of its time.
+    void present_pipelined(uint32_t backbuffer, uint32_t w, uint32_t h) {
+        {
+            std::unique_lock<std::mutex> lock(m_);
+            idle_cv_.wait(lock, [this] { return presents_done_ >= presents_sent_; });
+            ++presents_sent_;
+        }
+        Command c{Op::Present};
+        c.a = backbuffer;
+        c.b = w;
+        c.c = h;
+        filling_->commands.push_back(c);
+        hand_over();
     }
     void run_on_pump(std::function<void()> *job) {
         Command c{Op::Call};
@@ -415,6 +433,13 @@ class RenderThread {
                     q.done[cmd.a] = r > 0 ? count : 1; // -1: unknown, report visible
                 break;
             }
+            case Op::Present: {
+                r_->present(cmd.a, cmd.b, cmd.c);
+                std::lock_guard<std::mutex> lock(m_);
+                ++presents_done_;
+                idle_cv_.notify_all();
+                break;
+            }
             case Op::Probe:
                 r_->probe_next(cmd.a ? (const char *)(base + cmd.at) : nullptr);
                 break;
@@ -439,6 +464,7 @@ class RenderThread {
     std::vector<std::unique_ptr<Batch>> spare_;
     std::unique_ptr<Batch> filling_ = std::make_unique<Batch>();
     bool busy_ = false;
+    uint64_t presents_sent_ = 0, presents_done_ = 0; // the pumped queue's, under m_
 };
 
 RenderThread *render_thread() {
@@ -616,7 +642,12 @@ void host_d9_stretch(HostD9Surface src, const int32_t src_rect[4], HostD9Surface
     t->submitted();
 }
 void host_d9_present(uint32_t backbuffer, uint32_t width, uint32_t height) {
-    if (RenderThread *t = render_thread())
+    RenderThread *t = render_thread();
+    if (!t)
+        return;
+    if (t->pumped())
+        t->present_pipelined(backbuffer, width, height);
+    else
         t->sync([&] { backend()->present(backbuffer, width, height); });
 }
 int host_d9_read_presented(uint8_t *rgb, uint32_t cap, uint32_t *w, uint32_t *h) {
