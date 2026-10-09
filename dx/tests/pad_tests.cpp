@@ -54,6 +54,7 @@ static std::vector<HostPadEvent> g_pad_events;
 static uint32_t g_pad_next_sequence = 1;
 static uint16_t g_rumble_low = 0, g_rumble_high = 0;
 static const char *const kDefaultAxes = "x,y,z,rz,rx,ry";
+static const char *g_axes = kDefaultAxes;
 static const char *const kDefaultButtons =
     "square,cross,circle,triangle,l1,r1,l2,r2,select,start,l3,r3,ps";
 
@@ -103,10 +104,15 @@ void host_pad_rumble(uint16_t low, uint16_t high) {
     g_rumble_high = high;
 }
 const char *host_pad_native_axes(void) {
-    return kDefaultAxes;
+    return g_axes;
 }
 const char *host_pad_native_buttons(void) {
     return kDefaultButtons;
+}
+int32_t g_axis_min = -32768, g_axis_max = 32767;
+void host_pad_native_axis_range(int32_t *min, int32_t *max) {
+    *min = g_axis_min;
+    *max = g_axis_max;
 }
 } // extern "C"
 
@@ -863,6 +869,59 @@ static const uint32_t XI_ERROR_SUCCESS = 0, XI_ERROR_BAD_ARGUMENTS = 160,
                       XI_ERROR_DEVICE_NOT_CONNECTED = 1167, XI_ERROR_EMPTY = 4306;
 static const uint32_t XUSER_INDEX_ANY = 0xFF;
 
+// [controls.native] axis_range: a game that never sets DIPROP_RANGE (Crazy
+// Taxi) reads its configured range from the first poll.
+static void test_joy_configured_range() {
+    g_axis_min = -128;
+    g_axis_max = 127;
+    uint32_t dev = make_joystick(SDK_DIJOYSTATE);
+    g_pad = HostPadState{};
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 0), 0);
+    g_pad.lx = -32767;
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 0), -128);
+    g_pad.lx = 32767;
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 0), 127);
+    uint32_t p = sc(0x100);
+    gm_zero(p, 24);
+    wr32(p, 24);
+    wr32(p + 4, 16);
+    wr32(p + 8, 4);
+    wr32(p + 12, PH_BYOFFSET);
+    CHECK_EQ(call_method(dev, DID_GetProperty, {PROP_RANGE, p}), DI_OK);
+    CHECK_EQ((int32_t)rd32(p + 16), -128);
+    CHECK_EQ((int32_t)rd32(p + 20), 127);
+    g_pad = HostPadState{};
+    g_axis_min = -32768;
+    g_axis_max = 32767;
+}
+
+// "+y" / "-y": the triggers share lY as combined pedals (Crazy Taxi's gas
+// -4 and brake -5 read lY's two halves); the left stick also feeds lY, and
+// the larger deflection wins.
+static void test_joy_half_axes() {
+    g_axis_min = -128;
+    g_axis_max = 127;
+    g_axes = "x,y,z,rz,+y,-y";
+    uint32_t dev = make_joystick(SDK_DIJOYSTATE);
+    g_pad = HostPadState{};
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 4), 0);
+    g_pad.r2 = 255; // gas: lY fully negative
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 4), -128);
+    g_pad.r2 = 0;
+    g_pad.l2 = 255; // brake: lY fully positive
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 4), 127);
+    g_pad.l2 = 0;
+    g_pad.ly = -32767 / 4; // a light stick push alone still reads
+    CHECK(read_state_axis(dev, SDK_DIJOYSTATE, 4) < -20);
+    g_pad.r2 = 255; // full gas beats a stick pushed the other way
+    g_pad.ly = 32767 / 2;
+    CHECK_EQ(read_state_axis(dev, SDK_DIJOYSTATE, 4), -128);
+    g_pad = HostPadState{};
+    g_axes = kDefaultAxes;
+    g_axis_min = -32768;
+    g_axis_max = 32767;
+}
+
 static void test_xinput() {
     cpu_reset();
     pad_reset();
@@ -1037,6 +1096,8 @@ int main() {
         {"joystick objects", test_joy_objects},
         {"joystick buffered data", test_joy_device_data},
         {"joystick custom format", test_joy_custom_format},
+        {"joystick configured default range", test_joy_configured_range},
+        {"joystick half axes (combined pedals)", test_joy_half_axes},
         {"xinput", test_xinput},
     };
     for (const auto &t : tests) {

@@ -428,6 +428,10 @@ static void test_text() {
     check(call_import(&c, "GDI32.dll", "ExtTextOutW", {dc, 0, 0, 2, s + 400, 0, 0, 0}) == 1 &&
               call_import(&c, "GDI32.dll", "GetPixel", {dc, 20, 20}) == 0xff0000,
           "ETO_OPAQUE with an empty string");
+    // ETO_OPAQUE with no rectangle is ignored rather than refused: the DirectX
+    // SDK's CD3DFont draws each glyph that way into its DIB section.
+    check(call_import(&c, "GDI32.dll", "ExtTextOutW", {dc, 0, 0, 2, 0, s + 256, 1, 0}) == 1,
+          "ETO_OPAQUE with no rectangle");
     static unsigned callbacks = 0;
     uint32_t cb = imports_alloc_trampoline(
         "TEST", "FontCallback",

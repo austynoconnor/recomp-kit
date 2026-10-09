@@ -35,6 +35,42 @@ class LoadTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "cd_tracks"):
                     game_config.load(game)
 
+    def test_virtual_cd_label_and_drive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            stub = (ROOT / "games/stub/game.toml").read_text()
+            (game / "globals.toml").write_text("")
+            (game / "game.toml").write_text(stub)
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CD_LABEL ""', header)
+            self.assertIn("#define RECOMP_CD_DRIVE 'D'", header)
+            (game / "game.toml").write_text(stub + '\n[media]\ncd_label = "Disc One"\ncd_drive = "e"\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CD_LABEL "Disc One"', header)
+            self.assertIn("#define RECOMP_CD_DRIVE 'E'", header)
+            for bad, key in (('cd_label = 3', "cd_label"), ('cd_label = "' + "x" * 33 + '"', "cd_label"),
+                             ('cd_drive = "C"', "cd_drive"), ('cd_drive = "DE"', "cd_drive")):
+                (game / "game.toml").write_text(stub + '\n[media]\n' + bad + '\n')
+                with self.assertRaisesRegex(ValueError, key):
+                    game_config.load(game)
+
+    def test_setjmp_longjmp_addresses(self):
+        # [translate] setjmp/longjmp name the CRT pair the translator replaces
+        # with runtime intrinsics; anything but a positive integer is refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            stub = (ROOT / "games/stub/game.toml").read_text()
+            (game / "globals.toml").write_text("")
+            (game / "game.toml").write_text(
+                stub.replace("[translate]\n", "[translate]\nsetjmp = 0x4b0050\nlongjmp = 0x4affd4\n", 1))
+            cfg = game_config.load(game)
+            self.assertEqual(cfg["translate"]["setjmp"], 0x4b0050)
+            self.assertEqual(cfg["translate"]["longjmp"], 0x4affd4)
+            for bad in ('setjmp = "0x4b0050"', "longjmp = 0"):
+                (game / "game.toml").write_text(stub.replace("[translate]\n", "[translate]\n" + bad + "\n", 1))
+                with self.assertRaisesRegex(ValueError, bad.split()[0]):
+                    game_config.load(game)
+
     def test_windows_version_defaults_and_optional_build(self):
         with tempfile.TemporaryDirectory() as tmp:
             game = Path(tmp)
@@ -287,6 +323,19 @@ class LoadTests(unittest.TestCase):
             header = gen_game_config.render_header(game_config.load(game))
             self.assertIn("#define RECOMP_CONTROLS_PAD 1", header)
             self.assertIn("cross=mouse_left", header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (-32768)", header)
+
+            # axis_range: the joystick's range until the game sets DIPROP_RANGE.
+            (game / "game.toml").write_text(
+                base + '\n[controls]\n[controls.native]\naxis_range = [-128, 127]\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (-128)", header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MAX (127)", header)
+            for bad in ("[127, -128]", "[0]", '["a", "b"]', "[true, 2]"):
+                (game / "game.toml").write_text(
+                    base + '\n[controls]\n[controls.native]\naxis_range = %s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
 
             # The old rows spelling still loads.
             (game / "game.toml").write_text(base + '\n[settings]\nrows = ["window", "keypad"]\n')

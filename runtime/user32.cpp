@@ -95,6 +95,11 @@ static void post_geometry(uint32_t hwnd, const Window *w, bool moved, bool sized
                           ((uint32_t)(uint16_t)w->h << 16) | (uint16_t)w->w);
 }
 
+// Provenance stays on the host: preserve the guest's exact Win32 MSG layout.
+// Track each delivered buffer separately so nested message loops do not cause
+// TranslateMessage to emit text the input gate has already delivered.
+static std::map<uint32_t, Msg> translated_keys;
+
 void store_msg(uint32_t p, const Msg &m) {
     if (!p)
         return;
@@ -105,6 +110,12 @@ void store_msg(uint32_t p, const Msg &m) {
     wr32(p + 16, m.time);
     wr32(p + 20, m.ptx);
     wr32(p + 24, m.pty);
+    translated_keys.erase(p);
+    if (m.character_posted) {
+        if (translated_keys.size() >= 128)
+            translated_keys.clear();
+        translated_keys.emplace(p, m);
+    }
 }
 
 } // namespace user32
@@ -912,6 +923,15 @@ void u_TranslateMessage(X86 *c) {
     }
     uint32_t msg = rd32(p + 4), vk = rd32(p + 8), lparam = rd32(p + 12);
     if (msg == 0x0100 || msg == 0x0104) { // WM_KEYDOWN / WM_SYSKEYDOWN
+        auto posted = translated_keys.find(p);
+        if (posted != translated_keys.end()) {
+            const Msg &m = posted->second;
+            if (m.hwnd == rd32(p) && m.message == msg && m.wparam == vk && m.lparam == lparam &&
+                m.time == rd32(p + 16)) {
+                set_eax(c, 1);
+                return;
+            }
+        }
         uint32_t ch = 0;
         if (vk >= 0x30 && vk <= 0x5a)
             ch = vk; // digits and letters
@@ -950,6 +970,8 @@ void dispatch_message(X86 *c) {
 }
 
 void u_PostMessageA(X86 *c) {
+    if (arg(c, 1) == 0x0010) // WM_CLOSE: name who asked, for unexplained exits
+        LOGW("PostMessageA(WM_CLOSE) from %08x", rd32(c->r[R_ESP]));
     // System messages with text pointers cannot be posted asynchronously. A
     // caller must SendMessage so the buffer remains alive through conversion.
     if (arg(c, 1) == 0x000c || arg(c, 1) == 0x000d) {
@@ -973,6 +995,8 @@ void u_DispatchMessageA(X86 *c) {
     dispatch_message(c);
 }
 void u_SendMessageA(X86 *c) {
+    if (arg(c, 1) == 0x0010) // WM_CLOSE: name who asked, for unexplained exits
+        LOGW("SendMessageA(WM_CLOSE) from %08x", rd32(c->r[R_ESP]));
     send_message(c, false);
 }
 
@@ -1034,6 +1058,7 @@ void u_DefWindowProcA(X86 *c) {
 }
 
 void u_PostQuitMessage(X86 *c) {
+    LOGW("PostQuitMessage(%u) from %08x", arg(c, 0), rd32(c->r[R_ESP]));
     host_post_message(0, 0x0012, arg(c, 0), 0);
     set_eax(c, 0);
 }
@@ -1490,6 +1515,29 @@ void u_wvsprintfA(X86 *c) {
     set_eax(c, (uint32_t)res.size());
 }
 
+// wsprintfA(lpOut, lpFmt, ...): cdecl, so its arguments follow the format on
+// the guest stack and the caller pops them.
+void u_wsprintfA(X86 *c) {
+    shim_forward(c, u_wvsprintfA, {arg(c, 0), arg(c, 1), c->r[R_ESP] + 12});
+}
+
+// LoadAcceleratorsA(hInstance, lpTableName): a handle for the RT_ACCELERATOR
+// table, which is all a game does with it before handing it to
+// TranslateAccelerator. Keystrokes reach the window procedure as WM_KEYDOWN
+// either way, and no accelerator turns one into WM_COMMAND here, so
+// TranslateAccelerator always reports "not translated".
+void u_LoadAcceleratorsA(X86 *c) {
+    static uint32_t next = 0x00ac0000u;
+    next += 4;
+    set_eax(c, next);
+}
+void u_TranslateAcceleratorA(X86 *c) {
+    set_eax(c, 0);
+}
+void u_DestroyAcceleratorTable(X86 *c) {
+    set_eax(c, 1);
+}
+
 } // namespace user32
 
 void win32_refresh_display_window(X86 *c, uint32_t hwnd, uint32_t w, uint32_t h, uint32_t bpp) {
@@ -1743,6 +1791,12 @@ const ImportShim g_user32_shims[] = {
     {"USER32.dll", "MessageBoxA", 4, u_MessageBoxA},
     {"USER32.dll", "MessageBoxW", 4, u_MessageBoxW},
     {"USER32.dll", "wvsprintfA", 3, u_wvsprintfA},
+    {"USER32.dll", "wsprintfA", ARGC_CDECL, u_wsprintfA},
+    {"USER32.dll", "LoadAcceleratorsA", 2, u_LoadAcceleratorsA},
+    {"USER32.dll", "LoadAcceleratorsW", 2, u_LoadAcceleratorsA},
+    {"USER32.dll", "TranslateAcceleratorA", 3, u_TranslateAcceleratorA},
+    {"USER32.dll", "TranslateAcceleratorW", 3, u_TranslateAcceleratorA},
+    {"USER32.dll", "DestroyAcceleratorTable", 1, u_DestroyAcceleratorTable},
     // Not imported by D3DPopTB.exe, but registered so GetProcAddress and the
     // host layer can reach them.
     {"USER32.dll", "SendMessageA", 4, u_SendMessageA},

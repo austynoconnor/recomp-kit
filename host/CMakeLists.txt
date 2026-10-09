@@ -271,24 +271,34 @@ if(TARGET recomp_gen)
     endif()
     if(EXISTS ${RECOMP_GAME_DIR}/mods/core)
       file(COPY ${RECOMP_GAME_DIR}/mods/core DESTINATION ${web_resources}/mods FILES_MATCHING PATTERN "*.toml"
-           PATTERN "*.json" PATTERN "*.lua" PATTERN "*.png" PATTERN "*.bmp" PATTERN "*.txt")
+           PATTERN "*.json" PATTERN "*.lua" PATTERN "*.png" PATTERN "*.bmp" PATTERN "*.txt"
+           # Data-only mods replace game settings files (Crazy Taxi's Taxi.cfg).
+           PATTERN "*.cfg" PATTERN "*.ini")
     endif()
     # The player page (tools/web_launcher.py --web-build places it beside the launcher).
     set(APP ${RECOMP_APP_NAME})
     set(TITLE ${RECOMP_GAME_NAME})
     configure_file(${POP_ROOT}/web/player/index.html ${POP_OUT}/index.html @ONLY)
+    configure_file(${POP_ROOT}/web/player/runtime.html ${POP_OUT}/runtime.html @ONLY)
+    configure_file(${POP_ROOT}/web/player/input-hints.js ${POP_OUT}/input-hints.js COPYONLY)
     target_link_options(recomp_app PRIVATE
       # Emscripten also optimizes at link time. Release's per-target compile
       # flags do not reach this step; without -g0 every translated function's
       # DWARF is shipped in the download, greatly inflating large translations.
       $<$<NOT:$<CONFIG:Debug>>:-O2>
       $<$<NOT:$<CONFIG:Debug>>:-g0>
-      -pthread -sPTHREAD_POOL_SIZE=24 -sWASMFS
-      -sINITIAL_MEMORY=1073741824 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296
+      # Prewarm a modest pool instead of instantiating the large translated
+      # module in dozens of idle workers. Additional guest threads can be
+      # created while the browser's host loop continues servicing events.
+      -pthread -sPTHREAD_POOL_SIZE=8 -sWASMFS
+      --js-library ${POP_ROOT}/web/player/fetch-backend.js
+      -sINITIAL_MEMORY=536870912 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296
       -sSTACK_SIZE=8388608 -sDEFAULT_PTHREAD_STACK_SIZE=16777216
       -sENVIRONMENT=web,worker -sEXIT_RUNTIME=0 -sINVOKE_RUN=0
       -sEXPORTED_RUNTIME_METHODS=ENV,callMain,FS
       --preload-file ${web_resources}@/app/resources)
+    set_property(TARGET recomp_app APPEND PROPERTY LINK_DEPENDS
+      ${POP_ROOT}/web/player/fetch-backend.js)
   elseif(APPLE)
     pop_mac_bundle(recomp_app)
   else()

@@ -59,4 +59,9 @@ const char *host_pad_native_buttons(void) {
     return RECOMP_CONTROLS_NATIVE_BUTTONS;
 }
 
+void host_pad_native_axis_range(int32_t *min, int32_t *max) {
+    *min = RECOMP_CONTROLS_NATIVE_AXIS_MIN;
+    *max = RECOMP_CONTROLS_NATIVE_AXIS_MAX;
+}
+
 } // extern "C"

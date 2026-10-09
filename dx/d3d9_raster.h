@@ -33,9 +33,16 @@ struct D9DrawCall {
     size_t index_bytes = 0;
 };
 
-// Draws into `target` (a 32-bit surface object) with the device's pipeline.
+// Draws into `target` (a 32-bit surface object) with the device's pipeline,
+// or with `pipeline` when given (the fixed-function path's generated one).
+struct D9Pipeline;
 void d9_raster_draw(ComObj *device, ComObj *target, const std::vector<uint8_t> &declaration,
-                    const D9DrawCall &call);
+                    const D9DrawCall &call, const D9Pipeline *pipeline = nullptr);
+
+// Clear the CPU renderer's depth for `depth_id` (a depth surface object) to
+// `z`, over `count` D3DRECTs (x1, y1, x2, y2 each) or everything.
+void d9_raster_clear_depth(uint32_t depth_id, uint32_t width, uint32_t height, const int32_t *rects,
+                           uint32_t count, float z);
 
 // A texture's pixels changed; any decoded copy of it is stale.
 void d9_raster_invalidate(uint32_t surface_id);

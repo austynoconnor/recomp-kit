@@ -23,6 +23,7 @@
 #include "d3d9_pipeline.h"
 #include "d3d9_raster.h"
 #include "d3d9_shader.h"
+#include "d3d9_ffp.h"
 #include "host_d9.h"
 #include <unordered_map>
 #include <map>
@@ -374,25 +375,11 @@ D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
 D9_STUB(GetFrontBufferData, 3)
 D9_STUB(ColorFill, 4)
-D9_STUB(GetTransform, 3)
-D9_STUB(MultiplyTransform, 3)
-D9_STUB(SetMaterial, 2)
-D9_STUB(GetMaterial, 2)
-D9_STUB(SetLight, 3)
-D9_STUB(GetLight, 3)
-D9_STUB(LightEnable, 3)
-D9_STUB(GetLightEnable, 3)
-D9_STUB(SetClipPlane, 3)
-D9_STUB(GetClipPlane, 3)
-D9_STUB(GetRenderState, 3)
 D9_STUB(CreateStateBlock, 3)
 D9_STUB(BeginStateBlock, 1)
 D9_STUB(EndStateBlock, 2)
 D9_STUB(SetClipStatus, 2)
 D9_STUB(GetClipStatus, 2)
-D9_STUB(GetTexture, 3)
-D9_STUB(GetTextureStageState, 4)
-D9_STUB(GetSamplerState, 4)
 D9_STUB(ValidateDevice, 2)
 D9_STUB(SetPaletteEntries, 3)
 D9_STUB(GetPaletteEntries, 3)
@@ -405,8 +392,6 @@ D9_STUB(SetNPatchMode, 2)
 D9_STUB(GetNPatchMode, 1)
 D9_STUB(ProcessVertices, 6)
 D9_STUB(GetVertexDeclaration, 2)
-D9_STUB(SetFVF, 2)
-D9_STUB(GetFVF, 2)
 D9_STUB(GetVertexShaderConstantF, 4)
 D9_STUB(SetVertexShaderConstantI, 4)
 D9_STUB(GetVertexShaderConstantI, 4)
@@ -550,6 +535,17 @@ void Dev_Clear(X86 *c) {
         LOGW("d3d9: clear %u: flags %x colour %08x rects %u, target %u (%ux%u, %u bpp)%s", g_clears,
              flags, color, count, s ? s->id : 0, s ? s->width : 0, s ? s->height : 0,
              s ? s->bpp : 0, (s && s->id == dev->palette_obj) ? ", the back buffer" : "");
+    if ((flags & 2u) && s) { // D3DCLEAR_ZBUFFER
+        std::vector<int32_t> zr;
+        if (count && rects && gm_fits(rects, count * 16u))
+            for (uint32_t i = 0; i < count * 4; ++i)
+                zr.push_back((int32_t)rd32(rects + 4 * i));
+        float z;
+        uint32_t zbits = arg(c, 5);
+        memcpy(&z, &zbits, 4);
+        d9_raster_clear_depth(dev->zbuffer_obj, s->width, s->height,
+                              zr.empty() ? nullptr : zr.data(), (uint32_t)(zr.size() / 4), z);
+    }
     uint8_t *bytes = resource_bytes(s);
     if ((flags & 1u) && bytes && s->bpp == 32) {
         uint32_t n = (count && rects) ? count : 1;
@@ -1435,6 +1431,7 @@ void Dev_SetVertexDeclaration(X86 *c) {
     if (dev) {
         dev->current_viewport = (d && d->kind == K_D3D9DECL) ? d->id : 0;
         d9_pipeline(dev->id).declaration = dev->current_viewport;
+        d9_pipeline(dev->id).fvf = 0;
     }
     com_ret(c, D3D_OK9);
 }
@@ -1614,14 +1611,53 @@ static void target_viewport(ComObj *dev, const HostD9Target &t, int32_t vp[4]) {
 }
 
 // One draw, handed to the GPU renderer with everything the device has bound.
-static void gpu_draw(ComObj *dev, HostD9Draw &d) {
+// The pipeline a draw runs: the device's own, or when a shader is missing
+// a copy with the fixed-function pipeline's generated programs in its place.
+static D9Pipeline *draw_pipeline(ComObj *dev) {
     D9Pipeline &pl = d9_pipeline(dev->id);
-    if (pl.vs.empty() || pl.ps.empty()) {
-        log_once("d3d9.gpu.ffp",
-                 "d3d9: a draw with no shaders bound is skipped; the fixed-function "
-                 "pipeline is not rendered on the GPU yet");
-        return;
+    if (!pl.vs.empty() && !pl.ps.empty())
+        return &pl;
+    ComObj *decl = com_get(pl.declaration);
+    static const std::vector<uint8_t> none;
+    const std::vector<uint8_t> &elems = (decl && decl->kind == K_D3D9DECL) ? decl->blob : none;
+    uint32_t cube = 0, bound = 0;
+    for (int s = 0; s < 8; ++s) {
+        ComObj *t = com_get(pl.sampler_tex[s]);
+        if (!t || (t->kind != K_D3D9TEXTURE && t->kind != K_D3D9SURFACE))
+            continue;
+        bound |= 1u << s;
+        if (t->kind == K_D3D9TEXTURE && t->caps)
+            cube |= 1u << s;
     }
+    int32_t vp[4];
+    target_viewport(dev, HostD9Target{}, vp);
+    static D9Pipeline *shadow = new D9Pipeline();
+    if (!d9_ffp_apply(pl, elems, cube, bound, vp, *shadow)) {
+        log_once("d3d9.ffp.noposition",
+                 "d3d9: a fixed-function draw whose vertices have no position is skipped");
+        return nullptr;
+    }
+    log_once("d3d9.ffp", "d3d9: drawing through the fixed-function pipeline (generated shaders)");
+    static uint32_t described = 0;
+    if (log_level() >= 2 && ++described <= 12) {
+        ComObj *t0 = com_get(pl.sampler_tex[0]);
+        ComObj *l0 = t0 && t0->kind == K_D3D9TEXTURE ? com_get(t0->back_obj) : t0;
+        LOGV("d3d9 ffp: fvf %08x decl %u (%u elements), lighting %u, stage 0 colour op %u (%x, %x) "
+             "alpha op %u (%x, %x), stage 1 colour op %u, texture 0 %u format %u %ux%u, "
+             "blend %u %u/%u, alpha test %u, z %u, viewport %d,%d %dx%d",
+             pl.fvf, pl.declaration, (uint32_t)(elems.size() / 8), pl.rs[137], pl.tss[0][1],
+             pl.tss[0][2], pl.tss[0][3], pl.tss[0][4], pl.tss[0][5], pl.tss[0][6], pl.tss[1][1],
+             t0 ? t0->id : 0, l0 ? l0->rmask : 0, l0 ? l0->width : 0, l0 ? l0->height : 0,
+             pl.rs[27], pl.rs[19], pl.rs[20], pl.rs[15], pl.rs[7], vp[0], vp[1], vp[2], vp[3]);
+    }
+    return shadow;
+}
+
+static void gpu_draw(ComObj *dev, HostD9Draw &d) {
+    D9Pipeline *use = draw_pipeline(dev);
+    if (!use)
+        return;
+    D9Pipeline &pl = *use;
     d.target = gpu_target(dev);
     target_viewport(dev, d.target, d.viewport);
     d.depth_range[0] = pl.viewport_z[0];
@@ -1694,7 +1730,10 @@ static void raster(X86 *c, const D9DrawCall &call) {
         target = device_backbuffer(dev);
     ComObj *decl = com_get(dev->current_viewport); // SetVertexDeclaration keeps it here
     static const std::vector<uint8_t> none;
-    d9_raster_draw(dev, target, (decl && decl->kind == K_D3D9DECL) ? decl->blob : none, call);
+    const D9Pipeline *use = draw_pipeline(dev);
+    if (!use)
+        return;
+    d9_raster_draw(dev, target, (decl && decl->kind == K_D3D9DECL) ? decl->blob : none, call, use);
 }
 
 // (this, PrimitiveType, StartVertex, PrimitiveCount)
@@ -1983,18 +2022,43 @@ void Res_GetDevice(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
-// Lock hands the guest the storage this resource was created with. Unlock is
-// a no-op: there is nothing to upload to yet.
+// A buffer keeps its guest copy for life: Lock returns a pointer into it at
+// once, and Unlock copies back and uploads only the bytes locked. Staging the
+// whole buffer on every lock (allocate, copy in, copy out, free, upload all of
+// it) cost Crazy Taxi several full copies of a 32 KB buffer per draw.
 static void buffer_lock(X86 *c) {
     ComObj *o = com_this_arg(c);
-    uint32_t offset = arg(c, 1), out = arg(c, 3);
+    uint32_t offset = arg(c, 1), size = arg(c, 2), out = arg(c, 3);
     if (!o || !out) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
-    uint32_t staged = offset < o->blob.size() ? stage_lock(o) : 0;
-    com_out_ptr(out, staged ? staged + offset : 0);
-    com_ret(c, staged ? D3D_OK9 : E_OUTOFMEMORY);
+    const uint32_t total = (uint32_t)o->blob.size();
+    if (offset >= total) {
+        com_out_ptr(out, 0);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    if (!o->pixels) {
+        o->pixels = heap_alloc(total, false, 16);
+        if (!o->pixels) {
+            com_out_ptr(out, 0);
+            com_ret(c, E_OUTOFMEMORY);
+            return;
+        }
+        memcpy(gm_ptr(o->pixels), o->blob.data(), total);
+    }
+    // Size 0 locks the rest of the buffer.
+    const uint32_t hi = size && size <= total - offset ? offset + size : total;
+    if (o->lock_count++ == 0) {
+        o->lock_lo = offset;
+        o->lock_hi = hi;
+    } else {
+        o->lock_lo = std::min(o->lock_lo, offset);
+        o->lock_hi = std::max(o->lock_hi, hi);
+    }
+    com_out_ptr(out, o->pixels + offset);
+    com_ret(c, D3D_OK9);
 }
 void VB_Lock(X86 *c) {
     buffer_lock(c);
@@ -2003,7 +2067,15 @@ void IB_Lock(X86 *c) {
     buffer_lock(c);
 }
 void Buf_Unlock(X86 *c) {
-    stage_unlock(com_this_arg(c));
+    ComObj *o = com_this_arg(c);
+    if (o && o->lock_count > 0 && --o->lock_count == 0 && o->pixels) {
+        const uint32_t hi = std::min<uint32_t>(o->lock_hi, (uint32_t)o->blob.size());
+        if (hi > o->lock_lo) {
+            memcpy(o->blob.data() + o->lock_lo, gm_ptr(o->pixels) + o->lock_lo, hi - o->lock_lo);
+            d9_raster_invalidate(o->id);
+            gpu_after_unlock(o, o->lock_lo, hi);
+        }
+    }
     com_ret(c, D3D_OK9);
 }
 // D3DVERTEXBUFFER_DESC / D3DINDEXBUFFER_DESC: Format, Type, Usage, Pool, Size.
@@ -2019,6 +2091,20 @@ void Buf_GetDesc(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
+// The byte offset of a lock rectangle's top-left corner: a game that locks
+// part of a surface gets pBits pointing at that part, as the runtime does.
+// Block formats are addressed by 4x4 block.
+static uint32_t lock_offset(ComObj *s, uint32_t rect) {
+    if (!rect || !gm_fits(rect, 16))
+        return 0;
+    uint32_t left = rd32(rect), top = rd32(rect + 4);
+    if (left >= s->width || top >= s->height)
+        return 0;
+    if (s->bpp == 0) // DXT
+        return (top / 4) * s->pitch + (left / 4) * dxt_block_bytes(s->rmask);
+    return top * s->pitch + left * (s->bpp / 8);
+}
+
 // D3DLOCKED_RECT is { INT Pitch; void *pBits; }.
 void Surf_LockRect(X86 *c) {
     ComObj *s = com_this_arg(c);
@@ -2029,7 +2115,7 @@ void Surf_LockRect(X86 *c) {
     }
     uint32_t staged = stage_lock(s);
     wr32(out, s->pitch);
-    wr32(out + 4, staged);
+    wr32(out + 4, staged ? staged + lock_offset(s, arg(c, 2)) : 0);
     com_ret(c, staged ? D3D_OK9 : E_OUTOFMEMORY);
 }
 void Surf_UnlockRect(X86 *c) {
@@ -2110,7 +2196,7 @@ void Tex_LockRectCube(X86 *c) {
     }
     uint32_t staged = stage_lock(s);
     wr32(out, s->pitch);
-    wr32(out + 4, staged);
+    wr32(out + 4, staged ? staged + lock_offset(s, arg(c, 4)) : 0);
     com_ret(c, staged ? D3D_OK9 : E_OUTOFMEMORY);
 }
 // (this, FaceType, Level)
@@ -2172,7 +2258,7 @@ void Tex_LockRect(X86 *c) {
     }
     uint32_t staged = stage_lock(s);
     wr32(out, s->pitch);
-    wr32(out + 4, staged);
+    wr32(out + 4, staged ? staged + lock_offset(s, arg(c, 3)) : 0);
     com_ret(c, staged ? D3D_OK9 : E_OUTOFMEMORY);
 }
 void Tex_UnlockRect(X86 *c) {
@@ -2593,6 +2679,257 @@ void Dev_SetSamplerState(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
+// ---- Fixed-function state ---------------------------------------------------
+// What these record is what d3d9_ffp.cpp turns into shaders when a draw has
+// none bound. The getters read the same record back.
+static void copy_from_guest(void *dst, uint32_t src, uint32_t bytes) {
+    memcpy(dst, gm_ptr(src), bytes);
+}
+static void copy_to_guest(uint32_t dst, const void *src, uint32_t bytes) {
+    memcpy(gm_ptr(dst), src, bytes);
+}
+static uint32_t transform_slot(uint32_t state) {
+    return state < 24 ? state : (state >= 256 && state < 260 ? state - 256 + 24 : 0xffffffffu);
+}
+// (this, State, pMatrix)
+void Dev_GetTransform(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t slot = transform_slot(arg(c, 1)), m = arg(c, 2);
+    if (!dev || slot >= 32 || !m || !gm_fits(m, 64)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    copy_to_guest(m, d9_pipeline(dev->id).transform[slot], 64);
+    com_ret(c, D3D_OK9);
+}
+// (this, State, pMatrix): the transform becomes pMatrix * transform.
+void Dev_MultiplyTransform(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t slot = transform_slot(arg(c, 1)), m = arg(c, 2);
+    if (!dev || slot >= 32 || !m || !gm_fits(m, 64)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    float a[16], *t = d9_pipeline(dev->id).transform[slot], r[16];
+    copy_from_guest(a, m, 64);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) {
+            float s = 0;
+            for (int k = 0; k < 4; ++k)
+                s += a[i * 4 + k] * t[k * 4 + j];
+            r[i * 4 + j] = s;
+        }
+    memcpy(t, r, sizeof r);
+    com_ret(c, D3D_OK9);
+}
+// (this, pMaterial): D3DMATERIAL9, 68 bytes.
+void Dev_SetMaterial(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t m = arg(c, 1);
+    if (!dev || !m || !gm_fits(m, 68)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    copy_from_guest(d9_pipeline(dev->id).material, m, 68);
+    com_ret(c, D3D_OK9);
+}
+void Dev_GetMaterial(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t m = arg(c, 1);
+    if (!dev || !m || !gm_fits(m, 68)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    copy_to_guest(m, d9_pipeline(dev->id).material, 68);
+    com_ret(c, D3D_OK9);
+}
+// A light that LightEnable reaches before SetLight: Direct3D's default, a
+// white directional light pointing along +z.
+static D9Pipeline::Light &light_slot(ComObj *dev, uint32_t index) {
+    auto &lights = d9_pipeline(dev->id).lights;
+    auto it = lights.find(index);
+    if (it != lights.end())
+        return it->second;
+    D9Pipeline::Light &l = lights[index];
+    float one = 1.0f;
+    l.raw[0] = 3;
+    for (int k = 1; k <= 3; ++k)
+        memcpy(&l.raw[k], &one, 4); // diffuse
+    memcpy(&l.raw[18], &one, 4);    // direction z
+    return l;
+}
+// (this, Index, pLight): D3DLIGHT9, 104 bytes.
+void Dev_SetLight(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t l = arg(c, 2);
+    if (!dev || !l || !gm_fits(l, 104)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    copy_from_guest(light_slot(dev, arg(c, 1)).raw, l, 104);
+    com_ret(c, D3D_OK9);
+}
+void Dev_GetLight(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t l = arg(c, 2);
+    if (!dev || !l || !gm_fits(l, 104)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    auto &lights = d9_pipeline(dev->id).lights;
+    auto it = lights.find(arg(c, 1));
+    if (it == lights.end()) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    copy_to_guest(l, it->second.raw, 104);
+    com_ret(c, D3D_OK9);
+}
+// (this, Index, Enable)
+void Dev_LightEnable(X86 *c) {
+    ComObj *dev = this_device9(c);
+    if (!dev) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    light_slot(dev, arg(c, 1)).enabled = arg(c, 2) != 0;
+    com_ret(c, D3D_OK9);
+}
+// (this, Index, pEnable)
+void Dev_GetLightEnable(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t out = arg(c, 2);
+    if (!dev || !out || !gm_valid(out, 4)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    auto &lights = d9_pipeline(dev->id).lights;
+    auto it = lights.find(arg(c, 1));
+    if (it == lights.end()) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(out, it->second.enabled ? 1 : 0);
+    com_ret(c, D3D_OK9);
+}
+// (this, Index, pPlane): recorded; user clip planes are not applied yet.
+void Dev_SetClipPlane(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t i = arg(c, 1), p = arg(c, 2);
+    if (!dev || i >= 6 || !p || !gm_fits(p, 16)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    copy_from_guest(d9_pipeline(dev->id).clip_plane[i], p, 16);
+    com_ret(c, D3D_OK9);
+}
+void Dev_GetClipPlane(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t i = arg(c, 1), p = arg(c, 2);
+    if (!dev || i >= 6 || !p || !gm_fits(p, 16)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    copy_to_guest(p, d9_pipeline(dev->id).clip_plane[i], 16);
+    com_ret(c, D3D_OK9);
+}
+// (this, State, pValue)
+void Dev_GetRenderState(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t state = arg(c, 1), out = arg(c, 2);
+    if (!dev || state >= 256 || !out || !gm_valid(out, 4)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(out, d9_pipeline(dev->id).rs[state]);
+    com_ret(c, D3D_OK9);
+}
+// (this, Stage, ppTexture): the bound texture, referenced, or null.
+void Dev_GetTexture(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t stage = arg(c, 1), out = arg(c, 2);
+    if (!dev || stage >= 16 || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    ComObj *t = com_get(d9_pipeline(dev->id).sampler_tex[stage]);
+    uint32_t view = 0;
+    if (t && t->kind == K_D3D9TEXTURE) {
+        view = com_view(t, t->caps ? IF_D3DCUBETEXTURE9 : IF_D3DTEXTURE9);
+        com_addref(t);
+    }
+    com_out_ptr(out, view);
+    com_ret(c, D3D_OK9);
+}
+// (this, Stage, Type, pValue)
+void Dev_GetTextureStageState(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t stage = arg(c, 1), type = arg(c, 2), out = arg(c, 3);
+    if (!dev || stage >= 8 || type >= 33 || !out || !gm_valid(out, 4)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(out, d9_pipeline(dev->id).tss[stage][type]);
+    com_ret(c, D3D_OK9);
+}
+// (this, Sampler, Type, pValue)
+void Dev_GetSamplerState(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t sampler = arg(c, 1), type = arg(c, 2), out = arg(c, 3);
+    if (!dev || sampler >= 16 || type >= 14 || !out || !gm_valid(out, 4)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(out, d9_pipeline(dev->id).sampler_state[sampler][type]);
+    com_ret(c, D3D_OK9);
+}
+
+// The declaration object standing for an FVF code, made once per code and
+// kept for the run: an FVF draw then reads its vertices the way a
+// declaration draw does.
+uint32_t d9_fvf_decl_object(ComObj *dev, uint32_t fvf) {
+    static auto *by_fvf = new std::map<uint32_t, uint32_t>();
+    auto it = by_fvf->find(fvf);
+    if (it != by_fvf->end() && com_get(it->second))
+        return it->second;
+    std::vector<uint8_t> elems = d9_fvf_declaration(fvf);
+    if (elems.empty())
+        return 0;
+    ComObj *d = com_new(K_D3D9DECL);
+    if (!d)
+        return 0;
+    d->dev_d3d = dev ? dev->id : 0;
+    d->blob = elems;
+    (*by_fvf)[fvf] = d->id;
+    return d->id;
+}
+// (this, FVF)
+void Dev_SetFVF(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t fvf = arg(c, 1);
+    if (!dev) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t decl = d9_fvf_decl_object(dev, fvf);
+    if (!decl && fvf)
+        log_once("d3d9.fvf.bad", "d3d9: SetFVF(%08x) has no position; draws will be skipped", fvf);
+    D9Pipeline &pl = d9_pipeline(dev->id);
+    pl.fvf = fvf;
+    pl.declaration = decl;
+    dev->current_viewport = decl;
+    com_ret(c, D3D_OK9);
+}
+void Dev_GetFVF(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t out = arg(c, 1);
+    if (!dev || !out || !gm_valid(out, 4)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    wr32(out, d9_pipeline(dev->id).fvf);
+    com_ret(c, D3D_OK9);
+}
 // Copies Count four-float vectors from guest memory into a register table,
 // clipped to the table.
 static void write_registers(float (*table)[4], uint32_t limit, uint32_t start, uint32_t data,

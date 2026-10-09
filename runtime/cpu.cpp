@@ -85,6 +85,8 @@ int32_t module_index(const RecompModule *m, uint32_t target) {
 }
 } // namespace
 
+void sched_checkpoint(); // kernel32.cpp: the scheduler's turn-taking point
+
 extern "C" {
 
 const int recomp_resumable_stacks = RECOMP_RESUMABLE_STACKS;
@@ -334,6 +336,12 @@ void recomp_unmodelled(X86 *c, uint32_t addr) {
          "CPU extension recomp_cpuid does not advertise",
          addr, c->r[R_ESP], rd32(c->r[R_ESP]));
     abort();
+}
+
+// A spin-wait's back edge (translate.py is_spin_wait) or a PAUSE. The flag the
+// loop polls belongs to another guest thread, which runs only at a checkpoint.
+void recomp_spin_wait(X86 *) {
+    sched_checkpoint();
 }
 
 // INT3: a breakpoint no debugger will handle. On Windows that is an unhandled

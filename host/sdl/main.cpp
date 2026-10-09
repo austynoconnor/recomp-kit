@@ -715,9 +715,9 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
     e.kind = PendingInput::KEY;
     e.key = key;
     e.down = down;
-    // The character the key produces with no modifier held, which is what a
-    // WM_CHAR for it carries; keycodes above the Unicode range are not characters.
-    const SDL_Keycode plain = SDL_GetKeyFromScancode(event.scancode, SDL_KMOD_NONE, false);
+    // Keep the keyboard layout and Shift/Caps Lock when producing text.
+    // Keycodes above the Unicode range are not characters.
+    const SDL_Keycode plain = SDL_GetKeyFromScancode(event.scancode, event.mod, false);
     e.character = plain < 0x40000000 && plain >= 0x20 ? (uint32_t)plain : 0u;
     e.flags = host_modifier_flags_from_sdl(event.mod);
     queue_or_apply(e);
@@ -1592,12 +1592,88 @@ void web_frame() {
         emscripten_cancel_main_loop();
 }
 
+// Build a read-only network view on the guest worker. FetchFS proxies network
+// requests to its own worker, so synchronous guest reads leave the browser UI
+// responsive. The index is prepared by the download worker, never guest code.
+// The pinned executable remains a verified local copy; profile writes use OPFS.
+bool web_stream_files() {
+    const char *base = getenv("RECOMP_WEB_ASSET_BASE");
+    const char *index = getenv("RECOMP_WEB_ASSET_INDEX");
+    if (!base || !index)
+        return true;
+    FILE *list = fopen(index, "rb");
+    if (!list)
+        return false;
+    backend_t remote = wasmfs_create_fetch_backend(base, 1024 * 1024);
+    if (!remote || wasmfs_create_directory("/stream", 0777, remote) != 0) {
+        fclose(list);
+        return false;
+    }
+    char line[4096];
+    bool valid = true;
+    while (fgets(line, sizeof(line), list)) {
+        std::string relative(line);
+        if (!relative.empty() && relative.back() == '\n')
+            relative.pop_back();
+        if (relative.empty() || relative.front() == '/' ||
+            relative.find("..") != std::string::npos || relative.find('\\') != std::string::npos ||
+            relative.find(':') != std::string::npos) {
+            valid = false;
+            break;
+        }
+        std::string path = "/stream/" + relative;
+        for (size_t slash = path.find('/', 8); slash != std::string::npos;
+             slash = path.find('/', slash + 1))
+            os_mkdir(path.substr(0, slash).c_str());
+        int fd = os_fd_open(path.c_str(), OS_O_CREAT | OS_O_EXCL | OS_O_RDONLY);
+        if (fd < 0) {
+            valid = false;
+            break;
+        }
+        os_fd_close(fd);
+    }
+    fclose(list);
+    if (!valid)
+        return false;
+    std::string exe = "/stream/" + g_web_exe.substr(g_web_exe.find_last_of('/') + 1);
+    // A memory-backed file inside the remote directory preserves the verified
+    // executable without a second download or a write into the read-only backend.
+    FILE *source = fopen(g_web_exe.c_str(), "rb");
+    int fd = wasmfs_create_file(exe.c_str(), 0600, wasmfs_create_memory_backend());
+    if (!source || fd < 0) {
+        if (source)
+            fclose(source);
+        if (fd >= 0)
+            os_fd_close(fd);
+        return false;
+    }
+    char bytes[64 * 1024];
+    size_t count;
+    while ((count = fread(bytes, 1, sizeof(bytes), source))) {
+        if (os_fd_write(fd, bytes, count) != static_cast<int64_t>(count)) {
+            valid = false;
+            break;
+        }
+    }
+    valid = valid && !ferror(source);
+    fclose(source);
+    os_fd_close(fd);
+    if (valid)
+        g_web_exe = exe;
+    return valid;
+}
+
 // The game's thread: the game's files are read from here, never from the
 // main thread, which may not wait for the file system.
 void web_guest() {
     backend_t opfs = wasmfs_create_opfs_backend();
     if (!opfs || wasmfs_create_directory("/opfs", 0777, opfs) != 0)
         fprintf(stderr, RECOMP_APP_NAME ": the browser's private file system is unavailable\n");
+    if (!web_stream_files()) {
+        fprintf(stderr, "[host] could not prepare streamed game files\n");
+        g_web_guest_done.store(true);
+        return;
+    }
     std::string dir = g_web_exe.substr(0, g_web_exe.find_last_of('/'));
     if (!dir.empty() && os_chdir(dir.c_str()) != 0)
         fprintf(stderr, "[host] could not enter %s\n", dir.c_str());
@@ -1642,8 +1718,9 @@ int web_main(int argc, char **argv) {
         fprintf(stderr, RECOMP_APP_NAME ": this browser gave the page no WebGPU device\n");
         return 3;
     }
-    g_window = SDL_CreateWindow(RECOMP_GAME_NAME, g_mode_w, g_mode_h,
-                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    // The player's bounded CSS viewport is the web rendering budget. Do not
+    // multiply that budget by the monitor's pixel density on large displays.
+    g_window = SDL_CreateWindow(RECOMP_GAME_NAME, g_mode_w, g_mode_h, SDL_WINDOW_RESIZABLE);
     if (!g_window) {
         fprintf(stderr, RECOMP_APP_NAME ": SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 3;

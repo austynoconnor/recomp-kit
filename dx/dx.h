@@ -28,6 +28,7 @@ void dx_reset();
 void ddraw_register();
 void d3d_register();
 void d3d9_register();
+void d3d8_register(); // d3d8.cpp: Direct3D 8 over the Direct3D 9 objects
 void d3dx9_register();
 void dsound_register();
 void dshow_register();

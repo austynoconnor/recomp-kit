@@ -13,6 +13,7 @@
 #pragma once
 #include "guest.h"
 #include <stdio.h>
+#include <initializer_list>
 
 // argc_stdcall sentinels.
 static const uint8_t ARGC_CDECL = 0xff;   // caller cleans the stack: pop only the return address
@@ -128,6 +129,27 @@ static inline uint32_t arg(X86 *c, int i) {
 }
 static inline void set_eax(X86 *c, uint32_t v) {
     c->r[R_EAX] = v;
+}
+// Runs the shim `fn` as if the guest had called it with `args`. The frame is
+// built below the current stack pointer, ESP points at it for the call and is
+// put back afterwards; a shim never moves ESP itself, so the caller's own
+// frame and what the dispatcher pops are untouched. This is how an ANSI entry
+// point that converts its strings reaches the wide one, and how a COM method
+// of one interface version reaches its twin in another version whose
+// arguments differ. The caller's return address is copied into the new frame
+// for the shims that look at who called them.
+static inline void shim_forward(X86 *c, void (*fn)(X86 *), std::initializer_list<uint32_t> args) {
+    uint32_t esp = c->r[R_ESP];
+    uint32_t frame = (esp - 64u - 4u * ((uint32_t)args.size() + 1u)) & ~15u;
+    wr32(frame, rd32(esp));
+    uint32_t at = frame + 4;
+    for (uint32_t v : args) {
+        wr32(at, v);
+        at += 4;
+    }
+    c->r[R_ESP] = frame;
+    fn(c);
+    c->r[R_ESP] = esp;
 }
 static inline void set_eax64(X86 *c, uint64_t v) {
     c->r[R_EAX] = (uint32_t)v;

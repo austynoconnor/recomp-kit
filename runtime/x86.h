@@ -464,6 +464,10 @@ void recomp_int(X86 *c, uint32_t vec);
  * instruction as code. Reaching one is fatal and says where. */
 void recomp_unmodelled(X86 *c, uint32_t addr);
 void recomp_breakpoint(X86 *c, uint32_t addr);
+/* The back edge of a loop that only re-reads memory, or a PAUSE. Guest
+ * threads take turns, so the thread such a loop waits for runs only if this
+ * one offers a turn; this is the scheduling checkpoint every runtime call is. */
+void recomp_spin_wait(X86 *c);
 
 /* ------------------------------------------------------ hook dispatch -- */
 
@@ -959,7 +963,7 @@ static inline void x86_popad(X86 *c) {
     /* The port string forms. A user-mode guest that reaches one has been      \
      * misdecoded - Windows would fault - so they exist to be translatable      \
      * rather than useful: the port shims answer, and the pointer and count     \
-     * advance exactly as the other string forms do. */                   \
+     * advance exactly as the other string forms do. */                  \
     static inline void ins##SUF(X86 *c) {                                                          \
         WR(c->r[R_EDI], (UT)recomp_in(c, c->r[R_EDX] & 0xffffu, BITS / 8));                        \
         c->r[R_EDI] += c->eflags_df ? (uint32_t)-(BITS / 8) : (uint32_t)(BITS / 8);                \

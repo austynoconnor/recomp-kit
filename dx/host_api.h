@@ -336,6 +336,9 @@ void host_pad_rumble(uint16_t low, uint16_t high);
  * Weak defaults: the spec order. */
 const char *host_pad_native_axes(void);
 const char *host_pad_native_buttons(void);
+/* The range each axis reports until the guest sets DIPROP_RANGE
+ * (RECOMP_CONTROLS_NATIVE_AXIS_MIN/MAX). Weak default: -32768..32767. */
+void host_pad_native_axis_range(int32_t *min, int32_t *max);
 
 // ---------------------------------------------------------------------------
 // How the guest has been reaching its surfaces.
