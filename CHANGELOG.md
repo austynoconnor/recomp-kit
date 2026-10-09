@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- 2026-10-08 20:15 CDT (branch giggity-d3d8) — Claude Opus 5.5: faster
+  loading, natively and above all in the browser.
+  - `runtime/kernel32.cpp` `sched_leave_critsec`: LeaveCriticalSection wakes
+    the parked guest threads only when one of them waits on that section.
+    The C runtime locks a stream around every fread/getc, and the
+    unconditional `notify_all` woke every timed waiter (audio, input
+    workers) each time. Crazy Taxi's 12 MB `Binc1.afs` loaded in 14.6 s
+    natively before and 3.4 s after; in headless Chrome the title screen now
+    appears about 60 s after Start instead of about 200 s. A waiter cannot
+    run before the baton is handed to it, and the handoff already notifies,
+    so nothing depended on the extra wake-ups.
+  - `runtime/kernel32.cpp` `file_read`: ReadFile serves reads under 64 KB
+    from a 256 KB read-ahead buffer per handle. The descriptor's position
+    still ends where the guest's read ended, and a write or truncation
+    through any handle on the same host file drops the buffered bytes.
+  - Tests: runtime_tests "file layer" (small reads in order, the position,
+    a write through another handle is seen, short read at the end, empty
+    read past it).
+
 - 2026-10-08 19:30 CDT (branch giggity-d3d8) — Claude Opus 5.5: a game can
   set its joystick axis range, and data-only core mods reach the web build.
   - `[controls.native] axis_range = [min, max]` in game.toml (default
