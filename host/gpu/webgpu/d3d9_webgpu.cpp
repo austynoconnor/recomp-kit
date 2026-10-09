@@ -646,6 +646,12 @@ class WebGpuRenderer final : public D9Backend {
         ps.vl = &vl;
         ps.layout = &layout;
         ps.topology = topology;
+        // WebGPU refuses an indexed draw with a strip pipeline unless the
+        // pipeline names the index format, so strips carry it in their key.
+        if ((topology == WGPUPrimitiveTopology_TriangleStrip ||
+             topology == WGPUPrimitiveTopology_LineStrip) &&
+            (d.index_buffer || d.inline_indices))
+            ps.strip_index = d.index_size == 4 ? WGPUIndexFormat_Uint32 : WGPUIndexFormat_Uint16;
         ps.rs = rs;
         ps.blend = rs[RS_ALPHABLENDENABLE] != 0;
         ps.zon = rs[RS_ZENABLE] != 0 && pass_depth_view_;
@@ -1682,6 +1688,7 @@ class WebGpuRenderer final : public D9Backend {
         const VLayout *vl;
         const Layout *layout;
         WGPUPrimitiveTopology topology;
+        WGPUIndexFormat strip_index; // Undefined unless an indexed strip
         const uint32_t *rs;
         bool blend, zon, stencil;
         WGPUCullMode cull;
@@ -1693,7 +1700,8 @@ class WebGpuRenderer final : public D9Backend {
         const uint32_t *rs = p.rs;
         uint64_t key = mix(mix((uint64_t)(uintptr_t)p.vmod, (uint64_t)(uintptr_t)p.fmod), vkey);
         key = mix(key, (uint64_t)p.topology | (uint64_t)p.cull << 8 |
-                           (uint64_t)pass_samples_ << 16 | (uint64_t)pass_color_count_ << 24);
+                           (uint64_t)pass_samples_ << 16 | (uint64_t)pass_color_count_ << 24 |
+                           (uint64_t)p.strip_index << 32);
         key = mix(key, (uint64_t)(uintptr_t)p.layout->pipeline);
         for (int i = 0; i < 4; ++i)
             key = mix(key, (uint64_t)pass_formats_[i] + 1000 * (uint64_t)i);
@@ -1812,7 +1820,7 @@ class WebGpuRenderer final : public D9Backend {
         pd.vertex.buffers = p.vl->buffers.data();
         pd.primitive.topology = p.topology;
         if (strip)
-            pd.primitive.stripIndexFormat = WGPUIndexFormat_Undefined;
+            pd.primitive.stripIndexFormat = p.strip_index;
         pd.primitive.frontFace = WGPUFrontFace_CW;
         pd.primitive.cullMode = p.cull;
         pd.depthStencil = pass_depth_view_ ? &ds : nullptr;
