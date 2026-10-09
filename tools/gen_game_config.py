@@ -44,6 +44,9 @@ def render_header(cfg):
     for field, value in zip(("MAJOR", "MINOR", "BUILD", "PLATFORM"),
                             game_config.windows_version(game["windows_version"])):
         lines.append("#define RECOMP_WINDOWS_%s %du" % (field, value))
+    timing = cfg["timing"]
+    lines.append("#define RECOMP_DISK_KB_PER_S %du" % round(timing["disk_mb_per_s"] * 1000))
+    lines.append("#define RECOMP_DISK_SEEK_US %du" % round(timing["disk_seek_ms"] * 1000))
     # Absolute: the developer's game lives beside game.toml, not under the kit.
     lines.append("#define RECOMP_DEVELOPER_EXE %s" % c_string(cfg["developer_exe_path"].as_posix()))
     lines.append("#define RECOMP_DEVELOPER_GAME_DIR %s" % c_string(cfg["developer_exe_path"].parent.as_posix()))

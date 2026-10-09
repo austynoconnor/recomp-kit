@@ -46,5 +46,13 @@ camera = 0x00600400
 default_layout = "pad"
 pad = "mapped"
 
+[timing]
+# Period-hardware file reads: each ReadFile takes bytes / disk_mb_per_s plus
+# disk_seek_ms when it does not continue the previous read.  0 (the default)
+# reads at host speed.  Only for games whose scripts time their start-up by
+# how long loading frames take.
+disk_mb_per_s = 0
+disk_seek_ms = 0
+
 [bundle]
 exclude = []

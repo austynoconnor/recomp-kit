@@ -179,6 +179,13 @@ def load(game_dir):
     for key in ("setjmp", "longjmp"):
         if key in translate and (type(translate[key]) is not int or translate[key] <= 0):
             raise ValueError("%s: [translate] %s must be a guest address" % (source, key))
+    # [timing]: how long file reads take, as on the hardware the game shipped
+    # for. 0 (the default) reads at the host's speed.
+    timing = cfg.setdefault("timing", {})
+    for key in ("disk_mb_per_s", "disk_seek_ms"):
+        value = timing.setdefault(key, 0)
+        if type(value) not in (int, float) or not 0 <= value <= 100000:
+            raise ValueError("%s: [timing] %s must be a number from 0 to 100000" % (source, key))
     tracks = cfg.setdefault("media", {}).setdefault("cd_tracks", [])
     if not isinstance(tracks, list) or not all(isinstance(v, str) for v in tracks):
         raise ValueError("%s: [media] cd_tracks must be a list of strings" % source)

@@ -27,7 +27,10 @@
 #include "host_d9.h"
 #include "../runtime/display_seam.h"
 #include "../runtime/win32.h"
+#include "../platform/os.h"
 #include <unordered_map>
+#include <string>
+#include <stdlib.h>
 #include <map>
 
 #include <string.h>
@@ -312,6 +315,17 @@ static uint32_t sync_interval_of(uint32_t interval) {
     }
 }
 
+// D3DPRESENT_PARAMETERS.BackBufferFormat as the back buffer is made: the
+// 32-bit formats as asked (A8R8G8B8 21, X8R8G8B8 22), and anything else,
+// UNKNOWN (the display's format) included, as X8R8G8B8. The format matters
+// beyond the pixels: Gamebryo (Bully: Scholarship Edition) copies the back
+// buffer into a screen texture it made in the format it asked for, and
+// refuses when GetDesc reports another ("Pixel formats do not match"), which
+// left the world black behind the HUD.
+static uint32_t backbuffer_format_of(uint32_t format) {
+    return format == 21 ? 21 : 22;
+}
+
 void D9_CreateDevice(X86 *c) {
     ComObj *d3d = this_d3d9(c);
     uint32_t present = arg(c, 5), out = arg(c, 6);
@@ -335,6 +349,7 @@ void D9_CreateDevice(X86 *c) {
         dev->hwnd = rd32(present + 28);
         dev->samples = multisample_count(rd32(present + 16), rd32(present + 20));
         dev->sync_interval = sync_interval_of(rd32(present + 52));
+        dev->backbuffer_format = backbuffer_format_of(rd32(present + 8));
     }
     uint32_t view = com_view(dev, IF_D3DDEVICE9);
     if (!view) {
@@ -354,8 +369,9 @@ void D9_CreateDevice(X86 *c) {
             pl.states_changed();
         }
     }
-    LOGW("d3d9: CreateDevice %ux%u, window %08x, %s renderer", dev->width, dev->height, dev->hwnd,
-         host_d9_active() ? "GPU" : "CPU");
+    LOGW("d3d9: CreateDevice %ux%u, back buffer format %u (asked %u), window %08x, %s renderer",
+         dev->width, dev->height, dev->backbuffer_format, present ? rd32(present + 8) : 0,
+         dev->hwnd, host_d9_active() ? "GPU" : "CPU");
     com_out_ptr(out, view);
     com_ret(c, D3D_OK9);
 }
@@ -449,6 +465,7 @@ void Dev_Reset(X86 *c) {
     dev->height = rd32(present + 4);
     dev->samples = multisample_count(rd32(present + 16), rd32(present + 20));
     dev->sync_interval = sync_interval_of(rd32(present + 52));
+    dev->backbuffer_format = backbuffer_format_of(rd32(present + 8));
     device_forget_buffers(dev);
     ComObj *bb = device_backbuffer(dev);
     dev->render_target = bb ? bb->id : 0;
@@ -496,8 +513,40 @@ void Dev_GetDeviceCaps(X86 *c) {
     put_caps9(arg(c, 1));
     com_ret(c, D3D_OK9);
 }
+// RECOMP_D3D9_RT_TRACE=N logs, for the three frames after the Nth Present,
+// every call that picks or copies a render target, with object ids (texture
+// levels name their texture): enough to follow a frame's passes from targets
+// to the textures that later sample them.
+// Texture levels are logged whenever the trace is on: games take them once.
+static uint32_t g_presents9 = 0;
+static long rt_trace_from() {
+    static const long from = [] {
+        const char *e = recomp_env("D3D9_RT_TRACE");
+        return e ? atol(e) : -1L;
+    }();
+    return from;
+}
+static bool rt_tracing() {
+    const long from = rt_trace_from();
+    return from >= 0 && g_presents9 >= (uint32_t)from && g_presents9 < (uint32_t)from + 3;
+}
+static std::string rt_name(ComObj *o) {
+    if (!o)
+        return "null";
+    char b[96];
+    snprintf(b, sizeof b, "%u(%ux%u %u bpp tex %u)", o->id, o->width, o->height, o->bpp,
+             o->front_obj);
+    return b;
+}
+#define RT_TRACE(...)                                                                              \
+    do {                                                                                           \
+        if (rt_tracing())                                                                          \
+            LOGW("d3d9 rt: frame %u: " __VA_ARGS__);                                               \
+    } while (0)
+
 void Dev_BeginScene(X86 *c) {
     ComObj *dev = this_device9(c);
+    RT_TRACE("BeginScene", g_presents9);
     if (dev)
         dev->in_scene = true;
     com_ret(c, dev ? D3D_OK9 : D3DERR_INVALIDCALL);
@@ -602,6 +651,8 @@ static void present_wait(ComObj *dev) {
 void Dev_Present(X86 *c) {
     ComObj *dev = this_device9(c);
     ComObj *bb = dev ? device_backbuffer(dev) : nullptr;
+    RT_TRACE("Present, back buffer %s", g_presents9, rt_name(bb).c_str());
+    ++g_presents9;
     if (bb && gpu_on()) {
         gpu_sync(bb);
         ddraw_external_present_begin();
@@ -1204,7 +1255,8 @@ void Dev_CreateOffscreenPlainSurface(X86 *c) {
 static ComObj *device_backbuffer(ComObj *dev) {
     ComObj *s = com_get(dev->palette_obj);
     if (!s) {
-        s = make_surface(dev, dev->width ? dev->width : 640, dev->height ? dev->height : 480, 22);
+        s = make_surface(dev, dev->width ? dev->width : 640, dev->height ? dev->height : 480,
+                         dev->backbuffer_format);
         dev->palette_obj = s ? s->id : 0;
         if (s)
             s->samples = dev->samples;
@@ -1225,6 +1277,7 @@ void Dev_StretchRect(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
+    RT_TRACE("StretchRect %s -> %s", g_presents9, rt_name(src).c_str(), rt_name(dst).c_str());
     if (gpu_on()) {
         uint32_t slot;
         ComObj *sowner = com_get(mirror_slot(src, &slot));
@@ -1363,6 +1416,7 @@ void Dev_SetRenderTarget(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL); // target 0 cannot be unset
         return;
     }
+    RT_TRACE("SetRenderTarget %u <- %s", g_presents9, index, rt_name(s).c_str());
     D9Pipeline &pl = d9_pipeline(dev->id);
     pl.color_target[index] = (s && s->kind == K_D3D9SURFACE) ? s->id : 0;
     if (index == 0) {
@@ -2267,6 +2321,9 @@ void Tex_GetSurfaceLevel(X86 *c) {
     // A level is a view into the texture and references it, the same way a
     // cube face does.
     s->front_obj = tex->id;
+    if (rt_trace_from() >= 0)
+        LOGW("d3d9 rt: frame %u: GetSurfaceLevel %u of texture %u -> %s", g_presents9, arg(c, 1),
+             tex->id, rt_name(s).c_str());
     com_addref(tex);
     com_addref(s);
     uint32_t view_ = com_view(s, IF_D3DSURFACE9);

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- 2026-10-09 — Claude Opus 5.5: Direct3D 9 honours the back buffer format
+  the game asks for (A8R8G8B8 or X8R8G8B8; anything else stays X8R8G8B8).
+  The back buffer was always X8R8G8B8, so Gamebryo's FastCopy of its
+  A8R8G8B8 world target to the back buffer refused with "Pixel formats do
+  not match" and Bully: Scholarship Edition's 3D world stayed black; the
+  world, sky and cutscenes now draw. `RECOMP_D3D9_RT_TRACE=N` logs three
+  frames of render target changes, StretchRects and scene begins from
+  present N, with each surface's size and format.
+
+- 2026-10-09 — Claude Opus 5.5: `[timing] disk_mb_per_s` and
+  `disk_seek_ms` in game.toml (default 0 = host speed). Each ReadFile then
+  takes as long as on the disk the game shipped for: bytes / rate, plus a
+  seek when it does not continue the last read, slept through the
+  scheduler. Some games time their start-up by loading frames: Bully's
+  main.lur waits 100 ms of game time (frames capped at 60 ms) before it fills
+  the mission table, and at host speed the mission starts first and calls a
+  null cutscene handler. Pacing restores period timing without patching the
+  game (a frame-time floor would also cap gameplay frame rate). With 50 MB/s
+  and 10 ms, 6 of 6 headless runs pass; at host speed 2 of 2 panic.
+  RECOMP_DISK_MB_PER_S / RECOMP_DISK_SEEK_MS override for experiments.
+
 - 2026-10-09 — Claude Opus 5.5: game controllers through WMI. Games that
   read pads through XInput first ask WMI which DirectInput joysticks are
   XInput pads (the DirectX SDK's IsXInputDevice: Win32_PNPEntity DeviceIDs

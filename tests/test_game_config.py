@@ -35,6 +35,26 @@ class LoadTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "cd_tracks"):
                     game_config.load(game)
 
+    def test_timing_disk_pacing_defaults_off_and_is_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            stub = (ROOT / "games/stub/game.toml").read_text()
+            (game / "globals.toml").write_text("")
+            (game / "game.toml").write_text(stub)
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn("#define RECOMP_DISK_KB_PER_S 0u", header)
+            self.assertIn("#define RECOMP_DISK_SEEK_US 0u", header)
+            paced = stub.replace("disk_mb_per_s = 0", "disk_mb_per_s = 50").replace(
+                "disk_seek_ms = 0", "disk_seek_ms = 10.5")
+            (game / "game.toml").write_text(paced)
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn("#define RECOMP_DISK_KB_PER_S 50000u", header)
+            self.assertIn("#define RECOMP_DISK_SEEK_US 10500u", header)
+            for bad in ("-1", '"fast"', "true"):
+                (game / "game.toml").write_text(stub.replace("disk_mb_per_s = 0", "disk_mb_per_s = " + bad))
+                with self.assertRaisesRegex(ValueError, "disk_mb_per_s"):
+                    game_config.load(game)
+
     def test_virtual_cd_label_and_drive(self):
         with tempfile.TemporaryDirectory() as tmp:
             game = Path(tmp)

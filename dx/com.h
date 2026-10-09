@@ -372,6 +372,7 @@ struct ComObj {
     uint32_t dev_type = 0;      // DIDEVTYPE_MOUSE / _KEYBOARD / _JOYSTICK
     uint32_t samples = 0;       // Direct3D 9 surfaces and devices: multisample count, 0 for none
     uint32_t sync_interval = 1; // Direct3D 9 devices: refreshes a Present waits, 0 for none
+    uint32_t backbuffer_format = 22; // Direct3D 9 devices: the back buffer's D3DFORMAT
     bool acquired = false;
     uint32_t di_coop = 0;
     uint32_t data_format_size = 0;
