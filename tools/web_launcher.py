@@ -10,11 +10,17 @@ game.toml). A game's web build, when one exists, goes in <dir>/<game id>/.
 --web-build copies a game's web build (build/web/recomp: index.html and the
 app's .js/.wasm/.data) there. Serve <dir> over HTTPS or from localhost with
 COOP/COEP headers (the game needs a secure, cross-origin isolated context);
---serve runs such a server for local testing."""
+--serve runs such a server for local testing.
+
+Each copied .js/.wasm/.data also gets a gzip twin (<name>.gz, and <name>.br
+when the brotli module is installed) that --serve sends to browsers that
+accept it; static hosts with precompressed-file support can do the same."""
 
 import argparse
+import email.utils
 import functools
 import fnmatch
+import gzip
 import hashlib
 import http.server
 import json
@@ -64,6 +70,27 @@ def build(game_dirs, out):
 
 
 WEB_BUILD_SUFFIXES = (".js", ".wasm", ".data")
+# Content-Encoding for each precompressed twin, best first.
+ENCODINGS = (("br", ".br"), ("gzip", ".gz"))
+
+
+def compress_twins(path):
+    """Write <path>.gz (and .br with the brotli module) when it saves space."""
+    data = path.read_bytes()
+    packers = [(".gz", lambda b: gzip.compress(b, compresslevel=6, mtime=0))]
+    try:
+        import brotli  # optional: pip install brotli
+        packers.append((".br", lambda b: brotli.compress(b, quality=9)))
+    except ImportError:
+        pass
+    for suffix, pack in packers:
+        twin = path.with_name(path.name + suffix)
+        packed = pack(data)
+        if len(packed) < len(data) * 0.9:
+            twin.write_bytes(packed)
+            shutil.copystat(path, twin)
+        elif twin.exists():
+            twin.unlink()
 
 
 def copy_web_build(game_id, build, out):
@@ -74,6 +101,8 @@ def copy_web_build(game_id, build, out):
     for f in build.iterdir():
         if f.is_file() and (f.name in ("index.html", "runtime.html") or f.suffix in WEB_BUILD_SUFFIXES):
             shutil.copy2(f, dest / f.name)
+            if f.suffix in WEB_BUILD_SUFFIXES:
+                compress_twins(dest / f.name)
 
 
 def hosted_assets(games, asset_dirs, out, export=False):
@@ -149,10 +178,47 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
             return str(self.asset_files[route])
         return super().translate_path(path)
 
+    def compressed_twin(self, route):
+        """The precompressed program file to send instead, if the browser takes it."""
+        path = Path(super().translate_path(route))
+        if path.suffix not in WEB_BUILD_SUFFIXES or not path.is_file():
+            return None
+        accepted = {part.split(";")[0].strip() for part in self.headers.get("Accept-Encoding", "").split(",")}
+        for encoding, suffix in ENCODINGS:
+            twin = path.with_name(path.name + suffix)
+            if encoding in accepted and twin.is_file() and twin.stat().st_mtime >= path.stat().st_mtime:
+                return path, twin, encoding
+        return None
+
+    def send_compressed(self, path, twin, encoding):
+        stat = path.stat()
+        since = self.headers.get("If-Modified-Since")
+        if since:
+            try:
+                if int(stat.st_mtime) <= email.utils.parsedate_to_datetime(since).timestamp():
+                    self.send_response(304)
+                    self.send_header("Vary", "Accept-Encoding")
+                    self.end_headers()
+                    return None
+            except (TypeError, ValueError):
+                pass
+        file = open(twin, "rb")
+        self.send_response(200)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Encoding", encoding)
+        self.send_header("Content-Length", str(twin.stat().st_size))
+        self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+        self.send_header("Vary", "Accept-Encoding")
+        self.end_headers()
+        return file
+
     def send_head(self):
         route = self.asset_route(self.path)
         self.byte_range = None
         if not route.startswith("/_game-assets/"):
+            twin = self.compressed_twin(route)
+            if twin:
+                return self.send_compressed(*twin)
             return super().send_head()
         path = self.asset_files.get(route)
         if path is None:
@@ -187,6 +253,10 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(206 if requested else 200)
         self.send_header("Content-Type", self.guess_type(str(path)))
         self.send_header("Accept-Ranges", "bytes")
+        # The streamed reader keys its Cache Storage pieces on this, so a
+        # replaced game file never reuses stale pieces.
+        stat = path.stat()
+        self.send_header("ETag", '"%x-%x"' % (stat.st_size, stat.st_mtime_ns))
         self.send_header("Content-Length", str(end - start + 1))
         if requested:
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))

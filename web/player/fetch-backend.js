@@ -1,6 +1,10 @@
 // Bounded FetchFS reads for large games. Emscripten's default backend retains
 // every fetched chunk for the lifetime of each file. This replacement uses a
 // shared 64 MiB LRU; guest reads remain synchronous through the SDK proxy worker.
+// Pieces are also kept in the browser's Cache Storage, keyed by the file's
+// validator (ETag, else Last-Modified, else size), so a second visit reads
+// them from disk instead of the network. A changed file gets new keys; the
+// browser may evict the cache whenever it likes, which only costs a refetch.
 // Uses the FetchFS bridge supplied by Emscripten 6.0.11.
 addToLibrary({
   _wasmfs_create_fetch_backend_js__deps: [
@@ -11,6 +15,49 @@ addToLibrary({
     const cache = new Map();
     const limit = 64 * 1024 * 1024;
     let cachedBytes = 0;
+    // Cache Storage needs a secure context (localhost counts). Any failure,
+    // including a full quota, turns persistence off rather than the game.
+    // It opens in the background: the backend must be registered before
+    // this function first yields, or WasmFS allocates files on nothing.
+    let store = null;
+    let storeRoom = true;
+    let puts = 0;
+    async function checkRoom() {
+      try {
+        const {usage, quota} = await navigator.storage.estimate();
+        storeRoom = !quota || usage < quota * 0.8;
+      } catch {}
+    }
+    const storeReady = (async () => {
+      try {
+        if (self.caches) store = await caches.open('recomp-pieces-v1');
+        if (store) await checkRoom();
+      } catch { store = null; }
+    })();
+    function pieceKey(meta, index) {
+      const key = new URL(meta.url);
+      key.searchParams.set('recomp-piece', index + '.' + meta.chunkSize);
+      key.searchParams.set('recomp-version', meta.version);
+      return key.href;
+    }
+    async function stored(meta, index, start, end) {
+      await storeReady;
+      if (!store) return null;
+      try {
+        const response = await store.match(pieceKey(meta, index));
+        if (!response) return null;
+        const data = new Uint8Array(await response.arrayBuffer());
+        return data.byteLength === end - start + 1 ? data : null;
+      } catch { return null; }
+    }
+    function keep(meta, index, data) {
+      if (!store || !storeRoom) return;
+      // Not awaited: the guest read continues while the browser writes.
+      store.put(pieceKey(meta, index), new Response(data.slice(), {
+        headers: {'Content-Type': 'application/octet-stream'},
+      })).catch(() => { storeRoom = false; });
+      if (++puts % 64 === 0) checkRoom();
+    }
     async function details(file) {
       if (info.has(file)) return info.get(file);
       const path = UTF8ToString(__wasmfs_fetch_get_file_url(file));
@@ -20,7 +67,9 @@ addToLibrary({
       if (!response.ok || !response.headers.has('Content-Length') ||
           !Number.isSafeInteger(size) || size < 0 || response.headers.get('Accept-Ranges') !== 'bytes')
         throw new Error('Game server must support sized HTTP ranges.');
-      const result = {url, size, chunkSize: Math.min(__wasmfs_fetch_get_chunk_size(file), 1024 * 1024)};
+      const version = response.headers.get('ETag') || response.headers.get('Last-Modified') || String(size);
+      const result = {url, size, version,
+                      chunkSize: Math.min(__wasmfs_fetch_get_chunk_size(file), 1024 * 1024)};
       info.set(file, result);
       return result;
     }
@@ -34,11 +83,15 @@ addToLibrary({
       }
       const start = index * meta.chunkSize;
       const end = Math.min(start + meta.chunkSize, meta.size) - 1;
-      const response = await fetch(meta.url, {headers: {'Range': `bytes=${start}-${end}`}});
-      if (response.status !== 206 || response.headers.get('Content-Range') !== `bytes ${start}-${end}/${meta.size}`)
-        throw new Error('Game range request failed.');
-      const data = new Uint8Array(await response.arrayBuffer());
-      if (data.byteLength !== end - start + 1) throw new Error('Incomplete game range.');
+      let data = await stored(meta, index, start, end);
+      if (!data) {
+        const response = await fetch(meta.url, {headers: {'Range': `bytes=${start}-${end}`}});
+        if (response.status !== 206 || response.headers.get('Content-Range') !== `bytes ${start}-${end}/${meta.size}`)
+          throw new Error('Game range request failed.');
+        data = new Uint8Array(await response.arrayBuffer());
+        if (data.byteLength !== end - start + 1) throw new Error('Incomplete game range.');
+        keep(meta, index, data);
+      }
       while (cachedBytes + data.byteLength > limit && cache.size) {
         const oldest = cache.keys().next().value;
         cachedBytes -= cache.get(oldest).byteLength;

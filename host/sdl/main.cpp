@@ -1730,7 +1730,9 @@ int web_main(int argc, char **argv) {
         fprintf(stderr, RECOMP_APP_NAME ": the page gave no --exe\n");
         return 2;
     }
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+    // The gamepad subsystem reads the browser's Gamepad API; without it a pad
+    // plugged into the page never reaches the game.
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, RECOMP_APP_NAME ": SDL_Init failed: %s\n", SDL_GetError());
         return 3;
     }

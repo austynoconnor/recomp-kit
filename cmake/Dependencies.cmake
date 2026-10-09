@@ -56,7 +56,7 @@ endfunction()
 # Video is enabled on the hosts with shared-library packaging support.
 set(RECOMP_VIDEO_DEFAULT OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR IOS OR ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Linux"
-    OR (WIN32 AND NOT CMAKE_HOST_WIN32))
+    OR (WIN32 AND NOT CMAKE_HOST_WIN32) OR EMSCRIPTEN)
   set(RECOMP_VIDEO_DEFAULT ON)
 elseif(WIN32)
   # FFmpeg's configure needs an MSYS2 shell and GNU make. The shell is looked
@@ -85,7 +85,8 @@ if(WIN32 AND CMAKE_HOST_WIN32 AND NOT RECOMP_VIDEO_DEFAULT)
 endif()
 
 if(RECOMP_VIDEO)
-  if(NOT APPLE AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT WIN32)
+  if(NOT APPLE AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT WIN32
+      AND NOT EMSCRIPTEN)
     message(FATAL_ERROR "RECOMP_VIDEO is not supported on ${CMAKE_SYSTEM_NAME}")
   endif()
   include(ExternalProject)
@@ -94,23 +95,40 @@ if(RECOMP_VIDEO)
     find_program(RECOMP_FFMPEG_MAKE NAMES make REQUIRED)
   endif()
   set(RECOMP_FFMPEG_PREFIX "${CMAKE_BINARY_DIR}/ffmpeg")
+  # The web build links FFmpeg statically into the wasm module; everywhere
+  # else it is a shared library packaged beside the host.
+  if(EMSCRIPTEN)
+    set(RECOMP_FFMPEG_LINKAGE --disable-shared --enable-static)
+  else()
+    set(RECOMP_FFMPEG_LINKAGE --enable-shared --disable-static)
+  endif()
+  # A web page downloads every decoder it links, so by default the web
+  # build carries only MPEG-1 video (the DirectShow movie path); the full
+  # list stays one option away for games that need Bink or Windows Media.
+  option(RECOMP_WEB_VIDEO_ALL_CODECS "Link every FFmpeg codec into the web build" OFF)
+  if(EMSCRIPTEN AND NOT RECOMP_WEB_VIDEO_ALL_CODECS)
+    set(RECOMP_FFMPEG_CODECS --enable-decoder=mpeg1video --enable-parser=mpegvideo)
+  else()
+    set(RECOMP_FFMPEG_CODECS
+      --enable-decoder=bink,binkaudio_rdft,binkaudio_dct,smacker,smackaud
+      --enable-decoder=wmv1,wmv2,wmv3,vc1,wmav1,wmav2,wmapro,mp3,mp3float
+      # MS-MPEG-4 part 2, the fourccs MPG4, MP42 and MP43. A .wmv from the
+      # Windows Media Encoder era usually holds one of these rather than a
+      # WMV-numbered codec, and the demuxer that reads the container is no
+      # use without the decoder that reads the frames.
+      --enable-decoder=msmpeg4v1,msmpeg4v2,msmpeg4v3,indeo5,vorbis,adpcm_ima_wav,pcm_s16le,pcm_u8
+      # MPEG-1 video elementary streams, which DirectShow movie players feed
+      # through the system MPEG Video Decoder (dx/dshow_video.cpp).
+      --enable-decoder=mpeg1video --enable-parser=mpegvideo
+      --enable-demuxer=bink,smacker,asf,mp3,avi,ogg --enable-parser=vc1,mpegaudio)
+  endif()
   set(RECOMP_FFMPEG_CONFIGURE
     --prefix=${RECOMP_FFMPEG_PREFIX}
-    --enable-shared --disable-static --disable-programs --disable-doc
+    ${RECOMP_FFMPEG_LINKAGE} --disable-programs --disable-doc
     --disable-everything --disable-avdevice --disable-avfilter
     --disable-swscale --disable-swresample --disable-postproc --disable-network
     --enable-pic
-    --enable-decoder=bink,binkaudio_rdft,binkaudio_dct,smacker,smackaud
-    --enable-decoder=wmv1,wmv2,wmv3,vc1,wmav1,wmav2,wmapro,mp3,mp3float
-    # MS-MPEG-4 part 2, the fourccs MPG4, MP42 and MP43. A .wmv from the
-    # Windows Media Encoder era usually holds one of these rather than a
-    # WMV-numbered codec, and the demuxer that reads the container is no
-    # use without the decoder that reads the frames.
-    --enable-decoder=msmpeg4v1,msmpeg4v2,msmpeg4v3,indeo5,vorbis,adpcm_ima_wav,pcm_s16le,pcm_u8
-    # MPEG-1 video elementary streams, which DirectShow movie players feed
-    # through the system MPEG Video Decoder (dx/dshow_video.cpp).
-    --enable-decoder=mpeg1video --enable-parser=mpegvideo
-    --enable-demuxer=bink,smacker,asf,mp3,avi,ogg --enable-parser=vc1,mpegaudio
+    ${RECOMP_FFMPEG_CODECS}
     --enable-protocol=file
     --disable-autodetect --disable-xlib --disable-libxcb --disable-sdl2
     --disable-iconv --disable-zlib --disable-bzlib --disable-lzma
@@ -145,6 +163,17 @@ if(RECOMP_VIDEO)
       --sysroot=${RECOMP_FFMPEG_SYSROOT} --disable-symver
       # 16 KB page devices (Android 15 and later) load only aligned libraries.
       "--extra-ldflags=-Wl,-z,max-page-size=16384")
+  elseif(EMSCRIPTEN)
+    # Plain C for wasm: no assembly, no FFmpeg threads (the decoder runs on
+    # the game's own thread), and -pthread so the objects can join the
+    # shared-memory module the web host is linked as.
+    list(APPEND RECOMP_FFMPEG_CONFIGURE
+      --enable-cross-compile --target-os=none --arch=x86_32
+      --cc=${CMAKE_C_COMPILER} --cxx=${CMAKE_CXX_COMPILER} --ar=${CMAKE_AR}
+      --ranlib=${CMAKE_RANLIB} --nm=${CMAKE_NM}
+      --disable-asm --disable-x86asm --disable-inline-asm --disable-pthreads
+      --disable-stripping --disable-runtime-cpudetect
+      "--extra-cflags=-O2 -pthread" "--extra-ldflags=-pthread")
   elseif(APPLE)
     list(APPEND RECOMP_FFMPEG_CONFIGURE
       --install-name-dir=@rpath --cc=${CMAKE_C_COMPILER})
@@ -184,7 +213,10 @@ if(RECOMP_VIDEO)
       set(major 61)
     endif()
     set(libdir lib)
-    if(ANDROID)
+    if(EMSCRIPTEN)
+      set(filename lib${component}.a)
+      set(soname ${filename})
+    elseif(ANDROID)
       # FFmpeg's Android target installs unversioned names and SONAMEs.
       set(filename lib${component}.so)
       set(soname ${filename})
@@ -200,11 +232,18 @@ if(RECOMP_VIDEO)
       set(soname ${filename})
     endif()
     list(APPEND RECOMP_FFMPEG_LIBRARIES "${RECOMP_FFMPEG_PREFIX}/${libdir}/${filename}")
-    add_library(ffmpeg::${component} SHARED IMPORTED GLOBAL)
-    set_target_properties(ffmpeg::${component} PROPERTIES
-      IMPORTED_LOCATION "${RECOMP_FFMPEG_PREFIX}/${libdir}/${filename}"
-      IMPORTED_SONAME "${soname}"
-      INTERFACE_INCLUDE_DIRECTORIES "${RECOMP_FFMPEG_PREFIX}/include")
+    if(EMSCRIPTEN)
+      add_library(ffmpeg::${component} STATIC IMPORTED GLOBAL)
+      set_target_properties(ffmpeg::${component} PROPERTIES
+        IMPORTED_LOCATION "${RECOMP_FFMPEG_PREFIX}/${libdir}/${filename}"
+        INTERFACE_INCLUDE_DIRECTORIES "${RECOMP_FFMPEG_PREFIX}/include")
+    else()
+      add_library(ffmpeg::${component} SHARED IMPORTED GLOBAL)
+      set_target_properties(ffmpeg::${component} PROPERTIES
+        IMPORTED_LOCATION "${RECOMP_FFMPEG_PREFIX}/${libdir}/${filename}"
+        IMPORTED_SONAME "${soname}"
+        INTERFACE_INCLUDE_DIRECTORIES "${RECOMP_FFMPEG_PREFIX}/include")
+    endif()
     if(WIN32)
       if(RECOMP_FFMPEG_MSVC)
         # FFmpeg's win64 target installs the import library beside the DLL.

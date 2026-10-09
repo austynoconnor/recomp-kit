@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- 2026-10-09 09:30 CDT — Claude Opus 5.5: the web build plays movies,
+  keeps what it downloads, sends its program compressed and reads game pads.
+  Movies: the `web` preset turns `RECOMP_VIDEO` on, and
+  `cmake/Dependencies.cmake` builds FFmpeg 7.1.1 with `emcc` as static
+  libraries (`--target-os=none --arch=x86_32`, no assembly, no FFmpeg
+  threads, `-pthread` objects for the shared-memory module) linked into the
+  `.wasm`; by default only the MPEG-1 video decoder and parser go in
+  (`-DRECOMP_WEB_VIDEO_ALL_CODECS=ON` links the desktop list). `web-stub`
+  keeps video off. In headless Chrome the MGS2 intro movie now plays in the
+  game's own renderer, as on the desktop. Downloads: `web/player/fetch-
+  backend.js` keeps every one-MiB piece of streamed game data in Cache
+  Storage (`recomp-pieces-v1`), keyed by the file's ETag (Last-Modified or
+  size when there is none), writes in the background, stops storing past 80%
+  of the quota and never fails a read over storage. The store opens in the
+  background so the backend is registered before the function first
+  yields (awaiting it first let WasmFS allocate files on a missing backend
+  when the disk was slow: "Cannot read properties of undefined (reading
+  'allocFile')"). `web_launcher.py` sends
+  an ETag (size and modification time) with every hosted game file.
+  `web/player/runtime.html` loads the program through `instantiateWasm`
+  from Cache Storage (`recomp-program-v1`) with an If-Modified-Since check,
+  falling back to the stored copy when the server is unreachable; a 189 MB
+  program is larger than Chrome's HTTP cache keeps per entry, so it was
+  downloaded again on every visit. Compression: `--web-build` writes
+  `<name>.gz` (and `.br` with the `brotli` module) beside each
+  `.js`/`.wasm`/`.data` when it saves 10% or more, and `--serve` sends it
+  with `Content-Encoding` to browsers that accept it, with 304 answers for
+  unchanged files; the MGS2 program goes from 189 MB to 22 MB. Pads:
+  `web_main` (`host/sdl/main.cpp`) started SDL without
+  `SDL_INIT_GAMEPAD`, so no pad ever reached a game in the browser; it now
+  starts the gamepad subsystem like the desktop host. Measured with MGS2 in
+  headless Chrome: a second visit fetched 0 game pieces (102 on the first)
+  and got a 304 for the program. A 6.5-minute session went from the logos
+  through the Tanker's opening and codec calls (skipped with Z and the pad's
+  A) to deck gameplay: 60 fps in menus and codec, 30 fps in the opening
+  cutscene and on the rainy deck (the kit's frame time is 32 ms there while
+  the GPU takes 2-3 ms), Chrome 2.6-2.8 GB, 1.7 CPU cores on average. With
+  a scripted standard gamepad in the page the log reports "gamepad
+  connected: Xbox 360 Wireless Controller", and both the arrow keys and the
+  pad's left stick move Snake on the radar. The mouse stick could not be
+  confirmed this way (it turns the camera, which the radar does not show).
+  Tests: fetch-backend "Cache Storage keeps pieces for the next visit and
+  drops them when the file changes" and "a full or missing Cache Storage
+  still serves reads from the network", "the backend exists before Cache
+  Storage finishes opening"; web launcher "program files are sent
+  compressed and assets carry an ETag"; web player "program is kept in cache
+  storage".
+
 - 2026-10-09 05:20 CDT — Claude Opus 5.5: a build without FFmpeg (the web
   build) no longer reads a movie it cannot decode: `mf::mpeg1_decoder_
   available()` is checked before `AddSourceFilter` looks at or reads the
