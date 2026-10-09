@@ -3968,6 +3968,81 @@ static void test_d3d8_fixed_function_triangle() {
     call_shim(tramp("USER32.dll", "DestroyWindow"), {hwnd});
 }
 
+// IDirect3DDevice8::CopyRects between two DXT1 image surfaces copies whole
+// 4x4 blocks: the source's second block lands where the destination point
+// names, and the rest of the destination is untouched.
+static void test_d3d8_copyrects_dxt() {
+    cpu_reset();
+    uint32_t wc = sc(0x200);
+    gm_zero(wc, 40);
+    wr32(wc + 4, tramp("USER32.dll", "DefWindowProcA"));
+    gm_put_str(sc(0x280), "D3D8Copy", 32);
+    wr32(wc + 36, sc(0x280));
+    CHECK(call_shim(tramp("USER32.dll", "RegisterClassA"), {wc}) != 0);
+    uint32_t hwnd = call_shim(tramp("USER32.dll", "CreateWindowExA"),
+                              {0, sc(0x280), sc(0x280), 0x80000000u, 0, 0, 64, 64, 0, 0, 0, 0});
+    uint32_t d3d = call_shim(tramp("d3d8.dll", "Direct3DCreate8"), {220});
+    CHECK(d3d != 0);
+    if (!d3d)
+        return;
+    uint32_t pp = sc(0x300);
+    gm_zero(pp, 52);
+    wr32(pp + 0, 64);
+    wr32(pp + 4, 64);
+    wr32(pp + 8, 22);
+    wr32(pp + 12, 1);
+    wr32(pp + 20, 1);
+    wr32(pp + 24, hwnd);
+    wr32(pp + 28, 1);
+    CHECK_EQ(call_method(d3d, 15, {0, 1, hwnd, 0x20, pp, sc(0x340)}), 0u); // CreateDevice
+    uint32_t dev = rd32(sc(0x340));
+    CHECK(dev != 0);
+    if (!dev) {
+        call_method(d3d, 2);
+        return;
+    }
+    const uint32_t DXT1 = 0x31545844u;
+    CHECK_EQ(call_method(dev, 27, {8, 8, DXT1, sc(0x350)}), 0u); // CreateImageSurface
+    CHECK_EQ(call_method(dev, 27, {8, 8, DXT1, sc(0x354)}), 0u);
+    uint32_t src = rd32(sc(0x350)), dst = rd32(sc(0x354));
+    CHECK(src && dst);
+    if (src && dst) {
+        uint32_t lr = sc(0x360);
+        CHECK_EQ(call_method(src, 9, {lr, 0, 0}), 0u); // LockRect
+        uint32_t spitch = rd32(lr), sbits = rd32(lr + 4);
+        CHECK_EQ(spitch, 16u); // two 8-byte blocks per row of blocks
+        for (uint32_t i = 0; i < 32; ++i)
+            g_mem[sbits + i] = (uint8_t)(0x10 + i);
+        call_method(src, 10);
+        CHECK_EQ(call_method(dst, 9, {lr, 0, 0}), 0u);
+        uint32_t dbits = rd32(lr + 4);
+        memset(g_mem + dbits, 0xee, 32);
+        call_method(dst, 10);
+        uint32_t rect = sc(0x370), point = sc(0x380);
+        wr32(rect + 0, 4); // the top-right block
+        wr32(rect + 4, 0);
+        wr32(rect + 8, 8);
+        wr32(rect + 12, 4);
+        wr32(point + 0, 0); // to the bottom-left block
+        wr32(point + 4, 4);
+        CHECK_EQ(call_method(dev, 28, {src, rect, 1, dst, point}), 0u); // CopyRects
+        CHECK_EQ(call_method(dst, 9, {lr, 0, 0}), 0u);
+        dbits = rd32(lr + 4);
+        CHECK_EQ(g_mem[dbits + 16], 0x18u); // block (0,1) holds source block (1,0)
+        CHECK_EQ(g_mem[dbits + 23], 0x1fu);
+        CHECK_EQ(g_mem[dbits + 0], 0xeeu);  // block (0,0) untouched
+        CHECK_EQ(g_mem[dbits + 24], 0xeeu); // block (1,1) untouched
+        call_method(dst, 10);
+    }
+    if (src)
+        call_method(src, 2);
+    if (dst)
+        call_method(dst, 2);
+    call_method(dev, 2);
+    call_method(d3d, 2);
+    call_shim(tramp("USER32.dll", "DestroyWindow"), {hwnd});
+}
+
 static void test_gdi_primary_blit() {
     cpu_reset();
     reset_ddraw_for_test();
@@ -13148,6 +13223,7 @@ int main() {
         {"DirectShow FilterGraph RenderFile", test_dshow_filtergraph_renderfile},
         {"DirectShow refused source completes", test_dshow_refused_source_completes},
         {"Direct3D 8 fixed-function triangle", test_d3d8_fixed_function_triangle},
+        {"Direct3D 8 CopyRects DXT blocks", test_d3d8_copyrects_dxt},
         {"palette versions", test_palette_versions},
         {"storage generations", test_storage_generations},
         {"draw snapshot is deep", test_draw_snapshot_is_deep},

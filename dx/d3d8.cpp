@@ -568,8 +568,22 @@ uint32_t format_bytes8(uint32_t fmt) {
 }
 // A locked surface: its pitch and the guest address of its bits.
 struct Locked {
-    uint32_t pitch = 0, bits = 0, width = 0, height = 0, bpp = 0;
+    uint32_t pitch = 0, bits = 0, width = 0, height = 0, bpp = 0, format = 0;
 };
+// Bytes in one 4x4 block of a DXT format, 0 for any other format.
+uint32_t dxt_block_bytes8(uint32_t fmt) {
+    switch (fmt) {
+    case 0x31545844u: // DXT1
+        return 8;
+    case 0x32545844u: // DXT2
+    case 0x33545844u: // DXT3
+    case 0x34545844u: // DXT4
+    case 0x35545844u: // DXT5
+        return 16;
+    default:
+        return 0;
+    }
+}
 bool lock_surface(X86 *c, uint32_t surface, Locked &l) {
     ComObj *s = com_this(surface);
     if (!s || s->kind != K_D3D9SURFACE)
@@ -582,7 +596,8 @@ bool lock_surface(X86 *c, uint32_t surface, Locked &l) {
     l.bits = rd32(out.at + 4);
     l.width = s->width;
     l.height = s->height;
-    l.bpp = format_bytes8(s->rmask ? s->rmask : 22);
+    l.format = s->rmask ? s->rmask : 22;
+    l.bpp = format_bytes8(l.format);
     return l.bits != 0;
 }
 void unlock_surface(X86 *c, uint32_t surface) {
@@ -592,6 +607,8 @@ void unlock_surface(X86 *c, uint32_t surface) {
 
 // (this, pSourceSurface, pSourceRectsArray, cRects, pDestinationSurface,
 //  pDestPointsArray): byte copies between surfaces of one format, no scaling.
+// A DXT surface is copied in whole 4x4 blocks: its rectangles and points are
+// on block boundaries, as Direct3D 8 requires of compressed copies.
 static void D8_CopyRects(X86 *c) {
     uint32_t src = arg(c, 1), rects = arg(c, 2), count = arg(c, 3), dst = arg(c, 4),
              points = arg(c, 5);
@@ -605,10 +622,19 @@ static void D8_CopyRects(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL8);
         return;
     }
-    uint32_t bpp = s.bpp;
-    if (!bpp || bpp != d.bpp) {
+    // `unit` bytes per copied element; `blk` pixels per element on each side.
+    uint32_t bpp = s.bpp, blk = 1;
+    if (!bpp && s.format == d.format && dxt_block_bytes8(s.format)) {
+        bpp = dxt_block_bytes8(s.format);
+        blk = 4;
+    }
+    const int32_t sw = (int32_t)((s.width + blk - 1) / blk),
+                  sh = (int32_t)((s.height + blk - 1) / blk),
+                  dw = (int32_t)((d.width + blk - 1) / blk),
+                  dh = (int32_t)((d.height + blk - 1) / blk);
+    if (!bpp || (blk == 1 && bpp != d.bpp)) {
         log_once("d3d8.copyrects.format",
-                 "d3d8: CopyRects between block-compressed or different formats is not copied");
+                 "d3d8: CopyRects between different formats is not copied");
     } else {
         uint32_t n = (rects && count) ? count : 1;
         for (uint32_t i = 0; i < n; ++i) {
@@ -621,20 +647,29 @@ static void D8_CopyRects(X86 *c) {
                 px = (int32_t)rd32(points + 8 * i);
                 py = (int32_t)rd32(points + 8 * i + 4);
             }
+            if (blk > 1) {
+                const int32_t b = (int32_t)blk;
+                r[0] /= b;
+                r[1] /= b;
+                r[2] = (r[2] + b - 1) / b;
+                r[3] = (r[3] + b - 1) / b;
+                px /= b;
+                py /= b;
+            }
             r[0] = std::max(r[0], 0);
             r[1] = std::max(r[1], 0);
-            r[2] = std::min(r[2], (int32_t)s.width);
-            r[3] = std::min(r[3], (int32_t)s.height);
+            r[2] = std::min(r[2], sw);
+            r[3] = std::min(r[3], sh);
             for (int32_t y = r[1]; y < r[3]; ++y) {
                 int32_t dy = py + (y - r[1]);
-                if (dy < 0 || dy >= (int32_t)d.height)
+                if (dy < 0 || dy >= dh)
                     continue;
                 int32_t x0 = r[0], x1 = r[2], dx = px;
                 if (dx < 0) {
                     x0 -= dx;
                     dx = 0;
                 }
-                x1 = std::min(x1, x0 + ((int32_t)d.width - dx));
+                x1 = std::min(x1, x0 + (dw - dx));
                 if (x1 <= x0)
                     continue;
                 memmove(gm_ptr(d.bits + (uint32_t)dy * d.pitch + (uint32_t)dx * bpp),

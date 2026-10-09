@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 2026-10-08 22:05 CDT — Claude Opus 5.5: `IDirect3DDevice8::CopyRects`
+  copies between two surfaces of the same DXT format in whole 4x4 blocks
+  (it used to skip every compressed copy). Metal Gear Solid 2 copies its
+  compressed images this way during start-up.
+
 - 2026-10-08 21:40 CDT — Claude Opus 5.5: merged `giggity-d3d8` again
   (8f9f537: WebGPU object lifetime and buffer streaming, ranged buffer
   locks, half-axis pad mapping). `[controls.native]` takes both branches'
