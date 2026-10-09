@@ -94,6 +94,36 @@ async function prepareGame(game) {
   }
 }
 
+// The program (.wasm) is far larger than a browser's HTTP cache keeps per
+// entry, so it lives in Cache Storage instead: one cheap If-Modified-Since
+// check per visit, a full download only when the build changed, and the
+// stored copy when the server cannot be reached.
+async function programResponse(url) {
+  let store = null, hit;
+  try {
+    store = await caches.open("recomp-program-v1");
+    hit = await store.match(url);
+  } catch { store = null; }
+  const headers = {};
+  const stamp = hit && hit.headers.get("Last-Modified");
+  if (stamp) headers["If-Modified-Since"] = stamp;
+  let response;
+  try {
+    response = await fetch(url, { headers, cache: "no-store" });
+  } catch (error) {
+    if (hit) return hit;
+    throw error;
+  }
+  if (response.status === 304 && hit) return hit;
+  if (!response.ok) {
+    if (hit) return hit;
+    throw new Error(`The game's program could not be downloaded (${response.status}).`);
+  }
+  if (store && response.headers.get("Last-Modified"))
+    await store.put(url, response.clone()).catch(() => {});
+  return response;
+}
+
 async function start() {
   if (window.parent === window) throw new Error("Open the player page and choose Start game.");
   if (!crossOriginIsolated) throw new Error("This page must be served cross-origin isolated (COOP/COEP headers).");
@@ -144,6 +174,13 @@ async function start() {
       const extra = new URLSearchParams(location.search);
       for (const [k, v] of extra) if (k.startsWith("RECOMP_")) m.ENV[k] = v;
     }],
+    instantiateWasm(imports, done) {
+      programResponse(new URL("@APP@.wasm", location.href).href)
+        .then((response) => WebAssembly.instantiateStreaming(response, imports))
+        .then((result) => done(result.instance, result.module))
+        .catch((error) => status(`The game could not start: ${error.message}`, true));
+      return {};
+    },
     onRuntimeInitialized() {
       status("");
       canvas.focus();

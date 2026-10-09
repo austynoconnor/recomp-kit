@@ -1,6 +1,7 @@
 """tools/web_launcher.py writes the hub page and each game's launcher data."""
 
 import importlib.util
+import gzip
 import json
 import hashlib
 from functools import partial
@@ -152,6 +153,49 @@ class WebLauncherTests(unittest.TestCase):
             web_launcher.copy_web_build("stub", build, tmp / "site")
             copied = sorted(f.name for f in (tmp / "site/stub").iterdir())
             self.assertEqual(copied, ["App.data", "App.js", "App.wasm", "index.html", "runtime.html"])
+
+    def test_program_files_are_sent_compressed_and_assets_carry_an_etag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            build = tmp / "build"
+            build.mkdir()
+            (build / "index.html").write_text("page")
+            program = b"(module)" * 4096
+            (build / "App.wasm").write_bytes(program)
+            site = tmp / "site"
+            web_launcher.copy_web_build("stub", build, site)
+            self.assertEqual(gzip.decompress((site / "stub/App.wasm.gz").read_bytes()), program)
+            asset = tmp / "archive.bin"
+            asset.write_bytes(b"x" * 64)
+            route = "/_game-assets/stub/archive.bin"
+            server = ThreadingHTTPServer(("127.0.0.1", 0), partial(
+                web_launcher.IsolatedHandler, directory=str(site), asset_files={route: asset}))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with urlopen(Request(base + "/stub/App.wasm", headers={"Accept-Encoding": "gzip"})) as response:
+                    self.assertEqual(response.headers["Content-Encoding"], "gzip")
+                    self.assertEqual(response.headers["Content-Type"], "application/wasm")
+                    self.assertEqual(gzip.decompress(response.read()), program)
+                    modified = response.headers["Last-Modified"]
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(base + "/stub/App.wasm", headers={
+                        "Accept-Encoding": "gzip", "If-Modified-Since": modified}))
+                self.assertEqual(error.exception.code, 304)
+                with urlopen(base + "/stub/App.wasm") as response:  # no Accept-Encoding
+                    self.assertIsNone(response.headers["Content-Encoding"])
+                    self.assertEqual(response.read(), program)
+                with urlopen(Request(base + route, method="HEAD")) as response:
+                    first = response.headers["ETag"]
+                    self.assertTrue(first)
+                asset.write_bytes(b"y" * 65)
+                with urlopen(Request(base + route, method="HEAD")) as response:
+                    self.assertNotEqual(response.headers["ETag"], first)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
     def test_core_suite(self):
         node = shutil.which("node")
         if not node:

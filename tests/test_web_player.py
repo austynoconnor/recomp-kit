@@ -7,10 +7,12 @@ from http.server import ThreadingHTTPServer
 import importlib.util
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 
 try:
@@ -111,6 +113,27 @@ class WebPlayerTests(unittest.TestCase):
         page.wait_for_function("document.querySelector('#status').textContent.includes('Start game')")
         self.assertEqual(page.locator("script[src]").count(), 0)
         self.assertFalse(page.evaluate("!!window.Module"))
+
+    def test_program_is_kept_in_cache_storage(self):
+        root = Path(self.temp.name)
+        program = root / "stub/App.wasm"
+        program.write_bytes(b"program-v1")
+        source = (ROOT / "web/player/runtime.html").read_text()
+        helper = "async function programResponse(url) {" + source.split(
+            "async function programResponse(url) {", 1)[1].split("async function start()", 1)[0]
+        (root / "stub/program.html").write_text("<script>\n" + helper +
+            "\nwindow.load = () => programResponse(new URL('App.wasm', location.href).href)"
+            ".then(r => r.text());</script>")
+        page = self.context.new_page()
+        page.goto(self.url + "program.html")
+        self.assertEqual(page.evaluate("load()"), "program-v1")
+        self.assertEqual(page.evaluate("load()"), "program-v1")  # 304: the stored copy
+        program.unlink()  # server cannot supply it: still the stored copy
+        self.assertEqual(page.evaluate("load()"), "program-v1")
+        program.write_bytes(b"program-v2")
+        later = time.time() + 10
+        os.utime(program, (later, later))
+        self.assertEqual(page.evaluate("load()"), "program-v2")
 
     def hosted_fixture(self, wrong_size=False, streamed=False):
         """Exercise real download, validation and OPFS code with tiny game files."""
