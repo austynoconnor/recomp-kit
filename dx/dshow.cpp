@@ -1320,7 +1320,25 @@ void graph_render_file(X86 *c) {
 void GB_RenderFile(X86 *c) {
     graph_render_file(c);
 }
-DX_STUB(GB_AddSourceFilter, E_NOTIMPL)
+// AddSourceFilter(lpcwstrFileName, lpcwstrFilterName, ppFilter): there are
+// no source filters, so a player that builds its own graph (a video source
+// joined to a renderer of its own) cannot start. Such a player still asks the
+// graph's IMediaEventEx whether the movie has finished before it moves on,
+// and a graph that never runs would never say so. The movie is therefore
+// reported complete at once: the refusal is returned and EC_COMPLETE queued,
+// so the game skips the movie instead of waiting on it.
+void GB_AddSourceFilter(X86 *c) {
+    GraphThis t = graph_this(c);
+    uint32_t out = arg(c, 3);
+    if (out && gm_valid(out, 4))
+        wr32(out, 0);
+    if (t.s) {
+        log_once("dshow.addsource", "dshow: IGraphBuilder::AddSourceFilter: there are no source "
+                                    "filters here; the movie is skipped and reported complete");
+        post_event(*t.s, EC_COMPLETE);
+    }
+    com_ret(c, E_NOTIMPL);
+}
 DX_STUB(GB_SetLogFile, S_OK)
 DX_STUB(GB_Abort, S_OK)
 DX_STUB(GB_ShouldOperationContinue, S_OK)

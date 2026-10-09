@@ -3845,6 +3845,50 @@ static void test_dshow_filtergraph_renderfile() {
     os_rmdir(dir);
 }
 
+// A player that builds its own movie graph (MGS2's): AddSourceFilter is
+// refused, and the graph's IMediaEventEx then reports the movie complete once,
+// so a game that polls for the end skips the movie instead of waiting on it.
+static void test_dshow_refused_source_completes() {
+    static const uint8_t clsid_filtergraph[16] = {0xb3, 0xeb, 0x36, 0xe4, 0x4f, 0x52, 0xce, 0x11,
+                                                  0x9f, 0x53, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70};
+    auto quartz = [](uint8_t lo) {
+        std::array<uint8_t, 16> g = {lo,   0x68, 0xa8, 0x56, 0xd4, 0x0a, 0xce, 0x11,
+                                     0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70};
+        return g;
+    };
+    const uint32_t S_OK_ = 0, E_ABORT_ = 0x80004004u;
+    uint32_t clsid = sc(0x1e00), iid = sc(0x1e10), ppv = sc(0x1e20), pev = sc(0x1e30),
+             pfilter = sc(0x1e40), code = sc(0x1e50), p1 = sc(0x1e54), p2 = sc(0x1e58),
+             wpath = sc(0x1f00);
+    uint32_t live = com_live_count();
+    memcpy(g_mem + clsid, clsid_filtergraph, 16);
+    memcpy(g_mem + iid, quartz(0xa9).data(), 16); // IID_IGraphBuilder
+    CHECK_EQ(call_shim(tramp("ole32.dll", "CoCreateInstance"), {clsid, 0, 1, iid, ppv}), S_OK_);
+    uint32_t graph = rd32(ppv);
+    CHECK(graph != 0);
+    if (!graph)
+        return;
+    const char *name = "movie.sfd";
+    for (size_t i = 0; i <= strlen(name); ++i)
+        wr16(wpath + 2 * (uint32_t)i, (uint16_t)name[i]);
+    wr32(pfilter, 0xdeadbeef);
+    CHECK(call_method(graph, 14, {wpath, 0, pfilter}) != S_OK_); // AddSourceFilter
+    CHECK_EQ(rd32(pfilter), 0u);
+    memcpy(g_mem + iid, quartz(0xc0).data(), 16); // IID_IMediaEventEx
+    CHECK_EQ(call_method(graph, 0, {iid, pev}), S_OK_);
+    uint32_t ev = rd32(pev);
+    CHECK(ev != 0);
+    if (ev) {
+        wr32(code, 0);
+        CHECK_EQ(call_method(ev, 8, {code, p1, p2, 0}), S_OK_); // GetEvent
+        CHECK_EQ(rd32(code), 1u);                                // EC_COMPLETE
+        CHECK_EQ(call_method(ev, 8, {code, p1, p2, 0}), E_ABORT_);
+        call_method(ev, 2);
+    }
+    call_method(graph, 2);
+    CHECK_EQ(com_live_count(), live);
+}
+
 // Direct3D 8 over the Direct3D 9 objects, drawn through the fixed-function
 // pipeline: Direct3DCreate8, a windowed device, Clear, an FVF vertex shader
 // handle (XYZRHW | DIFFUSE) and DrawPrimitiveUP. With no GPU host the CPU
@@ -13102,6 +13146,7 @@ int main() {
         {"DirectShow audio stream", test_dshow_audio_stream},
         {"DirectShow graph playback", test_dshow_graph_playback},
         {"DirectShow FilterGraph RenderFile", test_dshow_filtergraph_renderfile},
+        {"DirectShow refused source completes", test_dshow_refused_source_completes},
         {"Direct3D 8 fixed-function triangle", test_d3d8_fixed_function_triangle},
         {"palette versions", test_palette_versions},
         {"storage generations", test_storage_generations},

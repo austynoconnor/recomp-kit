@@ -22,6 +22,10 @@
     effects, and `GetObjectInPath` returns them. Waves Reverb
     (`IDirectSoundFXWavesReverb8`) keeps its parameters. Effects are not
     applied: the sound is dry.
+  - DirectShow: `IGraphBuilder::AddSourceFilter` is still refused (there
+    are no source filters), but the graph now queues `EC_COMPLETE`, so a
+    player that builds its own movie graph and polls `IMediaEventEx` for the
+    end skips the movie instead of waiting forever (MGS2's intro).
   - DirectShow: `CLSID_FilterMapper2`. `EnumMatchingFilters` finds nothing
     and filter registration is refused, so a game that looks for a decoder
     to build its own movie graph (MGS2's texture-renderer movies) skips the
