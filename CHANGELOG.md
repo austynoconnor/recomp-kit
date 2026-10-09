@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 2026-10-08 23:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: a keyboard trace.
+  - `dx/dinput.cpp`: `RECOMP_TRACE_PAD` also logs each keyboard
+    `GetDeviceState` whose keys changed, with a timestamp and how many
+    unchanged reads came between, to show how many of a game's polls saw a
+    key held. Used on Star Wars Battlefront II's profile picker: a held
+    Enter is seen by about 30 polls in 150 ms while the profile loads, and
+    the hang that follows is a race with that load (about half of 150 ms
+    presses), not a key-message difference: the game reads the keyboard
+    only through DirectInput, and its window procedure drops WM_KEYDOWN.
+  - The indexed-strip WebGPU fix (b4c5bf8) was cherry-picked onto
+    `giggity-d3d8` (1f9b87c).
+  - Tests: native suites 25 of 25, Python 419 passed, 5 skipped, on Linux.
+
 - 2026-10-08 22:00 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: keyboard repeat settings, trigger presses in scripts, a
   directory-search trace, and `giggity-d3d8` 8f9f537 (WebGPU leak fix)
