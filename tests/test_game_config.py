@@ -372,7 +372,11 @@ class LoadTests(unittest.TestCase):
             self.assertIn("#define RECOMP_LAUNCHER_MIN_FREE_MB 50u", header)
             self.assertIn('#define RECOMP_REQUIRED_DIRS {"data", "levels", 0}', header)
             self.assertIn('#define RECOMP_BUNDLE_EXCLUDE {"*.dll", "app", 0}', header)
-            for bad in ('min_free_mb = -1', 'gog_ids = "123"', 'title = 5'):
+            self.assertEqual(game_config.load(game)["launcher"]["web_video"], "off")
+            (game / "game.toml").write_text(base + '\n[launcher]\nweb_video = "mpeg1"\n')
+            self.assertEqual(game_config.load(game)["launcher"]["web_video"], "mpeg1")
+            for bad in ('min_free_mb = -1', 'gog_ids = "123"', 'title = 5', 'web_video = true',
+                        'web_video = "h264"'):
                 (game / "game.toml").write_text(base + "\n[launcher]\n" + bad + "\n")
                 with self.assertRaises(ValueError):
                     game_config.load(game)

@@ -46,6 +46,12 @@ class BuildPyTests(unittest.TestCase):
         with patch.dict(os.environ, {"EMSDK": ""}), self.assertRaises(SystemExit):
             build_py.parse_args(["--target", "web"], system="Darwin")
 
+    def test_web_video_follows_the_game(self):
+        for video, expected in (("off", ["-DRECOMP_VIDEO=OFF", "-DRECOMP_WEB_VIDEO_ALL_CODECS=OFF"]),
+                                ("mpeg1", ["-DRECOMP_VIDEO=ON", "-DRECOMP_WEB_VIDEO_ALL_CODECS=OFF"]),
+                                ("all", ["-DRECOMP_VIDEO=ON", "-DRECOMP_WEB_VIDEO_ALL_CODECS=ON"])):
+            self.assertEqual(build_py.web_video_defines({"launcher": {"web_video": video}}), expected)
+
     def test_jobs_must_be_positive(self):
         with self.assertRaises(SystemExit):
             build_py.parse_args(["--jobs", "0"], system="Darwin")

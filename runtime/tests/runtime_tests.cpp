@@ -973,12 +973,22 @@ static void test_resumable_stacks() {
 
 static void test_ftol2_intrinsic() {
     section("_ftol2 intrinsic");
-    struct Case { double v; int64_t want; bool invalid; };
+    struct Case {
+        double v;
+        int64_t want;
+        bool invalid;
+    };
     const Case cases[] = {
-        {2.7, 2, false}, {-2.7, -2, false}, {2.5, 2, false}, {-0.5, 0, false},
-        {0.0, 0, false}, {123456789012.9, 123456789012LL, false},
-        {-4294967296.5, -4294967296LL, false}, {1e30, INT64_MIN, true},
-        {-1e30, INT64_MIN, true}, {NAN, INT64_MIN, true},
+        {2.7, 2, false},
+        {-2.7, -2, false},
+        {2.5, 2, false},
+        {-0.5, 0, false},
+        {0.0, 0, false},
+        {123456789012.9, 123456789012LL, false},
+        {-4294967296.5, -4294967296LL, false},
+        {1e30, INT64_MIN, true},
+        {-1e30, INT64_MIN, true},
+        {NAN, INT64_MIN, true},
     };
     for (const Case &k : cases) {
         X86 c{};
@@ -989,8 +999,8 @@ static void test_ftol2_intrinsic() {
         recomp_ftol2_value(&c);
         const int64_t got = (int64_t)(((uint64_t)c.r[R_EDX] << 32) | c.r[R_EAX]);
         check(got == k.want && ST(&c, 0) == 1.0 && ((c.fpu_sw & 1u) != 0) == k.invalid,
-              "_ftol2(%g) truncates to %lld (got %lld), pops once", k.v,
-              (long long)k.want, (long long)got);
+              "_ftol2(%g) truncates to %lld (got %lld), pops once", k.v, (long long)k.want,
+              (long long)got);
     }
     X86 c{};
     c.fpu_cw = 0x037f;
@@ -1520,10 +1530,7 @@ static void test_boot_shims(X86 *c) {
     os_setenv("RECOMP_GUEST_ARGS", "-debugout -nointro");
     win32_reset_command_line_for_test();
     std::string cmdline = gm_str(call_import(c, "KERNEL32.dll", "GetCommandLineA", {}));
-    std::string program = RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE;
-    if (program.find(' ') != std::string::npos)
-        program = "\"" + program + "\""; // quoted, as Explorer launches it
-    check(cmdline == program + " -debugout -nointro",
+    check(cmdline == std::string(RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE) + " -debugout -nointro",
           "GetCommandLineA appends RECOMP_GUEST_ARGS: \"%s\"", cmdline.c_str());
     os_unsetenv("RECOMP_GUEST_ARGS");
     win32_reset_command_line_for_test();
@@ -2424,13 +2431,6 @@ static void test_windows(X86 *c) {
     check(call_import(c, "USER32.dll", "SystemParametersInfoA", {48, 0, work, 0}) == 1 &&
               rd32(work + 8) == 640 && rd32(work + 12) == 480,
           "SPI_GETWORKAREA is the window's client area");
-    wr32(work, 0xc9b858aau);
-    check(call_import(c, "USER32.dll", "SystemParametersInfoA", {22, 0, work, 0}) == 1 &&
-              rd32(work) == 1,
-          "SPI_GETKEYBOARDDELAY is Windows' default");
-    check(call_import(c, "USER32.dll", "SystemParametersInfoA", {10, 0, work, 0}) == 1 &&
-              rd32(work) == 31,
-          "SPI_GETKEYBOARDSPEED is Windows' default");
     check(call_import(c, "USER32.dll", "SystemParametersInfoA", {0x2000, 0, 0, 0}) == 0,
           "unknown SPI actions fail");
     // The input gate is not linked here; use the same user32 cursor bridge

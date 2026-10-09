@@ -154,9 +154,9 @@ struct Batch {
 // again from publishing the old result.
 struct QueryCache {
     std::mutex m;
-    std::unordered_map<uint32_t, uint32_t> done;  // query -> pixel count
-    std::unordered_map<uint32_t, uint32_t> gen;   // query -> generation
-    std::unordered_set<uint32_t> asked;           // a poll is queued
+    std::unordered_map<uint32_t, uint32_t> done; // query -> pixel count
+    std::unordered_map<uint32_t, uint32_t> gen;  // query -> generation
+    std::unordered_set<uint32_t> asked;          // a poll is queued
 };
 QueryCache &query_cache() {
     static QueryCache *c = new QueryCache;
