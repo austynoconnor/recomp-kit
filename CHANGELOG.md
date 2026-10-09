@@ -110,6 +110,15 @@
     imports "ordN" as the loader does even where pefile knows the name.
   - Merge note: `giggity-d3d8` also adds `wsprintfA`; keep one entry.
 
+- 2026-10-08 22:35 CDT (branch giggity-d3d8) — Claude Opus 5.5: WebGPU
+  indexed strips (cherry-picked from giggity-swbf2 b4c5bf8).
+  - `host/gpu/webgpu/d3d9_webgpu.cpp`: an indexed triangle or line strip
+    gets a pipeline naming its 16- or 32-bit index format (part of the
+    pipeline key). WebGPU rejected such draws, discarding the frame's whole
+    command buffer (Star Wars Battlefront II's profile screen drew black).
+    Built for the web on giggity-swbf2 with identical WebGPU sources; headless
+    Chrome draws the screen and logs no WebGPU errors.
+
 - 2026-10-08 21:10 CDT (branch giggity-d3d8) — Claude Opus 5.5: the WebGPU
   renderer no longer leaks browser GPU memory, Direct3D 9 games with dynamic
   vertex buffers run several times faster in the browser, and pad triggers
