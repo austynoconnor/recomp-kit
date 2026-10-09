@@ -7568,6 +7568,28 @@ static void test_bink_shutdown_with_open_player() {
     });
 }
 
+// A nameless BinkOpen after BinkSetIO goes through the game's own reader: its
+// open procedure is called with (BINKIO*, name, flags), and a refusal fails
+// the open. MulDiv stands in for the procedure: 3 stdcall arguments, and
+// MulDiv(bio, 0, flags) is 0, a refusal.
+static void test_bink_game_reader() {
+    cpu_reset();
+    uint32_t open = tramp("binkw32.dll", "_BinkOpen@8");
+    uint32_t set_io = tramp("binkw32.dll", "_BinkSetIO@4");
+    uint32_t name = sc(0x20);
+    wr8(name, 0);
+    CHECK_EQ(call_shim(set_io, {tramp("KERNEL32.dll", "MulDiv")}), 0u);
+    uint32_t rec = call_shim(open, {0, 0x0b000000});
+#ifdef RECOMP_HAVE_FFMPEG
+    CHECK_EQ(rec, 0u);
+    uint32_t err = call_shim(tramp("binkw32.dll", "_BinkGetError@0"), {});
+    CHECK(err != 0 && gm_str(err).find("reader refused") != std::string::npos);
+#endif
+    if (rec)
+        call_shim(tramp("binkw32.dll", "_BinkClose@4"), {rec});
+    CHECK_EQ(call_shim(set_io, {0}), 0u);
+}
+
 static void test_bink_rects_and_pause() {
     cpu_reset();
     CHECK_EQ(call_shim(tramp("binkw32.dll", "_BinkOpenDirectSound@4"), {0}), 1u);
@@ -13207,6 +13229,7 @@ int main() {
         {"Bink open from handle", test_bink_open_from_handle},
         {"Bink handle flag errors", test_bink_handle_flag_errors},
         {"Bink rects and pause", test_bink_rects_and_pause},
+        {"Bink through the game's reader", test_bink_game_reader},
         {"Bink audio without service", test_bink_audio_without_service},
         {"Bink shutdown with open player", test_bink_shutdown_with_open_player},
         {"weanetr", test_weanetr},

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- 2026-10-08 20:15 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: Bink through a game's own reader, a joystick trace,
+  more script keys, and `giggity-d3d8` merged in.
+  - `dx/bink.cpp`: `BinkSetIO` now records the game's open procedure. A
+    `BinkOpen` with an empty name (Star Wars Battlefront II streams its
+    `.mvs` movies on its own thread and gives Bink only a reader) creates a
+    guest `BINKIO`, calls that procedure, and feeds FFmpeg from the
+    reader's `ReadFrame` callback, which waits for the game's streamer;
+    the tail shorter than one read comes from `ReadHeader` at halving
+    sizes. The stream is sequential: forward seeks read and discard. Every
+    Bink import that can read records its guest thread for the callbacks.
+    Named opens and file-handle opens are unchanged. dx_tests "Bink through
+    the game's reader" checks that a refusing reader fails the open.
+  - `dx/dinput_joystick.cpp`: `RECOMP_TRACE_PAD=1` prints each joystick
+    state a read hands the guest when it changes.
+  - `host/script.cpp`: scripts can also press 4 to 0 (the letters came with
+    the merge); host_tests checks W, d and 0.
+  - Merged `origin/giggity-d3d8` at `1f27076` (browser asset streaming,
+    joystick axis range, spin-wait yields, CPU renderer fixes, faster
+    critical sections and small reads).
+
 - 2026-10-08 18:40 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: Direct3D 9 offers four display modes (640x480, 800x600,
   1024x768 and the 1280x960 desktop, smallest first) in each format the
