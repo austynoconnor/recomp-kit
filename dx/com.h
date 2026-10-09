@@ -135,6 +135,8 @@ enum ComIface : uint16_t {
     IF_D3DINDEXBUFFER9,
     IF_D3DVERTEXDECL9,
     IF_D3DQUERY9,
+    IF_D3DVERTEXSHADER9,
+    IF_D3DPIXELSHADER9,
     // DirectInput 8: the same objects as DirectInput, reached through the
     // version 8 vtables.
     IF_DINPUT8,
@@ -213,6 +215,7 @@ enum ComKind : uint16_t {
     K_D3D9IB,         // an index buffer
     K_D3D9DECL,       // a vertex declaration
     K_D3D9QUERY,      // an occlusion or event query
+    K_D3D9SHADER,     // a vertex or pixel shader made by the device from bytecode
     K_XACT,           // the silent XACT engine and its banks, cues and waves
 };
 

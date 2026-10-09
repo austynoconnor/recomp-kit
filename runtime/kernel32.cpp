@@ -1415,14 +1415,14 @@ void k_GetSystemInfo(X86 *c) {
         return;
     }
     memset(g_mem + p, 0, 36);
-    wr32(p + 0, 0);           // wProcessorArchitecture = INTEL, wReserved
-    wr32(p + 4, 4096);        // dwPageSize
-    wr32(p + 8, IMAGE_BASE);  // lpMinimumApplicationAddress
+    wr32(p + 0, 0);                     // wProcessorArchitecture = INTEL, wReserved
+    wr32(p + 4, 4096);                  // dwPageSize
+    wr32(p + 8, IMAGE_BASE);            // lpMinimumApplicationAddress
     wr32(p + 12, heap_highest_limit()); // lpMaximumApplicationAddress
-    wr32(p + 16, 1);          // dwActiveProcessorMask
-    wr32(p + 20, 1);          // dwNumberOfProcessors
-    wr32(p + 24, 586);        // dwProcessorType = PROCESSOR_INTEL_PENTIUM
-    wr32(p + 28, 4096);       // dwAllocationGranularity is 65536 on Win32
+    wr32(p + 16, 1);                    // dwActiveProcessorMask
+    wr32(p + 20, 1);                    // dwNumberOfProcessors
+    wr32(p + 24, 586);                  // dwProcessorType = PROCESSOR_INTEL_PENTIUM
+    wr32(p + 28, 4096);                 // dwAllocationGranularity is 65536 on Win32
     wr32(p + 28, 65536);
     wr32(p + 32, (5 << 8) | 6); // wProcessorLevel / wProcessorRevision
     set_eax(c, 0);

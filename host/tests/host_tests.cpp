@@ -9525,6 +9525,21 @@ static void d9_pixel(uint32_t id, uint32_t x, uint32_t y, uint8_t out[4]) {
     memcpy(out, &px[(y * 8 + x) * 4], 4);
 }
 
+// A device's CreateVertexShader / CreatePixelShader get no length: the
+// bytecode runs to its end token, past comments and a 1.x def's floats.
+static void test_d3d9_code_length() {
+    std::vector<uint8_t> vs1 = d9_words(
+        {0xFFFE0101u, 0x0000001Fu, 0x80000000u, 0x900F0000u, 0x00000051u, 0xA00F0001u, 0x0000FFFFu,
+         0x3F800000u, 0u, 0u, 0x00000001u, 0xC00F0000u, 0x90E40000u, 0x0000FFFFu, 0xDEADBEEFu});
+    CHECK(d9sh::code_length(vs1.data(), vs1.size()) == 14 * 4);
+    std::vector<uint8_t> ps2 = d9_words({0xFFFF0200u, 0x0002FFFEu, 0x0000FFFFu, 0x0000FFFFu,
+                                         0x02000001u, 0x800F0800u, 0xA0E40000u, 0x0000FFFFu, 7u});
+    CHECK(d9sh::code_length(ps2.data(), ps2.size()) == 8 * 4);
+    CHECK(d9sh::code_length(ps2.data(), 7 * 4) == 0); // cut before the end
+    std::vector<uint8_t> junk = d9_words({0x12345678u, 0x0000FFFFu});
+    CHECK(d9sh::code_length(junk.data(), junk.size()) == 0);
+}
+
 static void test_d3d9_gpu_renderer() {
     const uint32_t RT = 90001, DEPTH = 90002;
     HostD9TextureDesc rt{RT, HOST_D9_TEX_2D, 8, 8, 1, 21, HOST_D9_USAGE_RENDERTARGET};
@@ -9818,6 +9833,7 @@ int main(int argc, char **argv) {
         }
     }
     mem_init();
+    test_d3d9_code_length();
     test_fullscreen_edge_presentation();
     test_native_frame_metrics();
     test_wide_cursor_bound();

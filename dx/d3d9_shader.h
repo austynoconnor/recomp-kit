@@ -141,6 +141,10 @@ struct Program {
     mutable uint32_t cube_samplers = 0;
 };
 
+// The length in bytes of the program at code, through its end token, reading
+// no more than max_bytes; 0 if it is not a shader or has no end. A device's
+// CreateVertexShader and CreatePixelShader are given no length.
+size_t code_length(const uint8_t *code, size_t max_bytes);
 // A decoded program, cached by its bytes.
 const Program &program_for(const std::vector<uint8_t> &code);
 // The key that names a program's bytes (64-bit FNV-1a, never zero), and the

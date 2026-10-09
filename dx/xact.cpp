@@ -110,7 +110,7 @@ void E_GetFinalMixFormat(X86 *c) {
     wr16(p + 16, 22);
     wr16(p + 18, 32);
     wr32(p + 20, 3); // SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
-    static const uint8_t ieee_float[16] = {0x03, 0, 0, 0, 0, 0, 0x10, 0,
+    static const uint8_t ieee_float[16] = {0x03, 0, 0, 0,    0, 0,    0x10, 0,
                                            0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71};
     memcpy(gm_ptr(p + 24), ieee_float, 16);
     set_eax(c, S_OK);
@@ -297,7 +297,8 @@ void xact_register() {
                std::size(g_wavebank));
     com_define(IF_XACT_CUE, "xactengine2_9.dll", "IXACTCue", g_cue, std::size(g_cue));
     com_define(IF_XACT_WAVE, "xactengine2_9.dll", "IXACTWave", g_wave, std::size(g_wave));
-    for (ComIface i : {IF_XACT_ENGINE, IF_XACT_SOUNDBANK, IF_XACT_WAVEBANK, IF_XACT_CUE, IF_XACT_WAVE})
+    for (ComIface i :
+         {IF_XACT_ENGINE, IF_XACT_SOUNDBANK, IF_XACT_WAVEBANK, IF_XACT_CUE, IF_XACT_WAVE})
         com_bind(i, K_XACT);
     com_register_iid(IF_XACT_ENGINE, IID_IXACTEngine_);
     com_register_class(CLSID_XACTEngine_, "XACTEngine", IF_XACT_ENGINE, create_engine);

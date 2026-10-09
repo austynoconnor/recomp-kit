@@ -34,11 +34,12 @@ struct D9ShaderBytes {
 };
 
 struct D9Pipeline {
-    D9ShaderBytes vs, ps;                // bound shader bytecode, empty for none
-    uint64_t vs_key = 0, ps_key = 0;     // d9sh::code_key of each, 0 for none
-    float vconst[256][4] = {};           // vertex shader float registers
-    float pconst[32][4] = {};            // pixel shader float registers
-    uint32_t sampler_tex[16] = {};       // COM object id of the texture per sampler
+    D9ShaderBytes vs, ps;            // bound shader bytecode, empty for none
+    uint64_t vs_key = 0, ps_key = 0; // d9sh::code_key of each, 0 for none
+    uint32_t vs_obj = 0, ps_obj = 0; // device shader objects SetVertexShader / SetPixelShader bound
+    float vconst[256][4] = {};       // vertex shader float registers
+    float pconst[32][4] = {};        // pixel shader float registers
+    uint32_t sampler_tex[16] = {};   // COM object id of the texture per sampler
     uint32_t sampler_state[16][14] = {}; // D3DSAMPLERSTATETYPE, indexed as the enum
     uint32_t rs[256] = {};               // render states, by D3DRENDERSTATETYPE
     bool rs_set[256] = {};

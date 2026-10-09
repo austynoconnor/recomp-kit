@@ -407,9 +407,6 @@ D9_STUB(ProcessVertices, 6)
 D9_STUB(GetVertexDeclaration, 2)
 D9_STUB(SetFVF, 2)
 D9_STUB(GetFVF, 2)
-D9_STUB(CreateVertexShader, 3)
-D9_STUB(SetVertexShader, 2)
-D9_STUB(GetVertexShader, 2)
 D9_STUB(GetVertexShaderConstantF, 4)
 D9_STUB(SetVertexShaderConstantI, 4)
 D9_STUB(GetVertexShaderConstantI, 4)
@@ -419,9 +416,6 @@ D9_STUB(GetStreamSource, 5)
 D9_STUB(SetStreamSourceFreq, 3)
 D9_STUB(GetStreamSourceFreq, 3)
 D9_STUB(GetIndices, 2)
-D9_STUB(CreatePixelShader, 3)
-D9_STUB(SetPixelShader, 2)
-D9_STUB(GetPixelShader, 2)
 D9_STUB(GetPixelShaderConstantF, 4)
 D9_STUB(SetPixelShaderConstantI, 4)
 D9_STUB(GetPixelShaderConstantI, 4)
@@ -1921,11 +1915,20 @@ void Res_GetType(X86 *c) {
     uint32_t type = 0;
     if (o) {
         switch (o->kind) {
-        case K_D3D9SURFACE: type = 1; break;              // D3DRTYPE_SURFACE
-        case K_D3D9TEXTURE: type = o->caps ? 5 : 3; break; // CUBETEXTURE : TEXTURE
-        case K_D3D9VB: type = 6; break;                   // D3DRTYPE_VERTEXBUFFER
-        case K_D3D9IB: type = 7; break;                   // D3DRTYPE_INDEXBUFFER
-        default: break;
+        case K_D3D9SURFACE:
+            type = 1;
+            break; // D3DRTYPE_SURFACE
+        case K_D3D9TEXTURE:
+            type = o->caps ? 5 : 3;
+            break; // CUBETEXTURE : TEXTURE
+        case K_D3D9VB:
+            type = 6;
+            break; // D3DRTYPE_VERTEXBUFFER
+        case K_D3D9IB:
+            type = 7;
+            break; // D3DRTYPE_INDEXBUFFER
+        default:
+            break;
         }
     }
     set_eax(c, type);
@@ -2324,6 +2327,167 @@ static const ComMethod g_query9[] = {
 };
 
 // ---------------------------------------------------------------------------
+// Device shaders: CreateVertexShader / CreatePixelShader keep the bytecode,
+// and SetVertexShader / SetPixelShader bind it into the pipeline record the
+// same way an effect pass does, so either renderer draws with it.
+// ---------------------------------------------------------------------------
+namespace {
+struct DeviceShader {
+    std::shared_ptr<const std::vector<uint8_t>> bytes;
+    uint64_t key = 0;
+    bool pixel = false;
+};
+std::unordered_map<uint32_t, DeviceShader> &device_shaders() {
+    static auto *m = new std::unordered_map<uint32_t, DeviceShader>();
+    return *m;
+}
+} // namespace
+
+static void shader_destroy(ComObj *o) {
+    device_shaders().erase(o->id);
+}
+
+// (this, pFunction, ppShader). The bytecode carries no length; it runs to its
+// end token.
+static void create_shader(X86 *c, bool pixel) {
+    ComObj *dev = this_device9(c);
+    uint32_t code = arg(c, 1), out = arg(c, 2);
+    if (!dev || !code || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t avail = code < GUEST_SIZE ? GUEST_SIZE - code : 0;
+    size_t len = d9sh::code_length(gm_ptr(code), std::min<uint32_t>(avail, 1u << 20));
+    uint32_t version = len ? rd32(code) : 0;
+    if (!len || ((version >> 16) == 0xffff) != pixel) {
+        LOGW("d3d9: Create%sShader given no %s shader at %08x (version %08x)",
+             pixel ? "Pixel" : "Vertex", pixel ? "pixel" : "vertex", code, version);
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    ComObj *o = com_new(K_D3D9SHADER);
+    if (!o) {
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    o->dev_d3d = dev->id;
+    DeviceShader sh;
+    const uint8_t *p = gm_ptr(code);
+    sh.bytes = std::make_shared<const std::vector<uint8_t>>(p, p + len);
+    sh.key = d9sh::code_key(p, len);
+    sh.pixel = pixel;
+    device_shaders()[o->id] = sh;
+    uint32_t view_ = com_view(o, pixel ? IF_D3DPIXELSHADER9 : IF_D3DVERTEXSHADER9);
+    if (!view_) {
+        com_release(o);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    com_out_ptr(out, view_);
+    com_ret(c, D3D_OK9);
+}
+void Dev_CreateVertexShader(X86 *c) {
+    create_shader(c, false);
+}
+void Dev_CreatePixelShader(X86 *c) {
+    create_shader(c, true);
+}
+
+// (this, pShader): null unbinds. A shader of the other stage is refused.
+static void set_shader(X86 *c, bool pixel) {
+    ComObj *dev = this_device9(c);
+    if (!dev) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    ComObj *o = com_this(arg(c, 1));
+    auto it = o && o->kind == K_D3D9SHADER ? device_shaders().find(o->id) : device_shaders().end();
+    if (arg(c, 1) && (it == device_shaders().end() || it->second.pixel != pixel)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    D9Pipeline &pl = d9_pipeline(dev->id);
+    D9ShaderBytes &slot = pixel ? pl.ps : pl.vs;
+    uint64_t &key = pixel ? pl.ps_key : pl.vs_key;
+    uint32_t &bound = pixel ? pl.ps_obj : pl.vs_obj;
+    if (it == device_shaders().end()) {
+        slot.bytes.reset();
+        key = 0;
+        bound = 0;
+    } else {
+        slot.bytes = it->second.bytes;
+        key = it->second.key;
+        bound = o->id;
+    }
+    pl.label = nullptr;
+    com_ret(c, D3D_OK9);
+}
+void Dev_SetVertexShader(X86 *c) {
+    set_shader(c, false);
+}
+void Dev_SetPixelShader(X86 *c) {
+    set_shader(c, true);
+}
+
+// (this, ppShader): the shader SetVertexShader / SetPixelShader bound, with a
+// reference; null when none is, or when an effect pass bound the bytecode.
+static void get_shader(X86 *c, bool pixel) {
+    ComObj *dev = this_device9(c);
+    uint32_t out = arg(c, 1);
+    if (!dev || !out) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    D9Pipeline &pl = d9_pipeline(dev->id);
+    ComObj *o = com_get(pixel ? pl.ps_obj : pl.vs_obj);
+    const D9ShaderBytes &slot = pixel ? pl.ps : pl.vs;
+    auto it = o ? device_shaders().find(o->id) : device_shaders().end();
+    if (!o || it == device_shaders().end() || it->second.bytes != slot.bytes) {
+        com_out_ptr(out, 0);
+    } else {
+        com_addref(o);
+        com_out_ptr(out, com_view(o, pixel ? IF_D3DPIXELSHADER9 : IF_D3DVERTEXSHADER9));
+    }
+    com_ret(c, D3D_OK9);
+}
+void Dev_GetVertexShader(X86 *c) {
+    get_shader(c, false);
+}
+void Dev_GetPixelShader(X86 *c) {
+    get_shader(c, true);
+}
+
+// (this, pData, pSizeOfData): a null pData asks only for the size.
+void Shader_GetFunction(X86 *c) {
+    ComObj *o = com_this_arg(c);
+    uint32_t data = arg(c, 1), size_at = arg(c, 2);
+    auto it = o ? device_shaders().find(o->id) : device_shaders().end();
+    if (it == device_shaders().end() || !size_at) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t n = (uint32_t)it->second.bytes->size();
+    if (data) {
+        if (rd32(size_at) < n) {
+            com_ret(c, D3DERR_INVALIDCALL);
+            return;
+        }
+        for (uint32_t i = 0; i < n; ++i)
+            wr8(data + i, (*it->second.bytes)[i]);
+    }
+    wr32(size_at, n);
+    com_ret(c, D3D_OK9);
+}
+
+static const ComMethod g_shader9[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"GetDevice", 2, Res_GetDevice},
+    {"GetFunction", 3, Shader_GetFunction},
+};
+
+// ---------------------------------------------------------------------------
 // The pipeline record, and the device setters that write it
 // ---------------------------------------------------------------------------
 D9Pipeline &d9_pipeline(uint32_t device_id) {
@@ -2640,6 +2804,10 @@ void d3d9_register() {
     com_define(IF_D3DVERTEXDECL9, "d3d9.dll", "IDirect3DVertexDeclaration9", g_decl9,
                std::size(g_decl9));
     com_define(IF_D3DQUERY9, "d3d9.dll", "IDirect3DQuery9", g_query9, std::size(g_query9));
+    com_define(IF_D3DVERTEXSHADER9, "d3d9.dll", "IDirect3DVertexShader9", g_shader9,
+               std::size(g_shader9));
+    com_define(IF_D3DPIXELSHADER9, "d3d9.dll", "IDirect3DPixelShader9", g_shader9,
+               std::size(g_shader9));
     com_bind(IF_D3DTEXTURE9, K_D3D9TEXTURE);
     com_register_iid(IF_D3DTEXTURE9, IID_IDirect3DTexture9_);
     com_bind(IF_D3DCUBETEXTURE9, K_D3D9TEXTURE);
@@ -2651,5 +2819,8 @@ void d3d9_register() {
     for (ComKind k : {K_D3D9TEXTURE, K_D3D9SURFACE, K_D3D9VB, K_D3D9IB})
         com_set_destructor(k, d3d9_resource_destroy);
     com_set_destructor(K_D3D9QUERY, query_destroy);
+    com_bind(IF_D3DVERTEXSHADER9, K_D3D9SHADER);
+    com_bind(IF_D3DPIXELSHADER9, K_D3D9SHADER);
+    com_set_destructor(K_D3D9SHADER, shader_destroy);
     imports_register(g_d3d9_exports, std::size(g_d3d9_exports));
 }

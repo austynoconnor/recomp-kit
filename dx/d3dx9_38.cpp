@@ -72,8 +72,7 @@ void X_D3DXCreateEffect(X86 *c) {
 }
 
 // Fail-clean shims, each with its output pointers cleared first.
-template <int Out1, int Out2, int Out3>
-void fails(X86 *c, const char *what, uint32_t hr) {
+template <int Out1, int Out2, int Out3> void fails(X86 *c, const char *what, uint32_t hr) {
     if (Out1 >= 0)
         zero_out(arg(c, Out1));
     if (Out2 >= 0)
@@ -104,45 +103,105 @@ struct KnownShader {
 // def c4, 1/255, 2, -1, 1
 #define DEF_C4 0x05000051u, 0xa00f0004u, 0x3b808081u, 0x40000000u, 0xbf800000u, 0x3f800000u
 #define DCL(usage, reg) 0x0200001fu, (usage), (reg)
-#define DP4_POS(mask, creg) 0x03000009u, 0xc0000000u | ((mask) << 16), 0x90e40000u, 0xa0e40000u | (creg)
-const uint32_t k_vs_color[] = {
-    0xfffe0200u, DEF_C4, DCL(0x80000000u, 0x900f0000u), DCL(0x8000000au, 0x900f0001u),
-    DP4_POS(1, 0), DP4_POS(2, 1), DP4_POS(4, 2), DP4_POS(8, 3),
-    0x03000005u, 0xd00f0000u, 0x90c60001u, 0xa0000004u, // mul oD0, v1.zyxw, c4.x
-    0x0000ffffu};
-const uint32_t k_vs_textured[] = {
-    0xfffe0200u, DEF_C4, DCL(0x80000000u, 0x900f0000u), DCL(0x80000005u, 0x900f0001u),
-    DCL(0x8000000au, 0x900f0002u),
-    DP4_POS(1, 0), DP4_POS(2, 1), DP4_POS(4, 2), DP4_POS(8, 3),
-    0x02000001u, 0xe0030000u, 0x90e40001u,              // mov oT0.xy, v1
-    0x03000005u, 0xd00f0000u, 0x90c60002u, 0xa0000004u, // mul oD0, v2.zyxw, c4.x
-    0x0000ffffu};
-const uint32_t k_vs_screen[] = {
-    0xfffe0200u, DEF_C4,
-    0x05000051u, 0xa00f0005u, 0xc0000000u, 0x3f800000u, 0u, 0u, // def c5, -2, 1, 0, 0
-    DCL(0x80000000u, 0x900f0000u), DCL(0x80000005u, 0x900f0001u), DCL(0x8000000au, 0x900f0002u),
-    0x04000004u, 0xc0010000u, 0x90000000u, 0xa0550004u, 0xa0aa0004u, // mad oPos.x, v0.x, c4.y, c4.z
-    0x04000004u, 0xc0020000u, 0x90550000u, 0xa0000005u, 0xa0550005u, // mad oPos.y, v0.y, c5.x, c5.y
-    0x03000009u, 0x80040000u, 0x90e40000u, 0xa0e40002u,              // dp4 r0.z, v0, c2
-    0x03000009u, 0x80080000u, 0x90e40000u, 0xa0e40003u,              // dp4 r0.w, v0, c3
-    0x02000006u, 0x80080001u, 0x80ff0000u,                           // rcp r1.w, r0.w
-    0x03000005u, 0xc0040000u, 0x80aa0000u, 0x80ff0001u,              // mul oPos.z, r0.z, r1.w
-    0x02000001u, 0xc0080000u, 0xa0ff0004u,                           // mov oPos.w, c4.w
-    0x02000001u, 0xe0030000u, 0x90e40001u,                           // mov oT0.xy, v1
-    0x03000005u, 0xd00f0000u, 0x90c60002u, 0xa0000004u,              // mul oD0, v2.zyxw, c4.x
-    0x0000ffffu};
-const uint32_t k_ps_color[] = {
-    0xffff0200u, DCL(0x80000000u, 0x900f0000u), // dcl v0
-    0x02000001u, 0x800f0800u, 0x90e40000u,      // mov oC0, v0
-    0x0000ffffu};
-const uint32_t k_ps_textured[] = {
-    0xffff0200u, DCL(0x80000000u, 0xb0030000u), // dcl t0.xy
-    DCL(0x80000000u, 0x900f0000u),              // dcl v0
-    DCL(0x90000000u, 0xa00f0800u),              // dcl_2d s0
-    0x03000042u, 0x800f0000u, 0xb0e40000u, 0xa0e40800u, // texld r0, t0, s0
-    0x03000005u, 0x800f0000u, 0x80e40000u, 0x90e40000u, // mul r0, r0, v0
-    0x02000001u, 0x800f0800u, 0x80e40000u,              // mov oC0, r0
-    0x0000ffffu};
+#define DP4_POS(mask, creg)                                                                        \
+    0x03000009u, 0xc0000000u | ((mask) << 16), 0x90e40000u, 0xa0e40000u | (creg)
+const uint32_t k_vs_color[] = {0xfffe0200u,
+                               DEF_C4,
+                               DCL(0x80000000u, 0x900f0000u),
+                               DCL(0x8000000au, 0x900f0001u),
+                               DP4_POS(1, 0),
+                               DP4_POS(2, 1),
+                               DP4_POS(4, 2),
+                               DP4_POS(8, 3),
+                               0x03000005u,
+                               0xd00f0000u,
+                               0x90c60001u,
+                               0xa0000004u, // mul oD0, v1.zyxw, c4.x
+                               0x0000ffffu};
+const uint32_t k_vs_textured[] = {0xfffe0200u,
+                                  DEF_C4,
+                                  DCL(0x80000000u, 0x900f0000u),
+                                  DCL(0x80000005u, 0x900f0001u),
+                                  DCL(0x8000000au, 0x900f0002u),
+                                  DP4_POS(1, 0),
+                                  DP4_POS(2, 1),
+                                  DP4_POS(4, 2),
+                                  DP4_POS(8, 3),
+                                  0x02000001u,
+                                  0xe0030000u,
+                                  0x90e40001u, // mov oT0.xy, v1
+                                  0x03000005u,
+                                  0xd00f0000u,
+                                  0x90c60002u,
+                                  0xa0000004u, // mul oD0, v2.zyxw, c4.x
+                                  0x0000ffffu};
+const uint32_t k_vs_screen[] = {0xfffe0200u,
+                                DEF_C4,
+                                0x05000051u,
+                                0xa00f0005u,
+                                0xc0000000u,
+                                0x3f800000u,
+                                0u,
+                                0u, // def c5, -2, 1, 0, 0
+                                DCL(0x80000000u, 0x900f0000u),
+                                DCL(0x80000005u, 0x900f0001u),
+                                DCL(0x8000000au, 0x900f0002u),
+                                0x04000004u,
+                                0xc0010000u,
+                                0x90000000u,
+                                0xa0550004u,
+                                0xa0aa0004u, // mad oPos.x, v0.x, c4.y, c4.z
+                                0x04000004u,
+                                0xc0020000u,
+                                0x90550000u,
+                                0xa0000005u,
+                                0xa0550005u, // mad oPos.y, v0.y, c5.x, c5.y
+                                0x03000009u,
+                                0x80040000u,
+                                0x90e40000u,
+                                0xa0e40002u, // dp4 r0.z, v0, c2
+                                0x03000009u,
+                                0x80080000u,
+                                0x90e40000u,
+                                0xa0e40003u, // dp4 r0.w, v0, c3
+                                0x02000006u,
+                                0x80080001u,
+                                0x80ff0000u, // rcp r1.w, r0.w
+                                0x03000005u,
+                                0xc0040000u,
+                                0x80aa0000u,
+                                0x80ff0001u, // mul oPos.z, r0.z, r1.w
+                                0x02000001u,
+                                0xc0080000u,
+                                0xa0ff0004u, // mov oPos.w, c4.w
+                                0x02000001u,
+                                0xe0030000u,
+                                0x90e40001u, // mov oT0.xy, v1
+                                0x03000005u,
+                                0xd00f0000u,
+                                0x90c60002u,
+                                0xa0000004u, // mul oD0, v2.zyxw, c4.x
+                                0x0000ffffu};
+const uint32_t k_ps_color[] = {0xffff0200u, DCL(0x80000000u, 0x900f0000u), // dcl v0
+                               0x02000001u, 0x800f0800u,
+                               0x90e40000u, // mov oC0, v0
+                               0x0000ffffu};
+const uint32_t k_ps_textured[] = {0xffff0200u,
+                                  DCL(0x80000000u, 0xb0030000u), // dcl t0.xy
+                                  DCL(0x80000000u, 0x900f0000u), // dcl v0
+                                  DCL(0x90000000u, 0xa00f0800u), // dcl_2d s0
+                                  0x03000042u,
+                                  0x800f0000u,
+                                  0xb0e40000u,
+                                  0xa0e40800u, // texld r0, t0, s0
+                                  0x03000005u,
+                                  0x800f0000u,
+                                  0x80e40000u,
+                                  0x90e40000u, // mul r0, r0, v0
+                                  0x02000001u,
+                                  0x800f0800u,
+                                  0x80e40000u, // mov oC0, r0
+                                  0x0000ffffu};
 #undef DEF_C4
 #undef DCL
 #undef DP4_POS
@@ -198,8 +257,8 @@ void X_D3DXCompileShader(X86 *c) {
                 set_eax(c, D3D_OK_);
                 return;
             }
-        LOGW("d3dx9_38: D3DXCompileShader: unknown source %016llx (%u bytes) fails", (unsigned long long)h,
-             len);
+        LOGW("d3dx9_38: D3DXCompileShader: unknown source %016llx (%u bytes) fails",
+             (unsigned long long)h, len);
     }
     set_eax(c, E_FAIL);
 }
@@ -410,10 +469,10 @@ void X_D3DXMatrixReflect(X86 *c) {
         cc /= len;
         d /= len;
     }
-    float m[16] = {-2 * a * a + 1, -2 * b * a,      -2 * cc * a,      0,
-                   -2 * a * b,     -2 * b * b + 1,  -2 * cc * b,      0,
-                   -2 * a * cc,    -2 * b * cc,     -2 * cc * cc + 1, 0,
-                   -2 * a * d,     -2 * b * d,      -2 * cc * d,      1};
+    float m[16] = {-2 * a * a + 1, -2 * b * a,     -2 * cc * a,      0,
+                   -2 * a * b,     -2 * b * b + 1, -2 * cc * b,      0,
+                   -2 * a * cc,    -2 * b * cc,    -2 * cc * cc + 1, 0,
+                   -2 * a * d,     -2 * b * d,     -2 * cc * d,      1};
     write_m(out, m);
     set_eax(c, out);
 }
@@ -434,10 +493,13 @@ const ImportShim g_exports[] = {
     {"d3dx9_38.dll", "D3DXCreateTexture", 8, X_D3DXCreateTexture},
     {"d3dx9_38.dll", "D3DXCreateTextureFromFileInMemory", 4, X_D3DXCreateTextureFromFileInMemory},
     {"d3dx9_38.dll", "D3DXCreateTextureFromFileExA", 14, X_D3DXCreateTextureFromFileExA},
-    {"d3dx9_38.dll", "D3DXCreateCubeTextureFromFileInMemory", 4, X_D3DXCreateCubeTextureFromFileInMemory},
+    {"d3dx9_38.dll", "D3DXCreateCubeTextureFromFileInMemory", 4,
+     X_D3DXCreateCubeTextureFromFileInMemory},
     {"d3dx9_38.dll", "D3DXCreateCubeTextureFromFileExA", 13, X_D3DXCreateCubeTextureFromFileExA},
-    {"d3dx9_38.dll", "D3DXCreateVolumeTextureFromFileInMemory", 4, X_D3DXCreateVolumeTextureFromFileInMemory},
-    {"d3dx9_38.dll", "D3DXCreateVolumeTextureFromFileExA", 15, X_D3DXCreateVolumeTextureFromFileExA},
+    {"d3dx9_38.dll", "D3DXCreateVolumeTextureFromFileInMemory", 4,
+     X_D3DXCreateVolumeTextureFromFileInMemory},
+    {"d3dx9_38.dll", "D3DXCreateVolumeTextureFromFileExA", 15,
+     X_D3DXCreateVolumeTextureFromFileExA},
     {"d3dx9_38.dll", "D3DXGetImageInfoFromFileInMemory", 3, X_D3DXGetImageInfoFromFileInMemory},
     {"d3dx9_38.dll", "D3DXLoadSurfaceFromSurface", 8, X_D3DXLoadSurfaceFromSurface},
     {"d3dx9_38.dll", "D3DXSaveSurfaceToFileA", 5, X_D3DXSaveSurfaceToFileA},

@@ -255,6 +255,54 @@ Program load(const std::vector<uint8_t> &code) {
 
 } // namespace
 
+size_t code_length(const uint8_t *code, size_t max_bytes) {
+    auto tok = [&](size_t i) -> uint32_t {
+        uint32_t t;
+        memcpy(&t, code + i * 4, 4);
+        return t;
+    };
+    size_t n = max_bytes / 4;
+    if (!code || n < 2)
+        return 0;
+    uint32_t version = tok(0);
+    if ((version >> 16) != 0xffff && (version >> 16) != 0xfffe)
+        return 0;
+    uint32_t major = (version >> 8) & 0xff, minor = version & 0xff;
+    bool pixel = (version >> 16) == 0xffff;
+    size_t i = 1;
+    while (i < n) {
+        uint32_t t = tok(i);
+        uint32_t op = t & 0xffff;
+        if (op == OP_END)
+            return (i + 1) * 4;
+        if (op == OP_COMMENT) {
+            i += 1 + ((t >> 16) & 0x7fff);
+            continue;
+        }
+        if (op == OP_PHASE) {
+            ++i;
+            continue;
+        }
+        if (major >= 2) {
+            i += 1 + ((t >> 24) & 0xf);
+            continue;
+        }
+        // 1.x carries no length: count operands, and a relative source on a
+        // 1.x vertex shader takes no extra token.
+        int count = operand_count(op, major, minor, pixel);
+        if (count < 0) {
+            // An instruction this decoder does not know: take the next end
+            // token, which an operand token (bit 31 set) cannot be.
+            for (size_t k = i + 1; k < n; ++k)
+                if (tok(k) == 0x0000ffffu)
+                    return (k + 1) * 4;
+            return 0;
+        }
+        i += 1 + (size_t)count;
+    }
+    return 0;
+}
+
 uint64_t code_key(const uint8_t *code, size_t size) {
     uint64_t h = 1469598103934665603ull;
     for (size_t i = 0; i < size; ++i) {

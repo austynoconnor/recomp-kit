@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- 2026-10-08 — Claude Opus 5.5: Direct3D 9 device shaders.
+  CreateVertexShader and CreatePixelShader keep the bytecode (its length is
+  found by walking to the end token, `d9sh::code_length`, past comments and
+  1.x `def` floats); SetVertexShader / SetPixelShader bind it into the
+  pipeline record exactly as an effect pass does, so the CPU and GPU
+  renderers draw with it; GetVertexShader / GetPixelShader and
+  IDirect3D{Vertex,Pixel}Shader9::GetFunction work. All six were stubs that
+  left out pointers unset, so a game that compiles its own shaders
+  (Gamebryo's Bully) had every draw skipped. New host test
+  `test_d3d9_code_length`. Integer and boolean shader constants are still
+  not recorded. Also formats the Bully-branch sources with clang-format.
+
 - 2026-10-08 — Claude Opus 5.5: IDirect3DResource9::GetType reports the
   resource type (surface, texture, cube texture, vertex or index buffer)
   instead of 0; QueryInterface answers IID_IDirect3DTexture9 on textures and

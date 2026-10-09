@@ -567,13 +567,24 @@ void o_GetErrorInfo(X86 *c) {
 }
 const ImportShim shims[] = {
 #define O(name, n) {"OLEAUT32.dll", #name, n, o_##name}
-    O(VariantInit, 1),           O(VariantClear, 1),        O(VariantCopy, 2),
-    O(VariantCopyInd, 2),        O(VariantChangeType, 4),   O(SysAllocStringLen, 2),
+    O(VariantInit, 1),
+    O(VariantClear, 1),
+    O(VariantCopy, 2),
+    O(VariantCopyInd, 2),
+    O(VariantChangeType, 4),
+    O(SysAllocStringLen, 2),
     O(SysAllocString, 1),
-    O(SysReAllocStringLen, 3),   O(SysFreeString, 1),       O(SafeArrayCreate, 3),
-    O(SafeArrayGetLBound, 3),    O(SafeArrayGetUBound, 3),  O(SafeArrayGetElement, 3),
-    O(SafeArrayPutElement, 3),   O(SafeArrayPtrOfIndex, 3), O(SafeArrayAccessData, 2),
-    O(SafeArrayUnaccessData, 1), O(GetErrorInfo, 2)
+    O(SysReAllocStringLen, 3),
+    O(SysFreeString, 1),
+    O(SafeArrayCreate, 3),
+    O(SafeArrayGetLBound, 3),
+    O(SafeArrayGetUBound, 3),
+    O(SafeArrayGetElement, 3),
+    O(SafeArrayPutElement, 3),
+    O(SafeArrayPtrOfIndex, 3),
+    O(SafeArrayAccessData, 2),
+    O(SafeArrayUnaccessData, 1),
+    O(GetErrorInfo, 2)
 #undef O
 };
 } // namespace
