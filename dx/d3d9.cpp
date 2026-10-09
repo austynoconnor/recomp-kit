@@ -53,6 +53,11 @@
 // {81BDCBCA-64D4-426d-AE8D-AD0147F4275C} and {D0223B96-BF7A-43fd-92BD-A43B0D82B9EB}
 static const uint8_t IID_IDirect3D9_[16] =
     IID_BYTES(0x81bdcbca, 0x64d4, 0x426d, 0xae, 0x8d, 0xad, 0x01, 0x47, 0xf4, 0x27, 0x5c);
+// {85C31227-3DE5-4F00-9B3A-F11AC38C18B5}. A renderer asks a base texture
+// for it to learn that it is a 2D texture. 2D and cube textures share one
+// object kind here, so a cube texture answers it too; GetType tells them apart.
+static const uint8_t IID_IDirect3DTexture9_[16] = {0x27, 0x12, 0xc3, 0x85, 0xe5, 0x3d, 0x00, 0x4f,
+                                                   0x9b, 0x3a, 0xf1, 0x1a, 0xc3, 0x8c, 0x18, 0xb5};
 static const uint8_t IID_IDirect3DDevice9_[16] =
     IID_BYTES(0xd0223b96, 0xbf7a, 0x43fd, 0x92, 0xbd, 0xa4, 0x3b, 0x0d, 0x82, 0xb9, 0xeb);
 
@@ -1909,7 +1914,22 @@ RES_STUB(Res, FreePrivateData)
 RES_STUB(Res, SetPriority)
 RES_STUB(Res, GetPriority)
 RES_STUB(Res, PreLoad)
-RES_STUB(Res, GetType)
+// (this): the D3DRESOURCETYPE, which a renderer uses to tell a 2D texture
+// from a cube map or a buffer it holds only as a base pointer.
+void Res_GetType(X86 *c) {
+    ComObj *o = com_this_arg(c);
+    uint32_t type = 0;
+    if (o) {
+        switch (o->kind) {
+        case K_D3D9SURFACE: type = 1; break;              // D3DRTYPE_SURFACE
+        case K_D3D9TEXTURE: type = o->caps ? 5 : 3; break; // CUBETEXTURE : TEXTURE
+        case K_D3D9VB: type = 6; break;                   // D3DRTYPE_VERTEXBUFFER
+        case K_D3D9IB: type = 7; break;                   // D3DRTYPE_INDEXBUFFER
+        default: break;
+        }
+    }
+    set_eax(c, type);
+}
 RES_STUB(Tex, SetLOD)
 RES_STUB(Tex, GetLOD)
 RES_STUB(Tex, SetAutoGenFilterType)
@@ -2621,6 +2641,7 @@ void d3d9_register() {
                std::size(g_decl9));
     com_define(IF_D3DQUERY9, "d3d9.dll", "IDirect3DQuery9", g_query9, std::size(g_query9));
     com_bind(IF_D3DTEXTURE9, K_D3D9TEXTURE);
+    com_register_iid(IF_D3DTEXTURE9, IID_IDirect3DTexture9_);
     com_bind(IF_D3DCUBETEXTURE9, K_D3D9TEXTURE);
     com_bind(IF_D3DSURFACE9, K_D3D9SURFACE);
     com_bind(IF_D3DVERTEXBUFFER9, K_D3D9VB);

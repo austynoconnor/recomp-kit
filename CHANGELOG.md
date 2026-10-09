@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- 2026-10-08 — Claude Opus 5.5: IDirect3DResource9::GetType reports the
+  resource type (surface, texture, cube texture, vertex or index buffer)
+  instead of 0; QueryInterface answers IID_IDirect3DTexture9 on textures and
+  D3DX 9.36+'s IID_ID3DXEffect on effects (the effect vtable already has
+  that version's layout). Gamebryo asks for both; a refused effect QI left
+  it calling through a null pointer after the first Present.
+
 - 2026-10-08 — Claude Opus 5.5: overlapped file reads. ReadFile honours an
   OVERLAPPED's Offset/OffsetHigh (it read from the current file position),
   completes the read before returning, fills in Internal and InternalHigh

@@ -458,4 +458,10 @@ void d3dx9_38_register(const ImportShim *d3dx9_26, size_t count) {
         }
     imports_register(aliases.data(), aliases.size());
     imports_register(g_exports, std::size(g_exports));
+    // IID_ID3DXEffect as D3DX 9.36 and later name it,
+    // {F6CEB4B3-4E4C-40DD-B883-8D8DE5EA0CD5}; the effect's vtable is already
+    // that version's (DeleteParameterBlock and SetRawValue included).
+    static const uint8_t IID_ID3DXEffect_38[16] = {0xb3, 0xb4, 0xce, 0xf6, 0x4c, 0x4e, 0xdd, 0x40,
+                                                   0xb8, 0x83, 0x8d, 0x8d, 0xe5, 0xea, 0x0c, 0xd5};
+    com_register_iid(IF_D3DXEFFECT, IID_ID3DXEffect_38);
 }
