@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- 2026-10-09 00:20 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: browser frame rate. Star Wars Battlefront II in level
+  (Dagobah, 800x600, headless Chrome) went from 20-25 to 44-46 game frames
+  a second (33.5 with the query cache alone; frame time 23 ms); memory
+  about 2.3 GB peak, CPU about 190%.
+  - `host/gpu/d3d9_host.cpp`: occlusion query results in the browser come
+    from a cache the main thread fills (`Op::QueryPoll`), one poll queued
+    per query, instead of a blocking round trip per `GetData`; a
+    generation per query drops a stale answer. The game thread spent a
+    quarter of its time waiting there.
+  - `host/gpu/d3d9_host.cpp`: the browser's present is pipelined
+    (`Op::Present`): the game waits only for the previous frame's present,
+    so its next frame runs while the main thread encodes this one.
+  - `host/present_thread.cpp`, `host/present_frame.h`: the presenter keeps
+    the overlay's size instead of asking the device (a main-thread round
+    trip in the browser) on every acquire.
+  - `runtime/kernel32.cpp`: in the browser, `sched_checkpoint` reads the
+    clock every 16th pass. `runtime/imports.cpp`: the import trace entry is
+    a bounded copy, not `snprintf`, on every import call.
+  - `tools/recomp/translate.py`, `runtime/intrinsics.h`,
+    `tools/game_config.py`: `[translate] ftol2` names the MSVC CRT's
+    `_ftol2`; direct calls run `recomp_ftol2_value` in line (truncation to
+    int64, integer indefinite on overflow or NaN, one pop) and indirect ones
+    reach `recomp_ftol2`. It was 9% of the browser game thread
+    (~2200 call sites in Battlefront II).
+  - `tools/recomp/translate.py`: `recomp_is_call_return` answers from a
+    bitmap built at load instead of a binary search on every guest RET.
+  - Tests: `runtime_tests` checks `_ftol2` truncation, overflow, NaN and an
+    exact FILD value; `test_game_config` checks the `ftol2` key.
+    Native suites 25 of 25 and Python 419 passed, 5 skipped, on Linux
+    (`runtime_tests` skips without a kit game image; its `_ftol2` cases
+    were run standalone and pass). In-level browser run renders normally.
+
 - 2026-10-08 22:56 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: a keyboard trace.
   - `dx/dinput.cpp`: `RECOMP_TRACE_PAD` also logs each keyboard
