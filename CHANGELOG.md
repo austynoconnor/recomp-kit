@@ -10,7 +10,11 @@
   the formatted side was taken. Star Wars Battlefront II keeps
   `web_video` off: its web build never linked FFmpeg, and the native Bink
   path (`BinkSetIO` reader) is unchanged.
-  - Tests: TESTLINE
+  - Tests: native suites 25 of 25 and Python 421 passed, 5 skipped, on
+    Linux. The web build served by Windows Python on port 8092 (program
+    sent brotli-compressed, 9 MB of 114 MB; ranges, COOP/COEP and ETags
+    answered) reaches a Dagobah spawn in headless Chrome at 35-42 new
+    frames a second, 2.6 GB peak.
 
 - 2026-10-09 10:40 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: formatting only. `host/gpu/d3d9_host.cpp`,
