@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 2026-10-09 10:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: formatting only. `host/gpu/d3d9_host.cpp`,
+  `host/gpu/webgpu/d3d9_webgpu.cpp` and `runtime/tests/runtime_tests.cpp`
+  were left unformatted on this branch, so `tools/format.py` failed; ran it
+  with `--write`. No code changes.
+
 - 2026-10-09 10:00 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: generic web fixes from `giggity-mgs2` (d034c3c), for
   every game's web build. Game pads: `web_main` (`host/sdl/main.cpp`)
