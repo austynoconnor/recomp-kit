@@ -2963,6 +2963,15 @@ void sched_checkpoint() {
     }
     if (threads().size() < 2 || t_atomic)
         return;
+#ifdef __EMSCRIPTEN__
+    // In the browser the clock is a call out to JavaScript, and the guest
+    // passes this point on every import: Star Wars Battlefront II spent 8% of
+    // its game thread reading the clock here. Look at it every 16th pass; a
+    // slice still ends within a few imports of its millisecond.
+    static thread_local uint32_t t_passes;
+    if (++t_passes & 15)
+        return;
+#endif
     GuestThread *me = threads()[t_self];
     double now = sched_now();
     if (now - me->last_yield < SCHED_SLICE_SECONDS)

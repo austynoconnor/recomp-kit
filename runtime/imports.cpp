@@ -16,6 +16,7 @@ void sched_checkpoint();
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cstring>
 
 namespace {
 
@@ -430,8 +431,14 @@ bool imports_dispatch(X86 *c, uint32_t target) {
     uint8_t argc = tramps()[idx].argc;
     // A guest exception can longjmp across fn(c). Keep no C++ owner live
     // across that call, and do not retain a pointer into the movable vector.
+    // A plain bounded copy: formatting it cost every import a vsnprintf.
     char desc[512];
-    snprintf(desc, sizeof desc, "%s", tramps()[idx].desc.c_str());
+    {
+        const std::string &d = tramps()[idx].desc;
+        const size_t n = std::min(d.size(), sizeof desc - 1);
+        memcpy(desc, d.data(), n);
+        desc[n] = 0;
+    }
     ++tramps()[idx].calls;
     ++g_import_calls;
 

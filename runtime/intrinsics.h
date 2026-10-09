@@ -60,6 +60,41 @@ void recomp_setjmp(X86 *c);
  * _setjmp and transfers control back to it. Does not return. */
 void recomp_longjmp(X86 *c);
 
+/* The MSVC CRT's _ftol2: ST(0) truncated toward zero into EDX:EAX, then
+ * popped. The CRT gets there with FISTP in the current rounding mode and a
+ * one-unit correction from the sign of the remainder; the answer is a plain
+ * truncation whatever the control word says. A value outside the int64 range,
+ * or a NaN, gives the integer indefinite 0x8000000000000000 and raises the
+ * invalid-operation flag, as the CRT's FISTP does. ECX and EFLAGS, which the
+ * CRT clobbers, are left alone; no caller can depend on either.
+ *
+ * recomp_ftol2_value is the whole effect apart from CALL/RET, so a direct
+ * call site can run it in line. recomp_ftol2 is the body for a call that
+ * reaches it through a pointer: the same, then the cdecl RET. */
+static inline void recomp_ftol2_value(X86 *c) {
+    int64_t r;
+    if (c->st_exact[c->fpu_top]) {
+        r = (int64_t)c->st_bits[c->fpu_top];
+    } else {
+        double v = ST(c, 0);
+        if (v >= -9223372036854775808.0 && v < 9223372036854775808.0) {
+            r = (int64_t)v;
+        } else {
+            r = INT64_MIN;
+            c->fpu_sw |= 0x0001u;
+        }
+    }
+    fdrop(c);
+    c->r[R_EAX] = (uint32_t)(uint64_t)r;
+    c->r[R_EDX] = (uint32_t)((uint64_t)r >> 32);
+}
+static inline void recomp_ftol2(X86 *c) {
+    recomp_ftol2_value(c);
+    c->eip = rd32(c->r[R_ESP]);
+    c->r[R_ESP] += 4;
+    recomp_return(c);
+}
+
 /* The return address the runtime pushes when it calls a guest callback
  * (WNDPROC, thread body, multimedia timer). Executing it is a bug and the
  * runtime reports it by name. */

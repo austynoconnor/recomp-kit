@@ -217,6 +217,75 @@
     changes, from Windows symlink privileges and no native compiler). No
     native build or native tests were run: this computer has no native
     C/C++ toolchain.
+- 2026-10-09 10:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: generic web fixes from `giggity-mgs2` (d034c3c), for
+  every game's web build. Game pads: `web_main` (`host/sdl/main.cpp`)
+  started SDL without `SDL_INIT_GAMEPAD`, so no pad reached any game in a
+  browser; it now starts the gamepad subsystem as the desktop host does (in
+  MGS2 the log then reports "gamepad connected" and the left stick moves the
+  player). Downloads: `web/player/fetch-backend.js` keeps every one-MiB
+  piece of streamed game data in Cache Storage (`recomp-pieces-v1`), keyed
+  by the file's ETag (else Last-Modified, else size); the store opens in the
+  background, so the backend is registered before the function first yields
+  (awaiting it first left WasmFS allocating files on a missing backend when
+  the disk was slow: "Cannot read properties of undefined (reading
+  'allocFile')"); writes happen in the background, stop past 80% of the
+  quota and never fail a read. `web/player/runtime.html` loads the program
+  through `instantiateWasm` from Cache Storage (`recomp-program-v1`) with an
+  If-Modified-Since check, and uses the stored copy when the server cannot
+  be reached; a program of 100+ MB is larger than Chrome's HTTP cache keeps
+  per entry. Compression: `tools/web_launcher.py --web-build` writes
+  `<name>.gz` (and `.br` with the `brotli` module) beside each
+  `.js`/`.wasm`/`.data` when it saves 10% or more, `--serve` sends it with
+  `Content-Encoding` and answers 304 for unchanged files, and hosted game
+  files carry an ETag. FFmpeg in the web build is off unless a game asks:
+  new `game.toml` `[launcher] web_video` = "off" (default), "mpeg1" (only the
+  MPEG-1 video decoder) or "all" (the desktop list); `tools/build.py`
+  passes `RECOMP_VIDEO` and `RECOMP_WEB_VIDEO_ALL_CODECS` for the web target,
+  and `cmake/Dependencies.cmake` builds FFmpeg with `emcc` as static
+  libraries linked into the `.wasm`. Measured with MGS2 in headless Chrome:
+  a reload fetched 0 game pieces (102 the first time) and got a 304 for the
+  program; its 189 MB program is sent as 22 MB. Tests: fetch-backend (Cache
+  Storage across visits, a full or missing store, the backend existing
+  before the store opens), web launcher (compressed program, 304, ETag),
+  web player (program kept in Cache Storage), game config and build.py
+  (`web_video`).
+
+- 2026-10-09 00:27 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: browser speed fixes cherry-picked from `giggity-swbf2`
+  (9867fc0..02da5a5). With them Star Wars Battlefront II went from 20-25
+  to 44-46 game frames a second in a level in headless Chrome.
+  - `host/gpu/d3d9_host.cpp`: in the browser, occlusion query results come
+    from a cache the main thread fills (`Op::QueryPoll`), one poll queued
+    per query, with a generation per query against stale answers, instead
+    of a blocking main-thread round trip per `GetData`.
+  - `host/gpu/d3d9_host.cpp`: the browser's present is pipelined
+    (`Op::Present`); the game waits only for the previous frame's present.
+  - `host/present_thread.cpp`, `host/present_frame.h`: the presenter keeps
+    the overlay's size instead of asking the device on every acquire.
+  - `runtime/kernel32.cpp`: in the browser `sched_checkpoint` reads the
+    clock every 16th pass; `runtime/imports.cpp`: the import trace entry is
+    a bounded copy instead of `snprintf`.
+  - `tools/recomp/translate.py`, `runtime/intrinsics.h`,
+    `tools/game_config.py`: opt-in `[translate] ftol2 = <address>` runs the
+    MSVC CRT's `_ftol2` natively, in line at direct calls. Nothing changes
+    for a game that does not set it.
+  - `tools/recomp/translate.py`: `recomp_is_call_return` answers from a
+    bitmap built at load instead of a binary search on every guest RET
+    (takes effect at the next `--regenerate`).
+  - Tests: native suites 24 of 24 and Python 418 passed, 5 skipped, on
+    Linux. The `_ftol2` runtime cases skip without a game image and were
+    run standalone on `giggity-swbf2`.
+
+- 2026-10-08 22:35 CDT (branch giggity-d3d8) — Claude Opus 5.5: WebGPU
+  indexed strips (cherry-picked from giggity-swbf2 b4c5bf8).
+  - `host/gpu/webgpu/d3d9_webgpu.cpp`: an indexed triangle or line strip
+    gets a pipeline naming its 16- or 32-bit index format (part of the
+    pipeline key). WebGPU rejected such draws, discarding the frame's whole
+    command buffer (Star Wars Battlefront II's profile screen drew black).
+    Built for the web on giggity-swbf2 with identical WebGPU sources; headless
+    Chrome draws the screen and logs no WebGPU errors.
+
 - 2026-10-08 21:10 CDT (branch giggity-d3d8) — Claude Opus 5.5: the WebGPU
   renderer no longer leaks browser GPU memory, Direct3D 9 games with dynamic
   vertex buffers run several times faster in the browser, and pad triggers

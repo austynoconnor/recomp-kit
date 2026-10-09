@@ -60,6 +60,8 @@ GUEST_SIZE_MAX = 0xf0000000       # keeps every guest address and size in 32 bit
 UPPER_HEAP_BASE = 0x10000000      # runtime/x86.h GUEST_UPPER_HEAP_BASE
 AUX_REQUIRED_KEYS = ("name", "path", "sha256", "base", "size")
 
+WEB_VIDEO = ("off", "mpeg1", "all")
+
 
 def windows_version(value):
     """Decode major.minor[.build]; keep the historical 9x default and 6.1 SP1."""
@@ -176,7 +178,7 @@ def load(game_dir):
     alignment = translate.setdefault("function_alignment", 16)
     if type(alignment) is not int or alignment <= 0:
         raise ValueError("%s: [translate] function_alignment must be a positive integer" % source)
-    for key in ("setjmp", "longjmp"):
+    for key in ("setjmp", "longjmp", "ftol2"):
         if key in translate and (type(translate[key]) is not int or translate[key] <= 0):
             raise ValueError("%s: [translate] %s must be a guest address" % (source, key))
     # [timing]: how long file reads take, as on the hardware the game shipped
@@ -229,6 +231,10 @@ def load(game_dir):
             raise ValueError("%s: [launcher] %s must be a string" % (source, key))
     if not isinstance(launcher.setdefault("stream_assets", False), bool):
         raise ValueError("%s: [launcher] stream_assets must be a boolean" % source)
+    # FFmpeg in the web build: "off" (the default), "mpeg1" (MPEG-1 video
+    # only, the DirectShow movie path) or "all" (the desktop decoder list).
+    if launcher.setdefault("web_video", "off") not in WEB_VIDEO:
+        raise ValueError("%s: [launcher] web_video must be one of %s" % (source, ", ".join(WEB_VIDEO)))
     min_free = launcher.setdefault("min_free_mb", 0)
     if not isinstance(min_free, int) or min_free < 0:
         raise ValueError("%s: [launcher] min_free_mb must be a non-negative integer" % source)
