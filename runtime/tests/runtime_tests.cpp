@@ -2393,6 +2393,13 @@ static void test_windows(X86 *c) {
     check(call_import(c, "USER32.dll", "SystemParametersInfoA", {48, 0, work, 0}) == 1 &&
               rd32(work + 8) == 640 && rd32(work + 12) == 480,
           "SPI_GETWORKAREA is the window's client area");
+    wr32(work, 0xc9b858aau);
+    check(call_import(c, "USER32.dll", "SystemParametersInfoA", {22, 0, work, 0}) == 1 &&
+              rd32(work) == 1,
+          "SPI_GETKEYBOARDDELAY is Windows' default");
+    check(call_import(c, "USER32.dll", "SystemParametersInfoA", {10, 0, work, 0}) == 1 &&
+              rd32(work) == 31,
+          "SPI_GETKEYBOARDSPEED is Windows' default");
     check(call_import(c, "USER32.dll", "SystemParametersInfoA", {0x2000, 0, 0, 0}) == 0,
           "unknown SPI actions fail");
     // The input gate is not linked here; use the same user32 cursor bridge
