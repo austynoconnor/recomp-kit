@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- 2026-10-08 22:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: keyboard repeat settings, trigger presses in scripts, a
+  directory-search trace, and `giggity-d3d8` 8f9f537 (WebGPU leak fix)
+  merged in.
+  - `runtime/user32.cpp`: `SystemParametersInfoA` answers
+    `SPI_GETKEYBOARDDELAY` (1, about 500 ms) and `SPI_GETKEYBOARDSPEED` (31)
+    with Windows' defaults. Star Wars Battlefront II builds its own key
+    repeat from them; the failed call left it reading stack garbage (a
+    delay of -1.5 million seconds), so every held key repeated each frame.
+  - `host/smoke_main.cpp`: a script's `pad left_trigger`/`right_trigger`
+    past half way also presses L2/R2, as `pad_from_sdl` does for a real
+    controller, so scripted triggers drive `mapped` pads like real ones.
+  - `runtime/kernel32.cpp`: `RECOMP_TRACE_FILES` also logs each
+    `FindFirstFile` pattern and its match count.
+  - Tests: runtime_tests checks both keyboard SPI answers.
+
 - 2026-10-08 20:15 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: Bink through a game's own reader, a joystick trace,
   more script keys, and `giggity-d3d8` merged in.
