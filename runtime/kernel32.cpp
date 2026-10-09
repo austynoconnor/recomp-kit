@@ -4594,6 +4594,9 @@ void find_first_named(X86 *c, const std::string &pattern, bool wide) {
                 o.match_paths.push_back(host_dir + "/" + kv.second);
             }
     }
+    if (recomp_env("TRACE_FILES"))
+        LOGW("file: find \"%s\" -> %zu match(es)%s%s", pattern.c_str(), o.matches.size(),
+             o.matches.empty() ? "" : ", first ", o.matches.empty() ? "" : o.matches[0].c_str());
     if (o.matches.empty()) {
         handles().erase(h);
         set_last_error(ERROR_FILE_NOT_FOUND_);
