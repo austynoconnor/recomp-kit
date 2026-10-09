@@ -27,6 +27,7 @@
 #include "fixtures/tone_mp3.h"
 #include "fixtures/quad_shaders.h"
 #include "../d3d11.h"
+#include "../xact_banks.h"
 #include "guest_abi.h"
 #include <cmath>
 
@@ -42,6 +43,7 @@
 #include <vector>
 #include <string>
 #include <thread>
+#include <chrono>
 
 // ---------------------------------------------------------------------------
 // Captured host callbacks
@@ -12780,6 +12782,414 @@ static void test_audio_asset(const char *path) {
            media.audio_channels(), peak);
 }
 
+// The XACT 2 readers against banks laid out the way Bully: Scholarship
+// Edition's are: a settings file with one category, a Volume variable and its
+// RPC curve; a sound bank whose one cue is a complex sound with that curve and
+// a play-wave-with-variation event; a two-wave ADPCM bank. And MS ADPCM itself.
+namespace xact_test {
+struct Bytes {
+    std::vector<uint8_t> d;
+    explicit Bytes(size_t n) : d(n, 0) {}
+    void u8(size_t at, uint8_t v) {
+        d[at] = v;
+    }
+    void u16(size_t at, uint16_t v) {
+        d[at] = (uint8_t)v;
+        d[at + 1] = (uint8_t)(v >> 8);
+    }
+    void u32(size_t at, uint32_t v) {
+        for (int i = 0; i < 4; ++i)
+            d[at + i] = (uint8_t)(v >> (8 * i));
+    }
+    void f32(size_t at, float f) {
+        uint32_t v;
+        memcpy(&v, &f, 4);
+        u32(at, v);
+    }
+    void str(size_t at, const char *s) {
+        memcpy(&d[at], s, strlen(s) + 1);
+    }
+};
+} // namespace xact_test
+
+static void test_xact_banks() {
+    using namespace xact_test;
+    Bytes g(0xa0);
+    memcpy(&g.d[0], "XGSF", 4);
+    g.u16(4, 44);
+    g.u16(6, 42);
+    g.u16(0x13, 1); // categories
+    g.u16(0x15, 1); // variables
+    g.u16(0x1b, 1); // RPC curves
+    g.u32(0x21, 0x50);
+    g.u32(0x25, 0x60);
+    g.u32(0x39, 0x90);
+    g.u32(0x3d, 0x98);
+    g.u32(0x41, 0x70);
+    g.u16(0x50 + 6, 0xffff);
+    g.u8(0x50 + 8, 0xb4);
+    g.u8(0x60, 5);
+    g.f32(0x61, 0);
+    g.f32(0x65, -85);
+    g.f32(0x69, 0);
+    g.u16(0x70, 0); // Volume
+    g.u8(0x72, 2);
+    g.u16(0x73, 0); // to volume
+    g.f32(0x75, -85);
+    g.f32(0x79, -8500);
+    g.f32(0x7e, 0);
+    g.f32(0x82, 0);
+    g.str(0x90, "Global");
+    g.str(0x98, "Volume");
+    xact::Settings s;
+    std::string why;
+    CHECK(xact::parse_settings(g.d.data(), g.d.size(), &s, &why));
+    CHECK(s.categories.size() == 1 && s.categories[0].name == "Global");
+    CHECK(s.find_variable("Volume") == 0);
+    CHECK(s.curve(0x70) != nullptr);
+    if (const xact::RpcCurve *k = s.curve(0x70))
+        CHECK(fabsf(k->eval(-42.5f) + 4250) < 1);
+    CHECK(fabsf(xact::volume_byte_db(0xb4)) < 0.1f);
+
+    Bytes b(0x200);
+    memcpy(&b.d[0], "SDBK", 4);
+    b.u16(4, 44);
+    b.u16(6, 43);
+    b.u16(0x13, 1); // simple cues
+    b.u8(0x1b, 1);  // wave banks
+    b.u16(0x1e, 5);
+    b.u32(0x22, 0xa0);
+    b.u32(0x26, 0xffffffff);
+    b.u32(0x2a, 0x190);
+    b.u32(0x3a, 0x100);
+    b.str(0x4a, "bank");
+    b.str(0x100, "wb");
+    b.u8(0xa0, 4);
+    b.u32(0xa1, 0xb0);
+    b.u8(0xb0, 3); // complex, with RPC
+    b.u8(0xb3, 0xb4);
+    b.u16(0xb4, (uint16_t)-1200);
+    b.u8(0xb9, 1);  // one clip
+    b.u16(0xba, 7); // RPC block: length, count, code
+    b.u8(0xbc, 1);
+    b.u32(0xbd, 0x70);
+    b.u8(0xc1, 0xb4);  // clip volume
+    b.u32(0xc2, 0xd0); // clip offset
+    b.u8(0xd0, 1);     // one event
+    b.u32(0xd1, 4);    // play wave with variation
+    b.u8(0xd7, 0xff);
+    b.u8(0xd8, 4);
+    b.u16(0xd9, 1);  // track
+    b.u8(0xdb, 0);   // wave bank
+    b.u8(0xdc, 255); // loops for ever
+    b.u16(0xe1, (uint16_t)-300);
+    b.u16(0xe3, 200);
+    b.str(0x190, "cue1");
+    xact::SoundBank sb;
+    CHECK(xact::parse_sound_bank(b.d.data(), b.d.size(), &sb, &why));
+    CHECK(sb.name == "bank" && sb.wave_banks.size() == 1 && sb.wave_banks[0] == "wb");
+    CHECK(sb.find_cue("cue1") == 0 && sb.find_cue("nope") == -1);
+    if (sb.cues.size() == 1) {
+        const xact::Cue &c = sb.cues[0];
+        CHECK(c.pitch == -1200 && c.rpc.size() == 1 && c.rpc[0] == 0x70);
+        CHECK(c.tracks.size() == 1);
+        if (!c.tracks.empty()) {
+            CHECK(c.tracks[0].wave == 1 && c.tracks[0].loops == 255);
+            CHECK(c.tracks[0].pitch_min == -300 && c.tracks[0].pitch_max == 200);
+        }
+        CHECK(fabsf(c.volume_db) < 0.2f);
+    }
+
+    Bytes w(256 + 210);
+    memcpy(&w.d[0], "WBND", 4);
+    w.u32(4, 44);
+    w.u32(8, 42);
+    w.u32(12, 52);
+    w.u32(16, 96);
+    w.u32(20, 148);
+    w.u32(24, 48);
+    w.u32(44, 256);
+    w.u32(48, 210);
+    w.u32(52 + 4, 2);
+    w.str(52 + 8, "wb");
+    w.u32(52 + 72, 24);
+    w.u32(52 + 80, 4);
+    uint32_t fmt = 2u | 1u << 2 | 22050u << 5 | 48u << 23 | 1u << 31;
+    for (int i = 0; i < 2; ++i) {
+        size_t e = 148 + 24 * i;
+        w.u32(e, 128u << 4);
+        w.u32(e + 4, fmt);
+        w.u32(e + 8, 70u * i);
+        w.u32(e + 12, 70);
+    }
+    xact::WaveBankHeader h;
+    CHECK(xact::parse_wave_bank(w.d.data(), w.d.size(), &h, &why));
+    CHECK(h.name == "wb" && h.waves.size() == 2 && h.data_offset == 256);
+    if (h.waves.size() == 2) {
+        const xact::Wave &v = h.waves[1];
+        CHECK(v.tag == xact::TAG_ADPCM && v.channels == 1 && v.rate == 22050);
+        CHECK(v.block_align == 70 && v.samples_per_block() == 128 && v.offset == 70);
+        CHECK(v.samples == 128);
+    }
+    // Bytes that are not a bank, and a bank cut short, are refused.
+    CHECK(!xact::parse_wave_bank(w.d.data(), 60, &h, &why));
+    CHECK(!xact::parse_sound_bank(b.d.data(), 0xc0, &sb, &why));
+
+    // One mono block: predictor 0, delta 16, the header samples 100 and 50
+    // and all-zero nibbles, which hold the last sample.
+    uint8_t block[70] = {0};
+    block[1] = 16;
+    block[3] = 100;
+    block[5] = 50;
+    std::vector<int16_t> pcm;
+    CHECK(xact::decode_adpcm(block, sizeof block, 70, 1, &pcm) == 128);
+    CHECK(pcm.size() == 128 && pcm[0] == 50 && pcm[1] == 100 && pcm[127] == 100);
+    // Stereo: two header sets, nibbles alternating left and right.
+    uint8_t st[2 * 7 + 2] = {0};
+    st[2] = 16;
+    st[4] = 16;
+    st[6] = 10;    // left s1
+    st[8] = 20;    // right s1
+    st[14] = 0x10; // left +1, right 0
+    pcm.clear();
+    CHECK(xact::decode_adpcm(st, sizeof st, sizeof st, 2, &pcm) == 4);
+    CHECK(pcm.size() == 8 && pcm[2] == 10 && pcm[3] == 20 && pcm[4] == 26 && pcm[5] == 20);
+}
+
+// The engine end to end, as the game drives it: settings, an in-memory bank
+// and its sound bank, a cue that is prepared, played, turned down through its
+// Volume variable and runs out; then a streaming bank read from a file the
+// guest opened, refilled behind the voice from DoWork.
+namespace xact_test {
+// A wave bank of `waves` mono ADPCM waves of `blocks` blocks each, with
+// non-silent blocks; `flags` 1 makes it a streaming bank.
+static std::vector<uint8_t> wave_bank(uint32_t waves, uint32_t blocks, uint32_t flags) {
+    uint32_t data = 256, per = 70 * blocks;
+    Bytes w(data + per * waves);
+    memcpy(&w.d[0], "WBND", 4);
+    w.u32(4, 44);
+    w.u32(8, 42);
+    w.u32(12, 52);
+    w.u32(16, 96);
+    w.u32(20, 148);
+    w.u32(24, 24 * waves);
+    w.u32(44, data);
+    w.u32(48, per * waves);
+    w.u32(52, flags);
+    w.u32(52 + 4, waves);
+    w.str(52 + 8, "wb");
+    w.u32(52 + 72, 24);
+    w.u32(52 + 80, 4);
+    uint32_t fmt = 2u | 1u << 2 | 22050u << 5 | 48u << 23 | 1u << 31;
+    for (uint32_t i = 0; i < waves; ++i) {
+        size_t e = 148 + 24 * i;
+        w.u32(e, (128u * blocks) << 4);
+        w.u32(e + 4, fmt);
+        w.u32(e + 8, per * i);
+        w.u32(e + 12, per);
+        for (uint32_t b = 0; b < blocks; ++b) {
+            size_t at = data + per * i + 70 * b;
+            w.u16(at + 1, 16);
+            w.u16(at + 3, 1000);
+            w.u16(at + 5, 1000);
+        }
+    }
+    return w.d;
+}
+// The sound bank of test_xact_banks, one cue playing wave `wave`, `loops`.
+static std::vector<uint8_t> sound_bank(uint16_t wave, uint8_t loops) {
+    Bytes b(0x200);
+    memcpy(&b.d[0], "SDBK", 4);
+    b.u16(4, 44);
+    b.u16(6, 43);
+    b.u16(0x13, 1);
+    b.u8(0x1b, 1);
+    b.u16(0x1e, 5);
+    b.u32(0x22, 0xa0);
+    b.u32(0x26, 0xffffffff);
+    b.u32(0x2a, 0x190);
+    b.u32(0x3a, 0x100);
+    b.str(0x4a, "bank");
+    b.str(0x100, "wb");
+    b.u8(0xa0, 4);
+    b.u32(0xa1, 0xb0);
+    b.u8(0xb0, 3);
+    b.u8(0xb3, 0xb4);
+    b.u8(0xb9, 1);
+    b.u16(0xba, 7);
+    b.u8(0xbc, 1);
+    b.u32(0xbd, 0x70);
+    b.u8(0xc1, 0xb4);
+    b.u32(0xc2, 0xd0);
+    b.u8(0xd0, 1);
+    b.u32(0xd1, 4);
+    b.u8(0xd7, 0xff);
+    b.u8(0xd8, 4);
+    b.u16(0xd9, wave);
+    b.u8(0xdc, loops);
+    b.str(0x190, "cue1");
+    return b.d;
+}
+static std::vector<uint8_t> settings() {
+    Bytes g(0xa0);
+    memcpy(&g.d[0], "XGSF", 4);
+    g.u16(4, 44);
+    g.u16(6, 42);
+    g.u16(0x13, 1);
+    g.u16(0x15, 1);
+    g.u16(0x1b, 1);
+    g.u32(0x21, 0x50);
+    g.u32(0x25, 0x60);
+    g.u32(0x39, 0x90);
+    g.u32(0x3d, 0x98);
+    g.u32(0x41, 0x70);
+    g.u16(0x50 + 6, 0xffff);
+    g.u8(0x50 + 8, 0xb4);
+    g.u8(0x60, 5);
+    g.f32(0x65, -85);
+    g.u8(0x72, 2);
+    g.f32(0x75, -85);
+    g.f32(0x79, -8500);
+    g.str(0x90, "Global");
+    g.str(0x98, "Volume");
+    return g.d;
+}
+static uint32_t to_guest(const std::vector<uint8_t> &v) {
+    uint32_t p = heap_alloc((uint32_t)v.size(), true, 16);
+    if (p)
+        memcpy(g_mem + p, v.data(), v.size());
+    return p;
+}
+static uint32_t fbits(float f) {
+    uint32_t v;
+    memcpy(&v, &f, 4);
+    return v;
+}
+} // namespace xact_test
+
+static void test_xact_engine() {
+    using namespace xact_test;
+    static const uint8_t clsid[16] = {0x27, 0x50, 0x2f, 0x96, 0xbe, 0x99, 0x92, 0x46,
+                                      0xa4, 0x68, 0x85, 0x80, 0x2c, 0xf8, 0xde, 0x61};
+    static const uint8_t iid[16] = {0x9a, 0x1b, 0x2c, 0xe7, 0x17, 0xd7, 0xc0, 0x41,
+                                    0x81, 0xa6, 0x50, 0xeb, 0x56, 0xe8, 0x06, 0x49};
+    const uint32_t PREPARED = 4, PLAYING = 8, STOPPED = 0x20;
+    cpu_reset();
+    uint32_t pc = sc(0x2000), pi = sc(0x2010), ppv = sc(0x2020), params = sc(0x2040),
+             out = sc(0x2100), state = sc(0x2110), name = sc(0x2120), sparms = sc(0x2140);
+    memcpy(g_mem + pc, clsid, 16);
+    memcpy(g_mem + pi, iid, 16);
+    CHECK_EQ(call_shim(tramp("ole32.dll", "CoCreateInstance"), {pc, 0, 1, pi, ppv}), 0u);
+    uint32_t eng = rd32(ppv);
+    CHECK(eng != 0);
+    if (!eng)
+        return;
+    std::vector<uint8_t> xgs = settings();
+    memset(g_mem + params, 0, 40);
+    wr32(params + 4, to_guest(xgs));
+    wr32(params + 8, (uint32_t)xgs.size());
+    CHECK_EQ(call_method(eng, 6, {params}), 0u); // Initialize
+    std::vector<uint8_t> xwb = wave_bank(2, 1, 0), xsb = sound_bank(1, 0);
+    CHECK_EQ(call_method(eng, 10, {to_guest(xwb), (uint32_t)xwb.size(), 0, 0, out}), 0u);
+    uint32_t wb = rd32(out);
+    CHECK_EQ(call_method(eng, 9, {to_guest(xsb), (uint32_t)xsb.size(), 0, 0, out}), 0u);
+    uint32_t sb = rd32(out);
+    CHECK(wb && sb);
+    gm_put_str(name, "cue1", 5);
+    CHECK_EQ(call_method(sb, 0, {name}), 0u); // GetCueIndex
+    gm_put_str(name, "nope", 5);
+    CHECK_EQ(call_method(sb, 0, {name}), 0xffffu);
+    gm_put_str(name, "Volume", 7);
+    CHECK_EQ(call_method(sb, 3, {0, 0, 0, out}), 0u); // Prepare
+    uint32_t cue = rd32(out);
+    CHECK(cue != 0);
+    call_method(cue, 2, {state});
+    CHECK_EQ(rd32(state), PREPARED);
+    CHECK_EQ(call_method(cue, 5, {name}), 0u); // GetVariableIndex("Volume")
+    XactCounters k0 = xact_counters();
+    g_plays.clear();
+    call_method(cue, 0); // Play
+    CHECK(g_plays.size() == 1);
+    if (!g_plays.empty()) {
+        const PlayRecord &p = g_plays.back();
+        CHECK(p.rate == 22050 && p.channels == 1 && p.bits == 16 && p.loop == 0);
+        CHECK(p.bytes == 128 * 2);
+        CHECK(p.pcm.size() == 256 && (int16_t)(p.pcm[2] | p.pcm[3] << 8) == 1000);
+        call_method(cue, 6, {0, fbits(-42.5f)}); // SetVariable(Volume, -42.5 dB)
+        CHECK(abs(g_audio_volumes[p.channel] + 4250) < 30);
+    }
+    call_method(cue, 2, {state});
+    CHECK_EQ(rd32(state), PLAYING);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    call_method(cue, 2, {state});
+    CHECK_EQ(rd32(state), STOPPED);
+    call_method(cue, 3); // Destroy
+    XactCounters k = xact_counters();
+    CHECK(k.plays == k0.plays + 1 && k.missing == k0.missing && k.undecodable == k0.undecodable);
+
+    // A streaming bank: 600 blocks, about 3.5 s, in a file the guest opens.
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s/recomp-xact-XXXXXX", os_temp_dir());
+    CHECK(os_mkdtemp(dir) == 0);
+    std::string file = std::string(dir) + "/music.xwb";
+    std::vector<uint8_t> stream = wave_bank(1, 600, 1);
+    std::vector<uint8_t> padded(512, 0);
+    padded.insert(padded.end(), stream.begin(), stream.end()); // the bank at 512
+    FILE *f = fopen(file.c_str(), "wb");
+    CHECK(f != nullptr);
+    if (!f)
+        return;
+    fwrite(padded.data(), 1, padded.size(), f);
+    fclose(f);
+    std::string previous_dir = win32_game_dir();
+    win32_init(dir);
+    std::string guest = win32_guest_path(file);
+    uint32_t gname = heap_alloc((uint32_t)guest.size() + 1, true, 16);
+    gm_put_str(gname, guest.c_str(), (uint32_t)guest.size() + 1);
+    uint32_t handle =
+        call_shim(tramp("KERNEL32.dll", "CreateFileA"), {gname, 0x80000000, 1, 0, 3, 0, 0});
+    CHECK(handle != 0 && handle != 0xffffffffu);
+    wr32(sparms, handle);
+    wr32(sparms + 4, 512);
+    wr32(sparms + 8, 0);
+    wr32(sparms + 12, 64);
+    CHECK_EQ(call_method(eng, 11, {sparms, out}), 0u); // CreateStreamingWaveBank
+    uint32_t swb = rd32(out);
+    call_method(wb, 0); // Destroy the in-memory bank: the stream's is now "wb"
+    std::vector<uint8_t> xsb2 = sound_bank(0, 0);
+    CHECK_EQ(call_method(eng, 9, {to_guest(xsb2), (uint32_t)xsb2.size(), 0, 0, out}), 0u);
+    uint32_t sb2 = rd32(out);
+    g_queue_enabled = true;
+    g_plays.clear();
+    g_queues.clear();
+    CHECK_EQ(call_method(sb2, 4, {0, 0, 0, out}), 0u); // Play, keeping the cue
+    uint32_t scue = rd32(out);
+    CHECK(swb && scue && g_plays.size() == 1);
+    // The first play is 1.5 s; nothing is appended while a second is ahead.
+    if (!g_plays.empty())
+        CHECK(g_plays.back().bytes >= 22050 * 2 * 3 / 2 && g_plays.back().bytes < 22050 * 2 * 2);
+    size_t before = g_queues.size();
+    call_method(eng, 8); // DoWork
+    CHECK(g_queues.size() == before);
+    g_voice_remaining = 0; // the voice has played what it had
+    call_method(eng, 8);
+    CHECK(g_queues.size() > before);
+    call_method(scue, 2, {state});
+    CHECK_EQ(rd32(state), PLAYING);
+    call_method(scue, 1, {0}); // Stop
+    call_method(scue, 2, {state});
+    CHECK_EQ(rd32(state), STOPPED);
+    call_method(scue, 3);
+    call_method(sb2, 6);
+    call_method(sb, 6);
+    call_method(swb, 0);
+    call_method(eng, 7); // ShutDown
+    call_method(eng, 2); // Release
+    g_queue_enabled = false;
+    call_shim(tramp("KERNEL32.dll", "CloseHandle"), {handle});
+    win32_init(previous_dir);
+}
+
 int main() {
     // Unbuffered, not line buffered: Windows treats _IOLBF as full buffering
     // and a fail-fast abort drops everything queued, including the name of
@@ -12809,6 +13219,8 @@ int main() {
         const char *name;
         void (*fn)();
     } tests[] = {
+        {"XACT banks and ADPCM", test_xact_banks},
+        {"XACT engine plays and streams", test_xact_engine},
         {"D3D11 resource bounds", test_d3d11_resource_bounds},
         {"D3D11 quad pixels", test_d3d11_quad_pixels},
         {"D3D11 alpha pixels", test_d3d11_alpha_pixels},

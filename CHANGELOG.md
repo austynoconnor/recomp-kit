@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- 2026-10-09 — Claude Opus 5.5: XACT 2 plays sound. The engine that
+  accepted banks and played nothing now reads all three XACT 2 formats
+  (`dx/xact_banks.cpp`: global settings, sound banks, wave banks) and plays
+  cues through the host mixer, each on its own channel. In-memory waves
+  decode whole when they start; streaming wave banks are read from the
+  game's file through a descriptor of the engine's own and decoded half a
+  second at a time behind what is playing (from the frame pump and DoWork),
+  so music never sits decoded in memory. MS ADPCM (bit-exact with FFmpeg on
+  Bully's banks) and 8/16-bit PCM decode; XMA and WMA waves play silently.
+  Cues are PREPARED, PLAYING for their real length on the guest clock, then
+  STOPPED; loops, Stop, Pause and Destroy work per cue, per sound bank cue
+  index and per category. Volume combines the sound and clip volume, the
+  category chain with SetVolume, the RPC curves over cue and global
+  variables (Bully's Volume and Pitch) and SetMatrixCoefficients (gain and
+  pan); pitch combines the sound's, a random pick in its variation range and
+  the RPC pitch. GetCueIndex, GetCategory and the variable indices answer
+  from the banks' own names. Notifications reach the Initialize callback:
+  CUEDESTROYED from Destroy, the others (cue prepared/play/stop, wave bank
+  prepared/destroyed, sound bank destroyed) from the next DoWork or frame.
+  In a Bully session: 253 cues played in 215 s, 0 missing banks, 0
+  undecodable waves. `RECOMP_TRACE_XACT` logs calls, banks and play counts;
+  `RECOMP_XACT_DUMP=<dir>` writes the first 16 decoded waves as WAV files.
+
 - 2026-10-09 — Claude Opus 5.5: ID3DXEffect and its state manager follow
   D3DX more closely. BeginPass now tells the manager every texture, render
   state and shader the pass sets, even ones that already had that value,

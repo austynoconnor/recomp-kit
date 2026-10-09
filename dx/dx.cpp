@@ -571,6 +571,7 @@ static void file_audio_frame_pump(X86 *c) {
     fmod_frame_pump(c);
     soundlib_frame_pump(c);
     mf_frame_pump(c);
+    xact_frame_pump(c);
 }
 
 void dx_register_shims() {
@@ -639,6 +640,7 @@ void dx_reset() {
     dinput_reset();
     bink_reset();
     mf_reset();
+    xact_reset();
     audio_channels().clear();
     com_reset();
 }
