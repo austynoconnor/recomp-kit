@@ -42,6 +42,10 @@ bool host_finger_cancel(int64_t id);
 // A real pointer (not a touch-synthesized event) or a touch placement moved
 // to (x, y) in window points; feeds the mapped binding's Cursor stick mode.
 void host_pointer_moved(double x, double y);
+// A real pointer's relative motion in window points. With [controls] pad =
+// "native" and [controls.native] mouse_stick set, host_pump turns it into
+// that stick of the virtual pad.
+void host_mouse_delta(double dx, double dy);
 // Focus loss or backgrounding: every finger is gone, every key and modifier up.
 void host_release_all();
 

@@ -204,7 +204,12 @@ cross = "mouse_left"        # "key:<name>" | "mouse_left|right|middle" | "wheel_
 
 Use `pad = "native"` when the game reads a controller itself: the pad is
 then served as a DirectInput joystick and through `xinput1_3`, `xinput1_4`
-and `xinput9_1_0`, and the game's rumble comes back out. `[controls]`
+and `xinput9_1_0`, and the game's rumble comes back out. With
+`[controls.native] mouse_stick = "right"` (or `"left"`; default `"none"`)
+mouse movement also deflects that stick of the pad, for a game with no
+mouse look of its own; `mouse_speed` (1-20, default 5) sets how far a given
+movement pushes it. The stick follows the pointer's motion within the
+window, so it works best while the window holds the pointer. `[controls]`
 replaces the old `[touch] keypad`, which is still accepted (`"auto"` →
 `"keys"`, `"hidden"` → `"hidden"`).
 

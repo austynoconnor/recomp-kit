@@ -2056,6 +2056,56 @@ void dshow_register() {
                        mmstream_create);
     com_register_class(CLSID_AMAudioData_, "AMAudioData", IF_AUDIODATA, audiodata_create);
     com_register_class(CLSID_FilterGraph_, "FilterGraph", IF_GRAPH, filtergraph_create);
+    void dshow_register_mapper();
+    dshow_register_mapper();
+}
+
+// ---------------------------------------------------------------------------
+// CLSID_FilterMapper2. A player that builds its own graph asks the mapper for
+// a decoder (an MPEG-2 video decoder, say) and connects it to a renderer it
+// implements itself. No system filters exist here, so EnumMatchingFilters
+// fails: a player that checks the result gives up on the movie instead of
+// connecting pins nothing here can drive.
+// ---------------------------------------------------------------------------
+namespace {
+const uint8_t CLSID_FilterMapper2_[16] = {0x00, 0x22, 0xa4, 0xcd, 0x88, 0xbd, 0xd0, 0x11,
+                                          0xbd, 0x4e, 0x00, 0xa0, 0xc9, 0x11, 0xce, 0x86};
+const uint8_t IID_IFilterMapper2_[16] = {0xb0, 0xb0, 0x9b, 0xb7, 0xc1, 0x33, 0xd1, 0x11,
+                                         0xab, 0xe1, 0x00, 0xa0, 0xc9, 0x05, 0xf3, 0x75};
+void Mapper_Refuse(X86 *c) {
+    log_once("dshow.mapper", "dshow: IFilterMapper2 lists no filters; refusing (E_FAIL)");
+    set_eax(c, 0x80004005u);
+}
+// EnumMatchingFilters(ppEnum, ...): no enumerator is made.
+void Mapper_EnumMatchingFilters(X86 *c) {
+    uint32_t out = arg(c, 1);
+    if (out && gm_valid(out, 4))
+        wr32(out, 0);
+    log_once("dshow.mapper.enum", "dshow: IFilterMapper2::EnumMatchingFilters: no filters are "
+                                  "registered here; the movie is not played");
+    set_eax(c, 0x80004005u);
+}
+const ComMethod g_filtermapper2[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"CreateCategory", 4, Mapper_Refuse},
+    {"UnregisterFilter", 4, Mapper_Refuse},
+    {"RegisterFilter", 7, Mapper_Refuse},
+    {"EnumMatchingFilters", 16, Mapper_EnumMatchingFilters},
+};
+ComObj *filtermapper_create() {
+    return com_new(K_FILTERMAPPER);
+}
+} // namespace
+
+void dshow_register_mapper() {
+    com_define(IF_FILTERMAPPER2, "quartz.dll", "IFilterMapper2", g_filtermapper2,
+               std::size(g_filtermapper2));
+    com_bind(IF_FILTERMAPPER2, K_FILTERMAPPER);
+    com_register_iid(IF_FILTERMAPPER2, IID_IFilterMapper2_);
+    com_register_class(CLSID_FilterMapper2_, "FilterMapper2", IF_FILTERMAPPER2,
+                       filtermapper_create);
 }
 
 void dshow_reset() {

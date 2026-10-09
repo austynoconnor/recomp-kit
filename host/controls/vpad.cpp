@@ -22,6 +22,20 @@ int32_t scaled_axis(float v) {
 }
 } // namespace
 
+void mouse_stick_output(double dx, double dy, double seconds, int speed, float *x, float *y) {
+    *x = *y = 0;
+    if (seconds <= 0 || speed <= 0)
+        return;
+    double sx = dx / seconds * speed / 4000.0, sy = dy / seconds * speed / 4000.0;
+    const double m = std::sqrt(sx * sx + sy * sy);
+    if (m > 1.0) {
+        sx /= m;
+        sy /= m;
+    }
+    *x = (float)sx;
+    *y = (float)sy;
+}
+
 PadState merge(const PadState &a, const PadState &b) {
     PadState r;
     r.buttons = a.buttons | b.buttons;

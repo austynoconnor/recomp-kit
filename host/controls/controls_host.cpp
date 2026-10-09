@@ -336,6 +336,28 @@ void release_everything() {
     // (pad = "native": a held on-screen button stays down for the whole
     // editing session) or while the app is in the background.
     vpad().set_source(kPadSourceTouch, g_router.pad());
+
+#if RECOMP_CONTROLS_PAD == 2 && RECOMP_CONTROLS_MOUSE_STICK != 0
+    // Mouse movement as the native pad's left or right stick.
+    {
+        PadState mouse;
+        if (g_mouse_last_pump && now > g_mouse_last_pump && !g_editor.is_open()) {
+            float x = 0, y = 0;
+            mouse_stick_output(g_mouse_dx, g_mouse_dy, (now - g_mouse_last_pump) / 1e9,
+                               RECOMP_CONTROLS_MOUSE_SPEED, &x, &y);
+            if (RECOMP_CONTROLS_MOUSE_STICK == 1) {
+                mouse.lx = x;
+                mouse.ly = y;
+            } else {
+                mouse.rx = x;
+                mouse.ry = y;
+            }
+        }
+        g_mouse_last_pump = now;
+        g_mouse_dx = g_mouse_dy = 0;
+        vpad().set_source(kPadSourceMouse, mouse);
+    }
+#endif
 }
 
 void close_editor();
@@ -424,6 +446,16 @@ void host_set_screen(const Screen &s, const Rect &game, int safe_bottom) {
 
 void host_pointer_moved(double x, double y) {
     g_binding.set_cursor(x, y);
+}
+
+namespace {
+double g_mouse_dx = 0, g_mouse_dy = 0;
+uint64_t g_mouse_last_pump = 0;
+} // namespace
+
+void host_mouse_delta(double dx, double dy) {
+    g_mouse_dx += dx;
+    g_mouse_dy += dy;
 }
 
 void host_set_wanted(bool keyboard_absent, bool controller_present) {

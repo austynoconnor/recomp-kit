@@ -558,8 +558,10 @@ void handle_mouse_move(const SDL_MouseMotionEvent &motion) {
     // synthesized, which both arrive as SDL_TOUCH_MOUSEID): feed the mapped
     // binding's Cursor stick mode. A touch's own placement reaches it through
     // the kTouchPlaceEvent handler below instead, in window points.
-    if (motion.which != SDL_TOUCH_MOUSEID)
+    if (motion.which != SDL_TOUCH_MOUSEID) {
         controls::host_pointer_moved(motion.x, motion.y);
+        controls::host_mouse_delta(motion.xrel, motion.yrel);
+    }
     PendingInput e;
     e.kind = PendingInput::MOTION;
     // A pointer resting against a system strip means the edge behind it.

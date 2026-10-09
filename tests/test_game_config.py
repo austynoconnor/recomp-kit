@@ -303,6 +303,21 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 game_config.load(game)
 
+            for bad in ('mouse_stick = "both"', 'mouse_speed = 0', 'mouse_speed = 21',
+                        'mouse_speed = true'):
+                (game / "game.toml").write_text(base + '\n[controls]\n[controls.native]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+            (game / "game.toml").write_text(
+                base + '\n[controls]\npad = "native"\n[controls.native]\nmouse_stick = "right"\n'
+                'mouse_speed = 8\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn("#define RECOMP_CONTROLS_MOUSE_STICK 2", header)
+            self.assertIn("#define RECOMP_CONTROLS_MOUSE_SPEED 8", header)
+            (game / "game.toml").write_text(base)
+            self.assertIn("#define RECOMP_CONTROLS_MOUSE_STICK 0",
+                          gen_game_config.render_header(game_config.load(game)))
+
             # The header.
             (game / "game.toml").write_text(
                 base + '\n[controls.mapped]\nleft_stick = "horizontal_arrows"\n')

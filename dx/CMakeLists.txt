@@ -3,7 +3,7 @@ set(POP_DX_SOURCES
   d3dx10.cpp dsound.cpp dshow.cpp mp3_source.cpp dinput.cpp dinput_joystick.cpp xinput.cpp qmixer.cpp
   mss32.cpp redbook.cpp avi.cpp waveout.cpp fmod.cpp soundlib.cpp galaxy_stub.cpp riff.cpp bink.cpp video_frame.cpp mf_media.cpp
   mf.cpp weanetr.cpp d3d9.cpp d3d9_raster.cpp d3d9_shader.cpp d3d9_shadergen.cpp d3d9_ffp.cpp d3d8.cpp host_d9_default.cpp
-  d3dx9.cpp acm.cpp dsound_enum.cpp)
+  d3dx9.cpp acm.cpp dsound_enum.cpp dmusic.cpp)
 
 add_library(recomp_dx OBJECT ${POP_DX_SOURCES})
 target_link_libraries(recomp_dx PUBLIC recomp_runtime)

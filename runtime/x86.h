@@ -526,6 +526,9 @@ void recomp_int(X86 *c, uint32_t vec);
  * image, because a listing routinely decodes the data past a function's last
  * instruction as code. Reaching one is fatal and says where. */
 void recomp_unmodelled(X86 *c, uint32_t addr);
+/* A [translate] yield_points instruction: a scheduling checkpoint, as every
+ * runtime call is, so a polling loop lets the thread it waits on run. */
+void recomp_yield_point(X86 *c);
 void recomp_breakpoint(X86 *c, uint32_t addr);
 
 /* ------------------------------------------------------ hook dispatch -- */

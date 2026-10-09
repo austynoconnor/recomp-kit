@@ -1050,6 +1050,20 @@ static void test_stick_output() {
     CHECK(fabs(std::hypot(double(x), double(y)) - 1.0) < 0.001);
 }
 
+static void test_mouse_stick_output() {
+    float x, y;
+    mouse_stick_output(0, 0, 0.016, 5, &x, &y); // no motion: released
+    CHECK(x == 0 && y == 0);
+    mouse_stick_output(8, 0, 0.01, 5, &x, &y); // 800 points/s at speed 5: full right
+    CHECK(fabs(x - 1.0) < 0.001 && fabs(y) < 0.001);
+    mouse_stick_output(0, -4, 0.01, 5, &x, &y); // half speed upward: half deflection, -y up
+    CHECK(fabs(x) < 0.001 && fabs(y + 0.5) < 0.001);
+    mouse_stick_output(100, 100, 0.01, 20, &x, &y); // far past full: on the unit circle
+    CHECK(fabs(std::hypot(double(x), double(y)) - 1.0) < 0.001);
+    mouse_stick_output(5, 5, 0, 5, &x, &y); // no elapsed time: nothing
+    CHECK(x == 0 && y == 0);
+}
+
 static void test_dpad_hat() {
     CHECK(dpad_hat(0, -60, 60) == kHatUp);
     CHECK(dpad_hat(60, 60, 60) == (kHatRight | kHatDown));
@@ -4209,6 +4223,7 @@ int main(int argc, char **argv) {
     test_router_set_layout_null_disables_hit_testing();
     test_router_state_out_of_range_is_zero();
     test_stick_output();
+    test_mouse_stick_output();
     test_dpad_hat();
     test_pad_state_merge();
     test_vpad_edges();

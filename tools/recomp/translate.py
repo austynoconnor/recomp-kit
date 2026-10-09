@@ -50,6 +50,11 @@ FUNCTION_ALIGNMENT = 16
 #: free address, and the words the loader seeds before the game runs.
 OPERAND_REDIRECTS = {}
 INSTRUCTION_PATCHES = {}
+#: game.toml [translate] yield_points: instructions that first give other
+#: guest threads a turn. Guest threads are cooperative and only change hands
+#: inside runtime calls, so a loop that polls memory another thread writes,
+#: and calls nothing, would otherwise spin forever (MGS2's sound queue wait).
+YIELD_POINTS = frozenset()
 PATCHES_APPLIED = set()
 DATA_SEEDS = []
 
@@ -140,7 +145,8 @@ def configure(cfg):
     INTRINSIC_BODY.clear()
     INTRINSIC_BODY[INTRINSIC_LONGJMP] = "recomp_longjmp(c);"
     INTRINSIC_BODY[INTRINSIC_SETJMP] = "recomp_setjmp(c);"
-    global OPERAND_REDIRECTS, INSTRUCTION_PATCHES, DATA_SEEDS
+    global OPERAND_REDIRECTS, INSTRUCTION_PATCHES, DATA_SEEDS, YIELD_POINTS
+    YIELD_POINTS = frozenset(int(a) for a in cfg["translate"].get("yield_points", ()))
     OPERAND_REDIRECTS = {int(r["at"]): (int(r["from"]), int(r["to"]))
                          for r in cfg["translate"].get("operand_redirects", ())}
     INSTRUCTION_PATCHES = {int(r["at"]): str(r["text"])
@@ -2715,6 +2721,9 @@ class Translator(object):
                 continue
             if ins.addr in labels:
                 out.append("L_%08x: ;" % ins.addr)
+            if ins.addr in YIELD_POINTS:
+                self.stats["_yield_point"] += 1
+                out.append("    recomp_yield_point(c);")
             body = self.emit(fn, i, live_out[i])
             for line in body:
                 out.append("    " + line)

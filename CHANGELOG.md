@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- 2026-10-08 19:15 CDT — Claude Opus 5.5: what Metal Gear Solid 2 needs
+  after the Direct3D 8 merge.
+  - DirectMusic (`dx/dmusic.cpp`, new): `CLSID_DirectMusic` and
+    `CLSID_DirectMusicPerformance` through `CoCreateInstance`.
+    `IDirectMusicPerformance8::InitAudio` adopts the game's DirectSound
+    object (or makes one), reads the sample rate it asks for, and sets up
+    one output port, an output tool and the default audio path.
+    `CreateStandardAudioPath` makes stereo, 3D, mono and environment paths;
+    `GetObjectInPath` hands out a real DirectSound buffer for the path's
+    buffer stage (3D buffers for 3D paths), the DirectSound object as the
+    listener, the port, the graph and the performance. The port's download
+    interface accepts DLS instrument and wave data and keeps it, the graph
+    stamps messages, `GetTime` follows the host clock. There is no
+    software synthesizer, so music and sound effects played as DirectMusic
+    notes are silent; sounds the game streams into the path's buffers play.
+  - DirectSound effects: `IDirectSoundBuffer8::SetFX` on a buffer created
+    with `DSBCAPS_CTRLFX` records the effects and reports them as software
+    effects, and `GetObjectInPath` returns them. Waves Reverb
+    (`IDirectSoundFXWavesReverb8`) keeps its parameters. Effects are not
+    applied: the sound is dry.
+  - DirectShow: `CLSID_FilterMapper2`. `EnumMatchingFilters` finds nothing
+    and filter registration is refused, so a game that looks for a decoder
+    to build its own movie graph (MGS2's texture-renderer movies) skips the
+    movie instead of crashing.
+  - COM: the per-interface kind mask is a 128-bit set (it was 64 bits and
+    the new kinds would not fit).
+  - Controls: `[controls.native] mouse_stick = "left"|"right"` turns mouse
+    motion into that stick of the virtual pad, with `mouse_speed` (1-20,
+    default 5). Off by default.
+  - Translator: `[translate] yield_points`, instructions that first let the
+    other guest threads run. Guest threads change hands only inside runtime
+    calls, so a loop that waits on memory another thread writes and calls
+    nothing would spin forever (MGS2 waits for its sound thread this way).
+
 - 2026-10-08 CDT — Claude Opus 5.5: merged `giggity-d3d8` (7c9d7e2:
   Direct3D 8 over D3D9, fixed-function rendering, DirectSoundCreate8,
   DirectShow RenderFile) into `giggity-mgs2`. `wsprintfA` now has one

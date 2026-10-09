@@ -1093,35 +1093,140 @@ void Buffer_Restore(X86 *c) {
 // IDirectSoundBuffer8: IDirectSoundBuffer plus three methods for DirectX
 // Media effects and voice management, which no mixer here offers.
 // ===========================================================================
-// SetFX(dwEffectsCount, pDSFXDesc, pdwResultCodes): clearing the effects
-// succeeds; asking for any is refused the way a buffer made without
-// DSBCAPS_CTRLFX refuses, so a game falls back to dry sound.
+// SetFX(dwEffectsCount, pDSFXDesc, pdwResultCodes). A buffer made with
+// DSBCAPS_CTRLFX takes the effects: each one gets an object the game can find
+// with GetObjectInPath and set parameters on, and the sound stays dry (no
+// effect is applied to the mix). A buffer without the flag refuses, as
+// DirectSound does, so a game that only tries effects falls back to dry
+// sound. DSFXDESC is {dwSize, dwFlags, guidDSFXClass, dwReserved1,
+// dwReserved2}: 32 bytes, the GUID at +8.
 void Buffer8_SetFX(X86 *c) {
-    uint32_t count = arg(c, 1), results = arg(c, 3);
+    ComObj *b = this_buffer(c);
+    uint32_t count = arg(c, 1), descs = arg(c, 2), results = arg(c, 3);
+    if (!b) {
+        com_ret(c, DSERR_INVALIDPARAM);
+        return;
+    }
+    if (b->playing) {
+        com_ret(c, 0x88780096u); // DSERR_INVALIDCALL: effects change only while stopped
+        return;
+    }
+    for (uint32_t id : b->fx_objs)
+        if (ComObj *fx = com_get(id))
+            com_release(fx);
+    b->fx_objs.clear();
+    b->fx_guids.clear();
     if (!count) {
         com_ret(c, DS_OK);
         return;
     }
-    if (results && gm_fits_n(results, count, 4))
-        for (uint32_t i = 0; i < count; ++i)
-            wr32(results + 4 * i, 3); // DSFXR_UNALLOCATED
-    log_once("dsound.setfx", "dsound: IDirectSoundBuffer8::SetFX with %u effects is refused",
+    if (!(b->buf_flags & DSBCAPS_CTRLFX) || !descs || !gm_fits_n(descs, count, 32)) {
+        if (results && gm_fits_n(results, count, 4))
+            for (uint32_t i = 0; i < count; ++i)
+                wr32(results + 4 * i, 3); // DSFXR_UNALLOCATED
+        log_once("dsound.setfx", "dsound: IDirectSoundBuffer8::SetFX with %u effects is refused",
+                 count);
+        com_ret(c, 0x8878001Eu); // DSERR_CONTROLUNAVAIL
+        return;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint8_t *g = gm_ptr(descs + 32 * i + 8);
+        ComObj *fx = com_new(K_DSFX);
+        fx->fx_guid.assign(g, g + 16);
+        b->fx_guids.push_back(fx->fx_guid);
+        b->fx_objs.push_back(fx->id);
+        if (results && gm_fits_n(results, count, 4))
+            wr32(results + 4 * i, 2); // DSFXR_LOCSOFTWARE
+    }
+    log_once("dsound.setfx.dry",
+             "dsound: SetFX accepted %u effects; they are recorded, not applied (dry sound)",
              count);
-    com_ret(c, 0x8878001Eu); // DSERR_CONTROLUNAVAIL
+    com_ret(c, DS_OK);
 }
 // AcquireResources(dwFlags, dwEffectsCount, pdwResultCodes): a voice is always
 // available.
 void Buffer8_AcquireResources(X86 *c) {
     com_ret(c, DS_OK);
 }
-// GetObjectInPath(rguidObject, dwIndex, rguidInterface, ppObject): there are
-// no effect objects to find.
+// {46858C3A-0DC6-45E3-B760-D4EEF16CB325}: IDirectSoundFXWavesReverb8.
+const uint8_t IID_IDirectSoundFXWavesReverb8_[16] =
+    IID_BYTES(0x46858C3A, 0x0DC6, 0x45E3, 0xB7, 0x60, 0xD4, 0xEE, 0xF1, 0x6C, 0xB3, 0x25);
+// GUID_All_Objects {AA114DE5-C262-4169-A1C8-23D698CC73B5} matches any class.
+const uint8_t GUID_All_Objects_[16] =
+    IID_BYTES(0xAA114DE5, 0xC262, 0x4169, 0xA1, 0xC8, 0x23, 0xD6, 0x98, 0xCC, 0x73, 0xB5);
+// GetObjectInPath(rguidObject, dwIndex, rguidInterface, ppObject): the
+// dwIndex-th effect of class rguidObject, seen through rguidInterface.
 void Buffer8_GetObjectInPath(X86 *c) {
-    uint32_t out = arg(c, 4);
+    ComObj *b = this_buffer(c);
+    uint32_t want_class = arg(c, 1), index = arg(c, 2), riid = arg(c, 3), out = arg(c, 4);
     if (out && gm_valid(out, 4))
         wr32(out, 0);
+    if (!b || !out || !gm_valid(out, 4) || !want_class || !gm_valid(want_class, 16) || !riid ||
+        !gm_valid(riid, 16)) {
+        com_ret(c, DSERR_INVALIDPARAM);
+        return;
+    }
+    bool any = memcmp(gm_ptr(want_class), GUID_All_Objects_, 16) == 0;
+    uint32_t seen = 0;
+    for (size_t i = 0; i < b->fx_guids.size(); ++i) {
+        if (!any && memcmp(gm_ptr(want_class), b->fx_guids[i].data(), 16) != 0)
+            continue;
+        if (seen++ != index)
+            continue;
+        ComObj *fx = com_get(b->fx_objs[i]);
+        ComIface want = com_iface_for_iid(riid);
+        if (!fx || want == IF_NONE || !com_iface_binds(want, K_DSFX)) {
+            com_ret(c, E_NOINTERFACE);
+            return;
+        }
+        uint32_t view = com_view(fx, want);
+        if (!view) {
+            com_ret(c, E_OUTOFMEMORY);
+            return;
+        }
+        com_addref(fx);
+        wr32(out, view);
+        com_ret(c, DS_OK);
+        return;
+    }
     com_ret(c, 0x88780A9Au); // DSERR_OBJECTNOTFOUND
 }
+
+// IDirectSoundFXWavesReverb8: the parameters are kept and reported back.
+// DSFXWavesReverb is four floats: fInGain, fReverbMix, fReverbTime and
+// fHighFreqRTRatio; the defaults are DirectSound's.
+void WavesReverb_SetAllParameters(X86 *c) {
+    ComObj *fx = com_this_arg(c);
+    uint32_t in = arg(c, 1);
+    if (!fx || fx->kind != K_DSFX || !in || !gm_valid(in, 16)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+    fx->blob.assign(gm_ptr(in), gm_ptr(in) + 16);
+    com_ret(c, DS_OK);
+}
+void WavesReverb_GetAllParameters(X86 *c) {
+    ComObj *fx = com_this_arg(c);
+    uint32_t out = arg(c, 1);
+    if (!fx || fx->kind != K_DSFX || !out || !gm_valid(out, 16)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+    if (fx->blob.size() == 16) {
+        memcpy(gm_ptr(out), fx->blob.data(), 16);
+    } else {
+        const float defaults[4] = {0.0f, 0.0f, 1000.0f, 0.001f};
+        memcpy(gm_ptr(out), defaults, 16);
+    }
+    com_ret(c, DS_OK);
+}
+const ComMethod g_wavesreverb8[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"SetAllParameters", 2, WavesReverb_SetAllParameters},
+    {"GetAllParameters", 2, WavesReverb_GetAllParameters},
+};
 
 const ComMethod g_dsbuffer[] = {
     {"QueryInterface", 3, com_QueryInterface},
@@ -1779,6 +1884,11 @@ ComObj *dsbuffer_qi(ComObj *self, ComIface want) {
 }
 
 void dsbuffer_destroy(ComObj *b) {
+    for (uint32_t id : b->fx_objs)
+        if (ComObj *fx = com_get(id))
+            com_release(fx);
+    b->fx_objs.clear();
+    b->fx_guids.clear();
     for (size_t i = 0; i < notifies().size(); ++i) {
         if (notifies()[i].obj_id != b->id)
             continue;
@@ -1829,6 +1939,36 @@ void dsound_pump() {
     service_notifications();
 }
 
+// A secondary buffer made on the guest's behalf (a DirectMusic audio path's
+// buffer): the same object CreateSoundBuffer makes, from a DSBUFFERDESC and a
+// 16-bit PCM WAVEFORMATEX written to scratch heap memory. Returns the
+// buffer's object holding one reference, or null.
+ComObj *dsound_make_buffer(X86 *c, ComObj *ds, uint32_t flags, uint32_t rate, uint16_t channels,
+                           uint32_t bytes) {
+    if (!ds || ds->kind != K_DSOUND)
+        return nullptr;
+    uint32_t scratch = heap_alloc(DSBUFFERDESC_SIZE + 20 + 4, true);
+    if (!scratch)
+        return nullptr;
+    uint32_t desc = scratch, wfx = scratch + DSBUFFERDESC_SIZE, out = wfx + 20;
+    wr32(desc + DSBD_OFF_dwSize, DSBUFFERDESC_SIZE);
+    wr32(desc + DSBD_OFF_dwFlags, flags);
+    wr32(desc + DSBD_OFF_dwBufferBytes, bytes);
+    wr32(desc + DSBD_OFF_lpwfxFormat, wfx);
+    wr16(wfx + WFX_OFF_wFormatTag, WAVE_FORMAT_PCM);
+    wr16(wfx + WFX_OFF_nChannels, channels);
+    wr32(wfx + WFX_OFF_nSamplesPerSec, rate);
+    wr32(wfx + WFX_OFF_nAvgBytesPerSec, rate * 2u * channels);
+    wr16(wfx + WFX_OFF_nBlockAlign, (uint16_t)(2u * channels));
+    wr16(wfx + WFX_OFF_wBitsPerSample, 16);
+    uint32_t saved_eax = c->r[R_EAX];
+    shim_forward(c, DS_CreateSoundBuffer, {com_view(ds, IF_DSOUND), desc, out, 0});
+    uint32_t view = c->r[R_EAX] == DS_OK ? rd32(out) : 0;
+    c->r[R_EAX] = saved_eax;
+    heap_free(scratch);
+    return view ? com_this(view) : nullptr;
+}
+
 void dsound_register() {
     static bool done = false;
     if (done)
@@ -1862,6 +2002,11 @@ void dsound_register() {
     com_register_iid(IF_DS3DBUFFER, IID_IDirectSound3DBuffer_);
     com_register_iid(IF_DS3DLISTENER, IID_IDirectSound3DListener_);
     com_register_iid(IF_DSNOTIFY, IID_IDirectSoundNotify_);
+
+    com_define(IF_DSFXWAVESREVERB8, "DSOUND.dll", "IDirectSoundFXWavesReverb8", g_wavesreverb8,
+               std::size(g_wavesreverb8));
+    com_bind(IF_DSFXWAVESREVERB8, K_DSFX);
+    com_register_iid(IF_DSFXWAVESREVERB8, IID_IDirectSoundFXWavesReverb8_);
 
     com_set_destructor(K_DSBUFFER, dsbuffer_destroy);
     com_set_qi_hook(K_DSOUND, dsound_qi);

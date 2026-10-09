@@ -74,7 +74,15 @@ struct PadEdge {
     int32_t value;
 };
 
-enum { kPadSourceTouch = 0, kPadSourceController = 1, kPadSourceCount = 2 };
+// kPadSourceMouse: mouse movement as a stick ([controls.native] mouse_stick).
+enum { kPadSourceTouch = 0, kPadSourceController = 1, kPadSourceMouse = 2, kPadSourceCount = 3 };
+
+// Mouse movement as a stick. Each pump turns the motion since the last one
+// into a deflection: `speed` (1..20) times the motion in points per second
+// over 4000, clamped to the unit circle, so speed 5 reaches full deflection
+// at 800 points a second. A pump with no motion releases the stick. Pure,
+// for the tests.
+void mouse_stick_output(double dx, double dy, double seconds, int speed, float *x, float *y);
 
 // Thread-safe (one mutex): the host (input thread) writes through
 // set_source/request_rumble/set_controller_connected, and the guest (game

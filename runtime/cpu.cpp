@@ -85,6 +85,8 @@ int32_t module_index(const RecompModule *m, uint32_t target) {
 }
 } // namespace
 
+void sched_checkpoint(); // kernel32.cpp: a scheduling checkpoint
+
 extern "C" {
 
 const int recomp_resumable_stacks = RECOMP_RESUMABLE_STACKS;
@@ -329,6 +331,11 @@ void recomp_null_access(uint32_t addr, int write) {
 // An SSE/SSE2 instruction the translator left as a trap (MMX is translated).
 // The CPUID below advertises neither extension, so only a guest that skips the
 // CPUID check gets here; continuing would compute garbage, so this is fatal.
+void recomp_yield_point(X86 *c) {
+    (void)c;
+    sched_checkpoint();
+}
+
 void recomp_unmodelled(X86 *c, uint32_t addr) {
     LOGW("unmodelled SSE instruction at %08x (ESP=%08x, return=%08x): the guest used a "
          "CPU extension recomp_cpuid does not advertise",

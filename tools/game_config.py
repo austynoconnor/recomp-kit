@@ -40,6 +40,10 @@ MAPPED_DEFAULTS = {"left_stick": "arrows", "right_stick": "cursor", "dpad": "arr
 # [controls.native] axes: the six DirectInput/XInput axis names a physical
 # axis maps to.
 NATIVE_AXES = ("x", "y", "z", "rx", "ry", "rz")
+# [controls.native] keys, and mouse_stick's choices: which stick mouse
+# movement deflects (none leaves the mouse to the game).
+NATIVE_KEYS = ("xinput", "dinput", "axes", "buttons", "mouse_stick", "mouse_speed")
+MOUSE_STICKS = ("none", "left", "right")
 # Mirrors the name column of host/controls/layout.cpp's kScancodes table (its
 # scancode_from_name); keep both lists in sync.
 KEY_NAMES = (
@@ -132,10 +136,18 @@ def load_controls(controls, touch, source):
     controls["mapped"] = mapped
 
     native = dict(controls.get("native", {}))
-    unknown_native = sorted(k for k in native if k not in ("xinput", "dinput", "axes", "buttons"))
+    unknown_native = sorted(k for k in native if k not in NATIVE_KEYS)
     if unknown_native:
-        raise ValueError("%s: [controls.native] may name only xinput, dinput, axes, buttons, not %s"
-                         % (source, ", ".join(unknown_native)))
+        raise ValueError("%s: [controls.native] may name only %s, not %s"
+                         % (source, ", ".join(NATIVE_KEYS), ", ".join(unknown_native)))
+    native.setdefault("mouse_stick", "none")
+    if native["mouse_stick"] not in MOUSE_STICKS:
+        raise ValueError('%s: [controls.native] mouse_stick must be one of %s, not %r'
+                         % (source, ", ".join(MOUSE_STICKS), native["mouse_stick"]))
+    speed = native.setdefault("mouse_speed", 5)
+    if isinstance(speed, bool) or not isinstance(speed, int) or not 1 <= speed <= 20:
+        raise ValueError("%s: [controls.native] mouse_speed must be an integer from 1 to 20, not %r"
+                         % (source, speed))
     native.setdefault("xinput", True)
     native.setdefault("dinput", True)
     if not isinstance(native["xinput"], bool) or not isinstance(native["dinput"], bool):

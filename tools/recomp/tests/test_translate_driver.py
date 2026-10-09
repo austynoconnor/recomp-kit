@@ -620,6 +620,32 @@ def test_a_call_that_never_returns_ends_the_block_with_a_trap():
     assert "recomp_jump(c, 0x40110au)" not in text and "CALL_FN(0040110a)" not in text
 
 
+def test_a_yield_point_gives_other_threads_a_turn_in_a_polling_loop():
+    """MGS2's sound queue wait, 0x0087cd90: TEST a word another thread
+    clears, JNZ back to the TEST, no call in between. A [translate]
+    yield_points address emits a scheduling checkpoint before the
+    instruction, inside the loop, so the waited-on thread can run."""
+    from test_translate_insns import NoImage, Opts
+    fn = 0x00401000
+    saved = T.YIELD_POINTS
+    T.YIELD_POINTS = frozenset({0x00401005})
+    try:
+        tr = T.Translator(NoImage(), {fn}, Opts())
+        insns = T.parse_listing_text("00401000  MOV EAX,0x80000007\n"
+                                     "00401005  TEST dword ptr [0x017a6fa4],EAX\n"
+                                     "0040100b  JNZ 0x00401005\n"
+                                     "0040100d  RET\n")
+        f = T.Function(fn, "poll", 14, insns)
+        f.measure(NoImage())
+        tr.prepare(f)
+        text = "\n".join(tr.translate(f))
+    finally:
+        T.YIELD_POINTS = saved
+    label = text.index("L_00401005:")
+    assert text.index("recomp_yield_point(c);") > label
+    assert text.count("recomp_yield_point(c);") == 1
+
+
 def test_a_code_pointer_spelled_in_printable_bytes_is_still_a_pointer():
     """`PUSH 0x5b2370` stores the address as bytes 70 23 5b 00: 'p', '#', '['
     and a terminator, which the string-tail test reads as the end of a

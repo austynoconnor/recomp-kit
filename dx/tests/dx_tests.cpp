@@ -3293,6 +3293,121 @@ static void test_cocreate_directsound() {
     CHECK_EQ(call_shim(cocreate, {clsid, 0, 1, iid, ppv}), 0x80040154u); // REGDB_E_CLASSNOTREG
 }
 
+// DirectMusic as MGS2 uses it: a performance whose InitAudio adopts the
+// game's DirectSound 8, a 3D audio path whose buffer is a real DirectSound
+// buffer with 3D control and effects, the primary buffer's listener, and the
+// synth port's download interface. CLSID_FilterMapper2 lists no filters.
+static void test_dmusic_audio_paths() {
+    static const uint8_t clsid_perf[16] = {0x81, 0x28, 0xac, 0xd2, 0x9b, 0xb3, 0xd1, 0x11,
+                                           0x87, 0x04, 0x00, 0x60, 0x08, 0x93, 0xb1, 0xbd};
+    static const uint8_t iid_perf8[16] = {0x37, 0x41, 0x9c, 0x67, 0x2e, 0xc6, 0x47, 0x41,
+                                          0xb2, 0xb4, 0x9d, 0x56, 0x9a, 0xcb, 0x25, 0x4c};
+    static const uint8_t iid_buffer8[16] = {0x49, 0xa4, 0x25, 0x68, 0x24, 0x75, 0x82, 0x4d,
+                                            0x92, 0x0f, 0x50, 0xe3, 0x6a, 0xb3, 0xab, 0x1e};
+    static const uint8_t iid_3dbuffer[16] = {0x86, 0xfa, 0x9a, 0x27, 0x81, 0x49, 0xce, 0x11,
+                                             0xa5, 0x21, 0x00, 0x20, 0xaf, 0x0b, 0xe5, 0x60};
+    static const uint8_t iid_listener[16] = {0x84, 0xfa, 0x9a, 0x27, 0x81, 0x49, 0xce, 0x11,
+                                             0xa5, 0x21, 0x00, 0x20, 0xaf, 0x0b, 0xe5, 0x60};
+    static const uint8_t iid_portdl[16] = {0x7a, 0x28, 0xac, 0xd2, 0x9b, 0xb3, 0xd1, 0x11,
+                                           0x87, 0x04, 0x00, 0x60, 0x08, 0x93, 0xb1, 0xbd};
+    static const uint8_t guid_reverb[16] = {0x68, 0x02, 0xfc, 0x87, 0x55, 0x9a, 0x60, 0x43,
+                                            0x95, 0xaa, 0x00, 0x4a, 0x1d, 0x9d, 0xe2, 0x6c};
+    static const uint8_t iid_reverb8[16] = {0x3a, 0x8c, 0x85, 0x46, 0xc6, 0x0d, 0xe3, 0x45,
+                                            0xb7, 0x60, 0xd4, 0xee, 0xf1, 0x6c, 0xb3, 0x25};
+    static const uint8_t clsid_mapper2[16] = {0x00, 0x22, 0xa4, 0xcd, 0x88, 0xbd, 0xd0, 0x11,
+                                              0xbd, 0x4e, 0x00, 0xa0, 0xc9, 0x11, 0xce, 0x86};
+    static const uint8_t iid_mapper2[16] = {0xb0, 0xb0, 0x9b, 0xb7, 0xc1, 0x33, 0xd1, 0x11,
+                                            0xab, 0xe1, 0x00, 0xa0, 0xc9, 0x05, 0xf3, 0x75};
+    uint32_t g = sc(0x2000);
+    auto guid = [&](unsigned n, const uint8_t *v) {
+        memcpy(g_mem + g + 16 * n, v, 16);
+        return g + 16 * n;
+    };
+    uint32_t perf_clsid = guid(0, clsid_perf), perf_iid = guid(1, iid_perf8);
+    uint32_t buf8 = guid(2, iid_buffer8), b3d = guid(3, iid_3dbuffer), lis = guid(4, iid_listener);
+    uint32_t pdl = guid(5, iid_portdl), rev = guid(6, guid_reverb), rev8 = guid(7, iid_reverb8);
+    uint32_t null_guid = guid(8, (const uint8_t *)"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+    uint32_t out = sc(0x2100), ds_ptr = sc(0x2110), params = sc(0x2120), fx = sc(0x2160);
+    uint32_t cocreate = tramp("ole32.dll", "CoCreateInstance");
+    uint32_t create8 = tramp("DSOUND.dll", "DirectSoundCreate8");
+    CHECK_EQ(call_shim(create8, {0, ds_ptr, 0}), DS_OK);
+    uint32_t ds = rd32(ds_ptr);
+    CHECK_EQ(call_shim(cocreate, {perf_clsid, 0, 3, perf_iid, out}), DS_OK);
+    uint32_t perf = rd32(out);
+    CHECK(perf != 0 && ds != 0);
+    if (!perf || !ds)
+        return;
+    // DMUS_AUDIOPARAMS with a 44100 Hz sample rate (dwValidData 4).
+    wr32(params, 0x28);
+    wr32(params + 8, 4);
+    wr32(params + 0x14, 44100);
+    wr32(out, 0);
+    CHECK_EQ(call_method(perf, 44, {out, ds_ptr, 0, 7, 16, 0x31, params}), DS_OK); // InitAudio
+    CHECK(rd32(out) != 0);                                   // a new IDirectMusic8
+    CHECK_EQ(rd32(ds_ptr), ds);                              // the game's DirectSound kept
+    CHECK_EQ(call_method(perf, 49, {6, 16, 1, out}), DS_OK); // CreateStandardAudioPath(3D)
+    uint32_t path = rd32(out);
+    CHECK(path != 0);
+    // GetObjectInPath(BUFFER) as IDirectSoundBuffer8: a 3D, effects-capable buffer.
+    CHECK_EQ(call_method(path, 3, {0, 0x6000, 0, null_guid, 0, buf8, out}), DS_OK);
+    uint32_t buffer = rd32(out);
+    CHECK(buffer != 0);
+    CHECK_EQ(call_method(buffer, 0, {b3d, out}), DS_OK); // QueryInterface(3D buffer)
+    CHECK(rd32(out) != 0);
+    // SetFX(1, {Waves reverb}) then GetObjectInPath for its interface.
+    wr32(fx, 32);
+    memcpy(g_mem + fx + 8, guid_reverb, 16);
+    CHECK_EQ(call_method(buffer, 21, {1, fx, 0}), DS_OK);
+    CHECK_EQ(call_method(buffer, 23, {rev, 0, rev8, out}), DS_OK);
+    uint32_t reverb = rd32(out);
+    CHECK(reverb != 0);
+    if (reverb) {
+        float set[4] = {-3.0f, -6.0f, 500.0f, 0.01f}, got[4] = {};
+        memcpy(g_mem + fx, set, 16);
+        CHECK_EQ(call_method(reverb, 3, {fx}), DS_OK);
+        gm_zero(fx, 16);
+        CHECK_EQ(call_method(reverb, 4, {fx}), DS_OK);
+        memcpy(got, g_mem + fx, 16);
+        CHECK(memcmp(got, set, 16) == 0);
+    }
+    // The primary buffer stage answers with the device's listener.
+    CHECK_EQ(call_method(path, 3, {0, 0x8000, 0, null_guid, 0, lis, out}), DS_OK);
+    CHECK(rd32(out) != 0);
+    // PChannelInfo gives the port; the port has a download interface whose
+    // buffers are guest memory.
+    CHECK_EQ(call_method(perf, 28, {0, out, 0, 0}), DS_OK);
+    uint32_t port = rd32(out);
+    CHECK(port != 0);
+    CHECK_EQ(call_method(port, 0, {pdl, out}), DS_OK);
+    uint32_t dl = rd32(out);
+    CHECK(dl != 0);
+    if (dl) {
+        CHECK_EQ(call_method(dl, 4, {256, out}), DS_OK); // AllocateBuffer
+        uint32_t download = rd32(out);
+        CHECK(download != 0);
+        CHECK_EQ(call_method(download, 3, {out, out + 4}), DS_OK); // GetBuffer
+        CHECK(rd32(out) != 0 && rd32(out + 4) == 256);
+    }
+    // GetTime moves forward and the default path exists.
+    CHECK_EQ(call_method(perf, 15, {out, 0}), DS_OK);
+    CHECK(rd32(out) != 0 || rd32(out + 4) != 0);
+    CHECK_EQ(call_method(perf, 51, {out}), DS_OK); // GetDefaultAudioPath
+    CHECK(rd32(out) != 0);
+    CHECK_EQ(call_method(perf, 38), DS_OK); // CloseDown
+
+    // FilterMapper2 exists and enumerates nothing.
+    uint32_t mclsid = guid(9, clsid_mapper2), miid = guid(10, iid_mapper2);
+    CHECK_EQ(call_shim(cocreate, {mclsid, 0, 1, miid, out}), DS_OK);
+    uint32_t mapper = rd32(out);
+    CHECK(mapper != 0);
+    if (mapper) {
+        wr32(out, 0x1234);
+        CHECK(call_method(mapper, 6, {out, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}) >=
+              0x80000000u);
+        CHECK_EQ(rd32(out), 0u);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DirectShow multimedia streaming: the reading side of the API a game uses to
 // pull decoded audio out of a music file and feed its own DirectSound buffer.
@@ -12983,6 +13098,7 @@ int main() {
         {"DC write diff", test_getdc_releasedc},
         {"GDI primary blit", test_gdi_primary_blit},
         {"CoCreateInstance DirectSound", test_cocreate_directsound},
+        {"DirectMusic audio paths", test_dmusic_audio_paths},
         {"DirectShow audio stream", test_dshow_audio_stream},
         {"DirectShow graph playback", test_dshow_graph_playback},
         {"DirectShow FilterGraph RenderFile", test_dshow_filtergraph_renderfile},

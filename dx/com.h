@@ -152,6 +152,19 @@ enum ComIface : uint16_t {
     IF_D3DSURFACE8,
     IF_D3DVERTEXBUFFER8,
     IF_D3DINDEXBUFFER8,
+    // DirectMusic (dmusic.cpp): the performance a game uses to make audio
+    // paths, and the DirectSound buffers and synth port those paths hold.
+    IF_DMUSIC8,
+    IF_DMPERF8,
+    IF_DMPORT,
+    IF_DMPORTDOWNLOAD, // a second view of the port
+    IF_DMDOWNLOAD,
+    IF_DMAUDIOPATH8,
+    IF_DMGRAPH, // an audio path's tool graph, a view of the path itself
+    IF_DMTOOL,  // the output tool a stamped message is routed to
+    // DirectSound effects (dsound.cpp): what SetFX put on a buffer.
+    IF_DSFXWAVESREVERB8,
+    IF_FILTERMAPPER2, // DirectShow's filter registry (dshow.cpp), which lists no filters
     IF_COUNT
 };
 
@@ -219,7 +232,19 @@ enum ComKind : uint16_t {
     K_D3D9IB,         // an index buffer
     K_D3D9DECL,       // a vertex declaration
     K_D3D9QUERY,      // an occlusion or event query
+    K_DMUSIC,         // IDirectMusic8
+    K_DMPERF,         // a DirectMusic performance
+    K_DMPORT,         // its synth port, and the port's download interface
+    K_DMDOWNLOAD,     // one download buffer of that port
+    K_DMAUDIOPATH,    // an audio path, its graph, and the DirectSound buffer it owns
+    K_DMTOOL,         // the performance's output tool
+    K_DSFX,           // one effect set on a DirectSound buffer
+    K_FILTERMAPPER,   // DirectShow's filter mapper
+    K_COUNT
 };
+// ComKind values index bit masks of this size (com.cpp).
+static const unsigned COM_MAX_KINDS = 128;
+static_assert(K_COUNT <= COM_MAX_KINDS, "raise COM_MAX_KINDS");
 
 // A DirectInput joystick axis's DIPROP_RANGE, DIPROP_DEADZONE and
 // DIPROP_SATURATION (dx/dinput_joystick.cpp). The zone and saturation are in
@@ -337,6 +362,28 @@ struct ComObj {
     uint32_t lock_off = 0, lock_len = 0;
     float pos3d[3] = {0, 0, 0}, vel3d[3] = {0, 0, 0};
     uint32_t notify_count = 0;
+    // SetFX: the effect GUIDs, in order; each one's K_DSFX object id.
+    std::vector<std::vector<uint8_t>> fx_guids;
+    std::vector<uint32_t> fx_objs;
+
+    // --- DirectMusic (dmusic.cpp)
+    uint32_t dm_dsound = 0;       // performance: the DirectSound object id it plays through
+    uint32_t dm_port = 0;         // performance: its synth port's object id
+    uint32_t dm_default_path = 0; // performance: the default audio path's object id
+    uint32_t dm_tool = 0;         // performance: its output tool's object id
+    uint32_t dm_perf = 0;         // path / port: the performance that made it
+    uint32_t dm_sample_rate = 22050;
+    uint32_t dm_next_pchannel = 0; // performance: the next unused PChannel block
+    std::map<std::string, std::vector<uint8_t>> dm_globals; // performance: SetGlobalParam
+    uint32_t ap_type = 0;                                   // audio path: DMUS_APATH_* type
+    uint32_t ap_pchannels = 0; // audio path: how many PChannels it maps
+    uint32_t ap_pchannel_base = 0;
+    uint32_t ap_buffer = 0; // audio path: its DirectSound buffer's object id, made on first use
+    bool ap_active = false;
+    int32_t ap_volume = 0;
+    uint32_t dl_mem = 0, dl_size = 0, dl_id = 0; // download buffer: guest memory and its id
+    uint32_t dl_next_id = 0;                     // port: the next download id
+    std::vector<uint8_t> fx_guid;                // K_DSFX: which effect
 
     // --- K_DINPUT / K_DIDEVICE
     uint32_t di_version = 0;
