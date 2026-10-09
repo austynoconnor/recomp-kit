@@ -67,10 +67,7 @@ class LoadTests(unittest.TestCase):
             self.assertEqual(cfg["translate"]["setjmp"], 0x4b0050)
             self.assertEqual(cfg["translate"]["longjmp"], 0x4affd4)
             (game / "game.toml").write_text(
-                stub.replace("[translate]
-", "[translate]
-ftol2 = 0x7522bc
-", 1))
+                stub.replace("[translate]\n", "[translate]\nftol2 = 0x7522bc\n", 1))
             self.assertEqual(game_config.load(game)["translate"]["ftol2"], 0x7522bc)
             for bad in ('setjmp = "0x4b0050"', "longjmp = 0", "ftol2 = -1"):
                 (game / "game.toml").write_text(stub.replace("[translate]\n", "[translate]\n" + bad + "\n", 1))
