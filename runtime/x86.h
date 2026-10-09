@@ -530,6 +530,10 @@ void recomp_unmodelled(X86 *c, uint32_t addr);
  * runtime call is, so a polling loop lets the thread it waits on run. */
 void recomp_yield_point(X86 *c);
 void recomp_breakpoint(X86 *c, uint32_t addr);
+/* The back edge of a loop that only re-reads memory, or a PAUSE. Guest
+ * threads take turns, so the thread such a loop waits for runs only if this
+ * one offers a turn; this is the scheduling checkpoint every runtime call is. */
+void recomp_spin_wait(X86 *c);
 
 /* ------------------------------------------------------ hook dispatch -- */
 

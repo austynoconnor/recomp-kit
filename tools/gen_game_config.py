@@ -66,6 +66,8 @@ def render_header(cfg):
     lines.append("#define RECOMP_CONTROLS_MOUSE_STICK %d"
                  % ("none", "left", "right").index(native["mouse_stick"]))
     lines.append("#define RECOMP_CONTROLS_MOUSE_SPEED %d" % native["mouse_speed"])
+    lines.append("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (%d)" % native["axis_range"][0])
+    lines.append("#define RECOMP_CONTROLS_NATIVE_AXIS_MAX (%d)" % native["axis_range"][1])
     lines.append("#define RECOMP_GUEST_SIZE %s" % c_hex(game["guest_size"]))
     lines.append("#define RECOMP_RESUMABLE_STACKS %d" %
                  int(cfg["translate"].get("resumable_stacks", False)))

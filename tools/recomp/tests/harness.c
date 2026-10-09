@@ -148,6 +148,12 @@ void recomp_breakpoint(X86 *c, uint32_t addr) {
     (void)c;
     last_breakpoint = addr;
 }
+/* A spin-wait checkpoint: fixtures have no other thread to hand over to. */
+uint32_t spin_waits = 0;
+void recomp_spin_wait(X86 *c) {
+    (void)c;
+    ++spin_waits;
+}
 void recomp_unmodelled(X86 *c, uint32_t a) {
     (void)c;
     fprintf(stderr, "unmodelled %08x\n", a);

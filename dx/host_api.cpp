@@ -123,6 +123,10 @@ HOST_DEFAULT const char *host_pad_native_axes(void) {
 HOST_DEFAULT const char *host_pad_native_buttons(void) {
     return "square,cross,circle,triangle,l1,r1,l2,r2,select,start,l3,r3,ps";
 }
+HOST_DEFAULT void host_pad_native_axis_range(int32_t *min, int32_t *max) {
+    *min = -32768;
+    *max = 32767;
+}
 
 } // extern "C"
 

@@ -755,6 +755,16 @@ static void create_device(X86 *c, ComIface iface) {
     d->dev_type = type;
     d->di_wide = di->di_wide;
     d->di_version = di->di_version;
+    if (type != DIDEVTYPE_MOUSE && type != DIDEVTYPE_KEYBOARD) {
+        // Until the guest sets DIPROP_RANGE, every axis reports the game's
+        // configured range ([controls.native] axis_range).
+        int32_t lo = -32768, hi = 32767;
+        host_pad_native_axis_range(&lo, &hi);
+        for (JoyAxisRange &r : d->joy_ranges) {
+            r.min = lo;
+            r.max = hi;
+        }
+    }
     uint32_t view = com_view(d, iface);
     if (!view) {
         com_release(d);

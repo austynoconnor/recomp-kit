@@ -327,6 +327,19 @@ class LoadTests(unittest.TestCase):
             header = gen_game_config.render_header(game_config.load(game))
             self.assertIn("#define RECOMP_CONTROLS_PAD 1", header)
             self.assertIn("cross=mouse_left", header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (-32768)", header)
+
+            # axis_range: the joystick's range until the game sets DIPROP_RANGE.
+            (game / "game.toml").write_text(
+                base + '\n[controls]\n[controls.native]\naxis_range = [-128, 127]\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (-128)", header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MAX (127)", header)
+            for bad in ("[127, -128]", "[0]", '["a", "b"]', "[true, 2]"):
+                (game / "game.toml").write_text(
+                    base + '\n[controls]\n[controls.native]\naxis_range = %s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
 
             # The old rows spelling still loads.
             (game / "game.toml").write_text(base + '\n[settings]\nrows = ["window", "keypad"]\n')

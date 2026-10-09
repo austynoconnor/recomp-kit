@@ -42,7 +42,7 @@ MAPPED_DEFAULTS = {"left_stick": "arrows", "right_stick": "cursor", "dpad": "arr
 NATIVE_AXES = ("x", "y", "z", "rx", "ry", "rz")
 # [controls.native] keys, and mouse_stick's choices: which stick mouse
 # movement deflects (none leaves the mouse to the game).
-NATIVE_KEYS = ("xinput", "dinput", "axes", "buttons", "mouse_stick", "mouse_speed")
+NATIVE_KEYS = ("xinput", "dinput", "axes", "buttons", "axis_range", "mouse_stick", "mouse_speed")
 MOUSE_STICKS = ("none", "left", "right")
 # Mirrors the name column of host/controls/layout.cpp's kScancodes table (its
 # scancode_from_name); keep both lists in sync.
@@ -152,16 +152,30 @@ def load_controls(controls, touch, source):
     native.setdefault("dinput", True)
     if not isinstance(native["xinput"], bool) or not isinstance(native["dinput"], bool):
         raise ValueError("%s: [controls.native] xinput and dinput must be booleans" % source)
+    # One DIJOYSTATE axis per pad axis (left X, left Y, right X, right Y, left
+    # trigger, right trigger). "+y" / "-y" map a control onto one half of an
+    # axis (combined pedals); an axis fed twice reads the larger deflection.
     axes = native.setdefault("axes", ["x", "y", "z", "rz", "rx", "ry"])
-    if not isinstance(axes, list) or sorted(axes) != sorted(NATIVE_AXES):
-        raise ValueError("%s: [controls.native] axes must list all six of %s exactly once, not %r"
-                         % (source, ", ".join(NATIVE_AXES), axes))
+    if (not isinstance(axes, list) or len(axes) != 6
+            or not all(isinstance(a, str) and a.lstrip("+-") in NATIVE_AXES
+                       and len(a) - len(a.lstrip("+-")) <= 1 for a in axes)):
+        raise ValueError("%s: [controls.native] axes must name six of %s (optionally "
+                         "+/- for a half axis), not %r" % (source, ", ".join(NATIVE_AXES), axes))
     buttons = native.setdefault(
         "buttons", ["square", "cross", "circle", "triangle", "l1", "r1", "l2", "r2", "select",
                    "start", "l3", "r3", "ps"])
     if not isinstance(buttons, list) or sorted(buttons) != sorted(PAD_BUTTONS):
         raise ValueError("%s: [controls.native] buttons must list all thirteen of %s exactly once, not %r"
                          % (source, ", ".join(PAD_BUTTONS), buttons))
+    # The range every joystick axis reports until the game sets DIPROP_RANGE.
+    # A game that never sets one was written against its own controller's
+    # driver default (Crazy Taxi expects about -128..127).
+    axis_range = native.setdefault("axis_range", [-32768, 32767])
+    if (not isinstance(axis_range, list) or len(axis_range) != 2
+            or not all(isinstance(v, int) and not isinstance(v, bool) for v in axis_range)
+            or not -2**31 <= axis_range[0] < axis_range[1] < 2**31):
+        raise ValueError("%s: [controls.native] axis_range must be [min, max] integers with "
+                         "min < max, not %r" % (source, axis_range))
     controls["native"] = native
     return controls
 
@@ -230,6 +244,8 @@ def load(game_dir):
     for key in ("title", "store"):
         if not isinstance(launcher[key], str):
             raise ValueError("%s: [launcher] %s must be a string" % (source, key))
+    if not isinstance(launcher.setdefault("stream_assets", False), bool):
+        raise ValueError("%s: [launcher] stream_assets must be a boolean" % source)
     min_free = launcher.setdefault("min_free_mb", 0)
     if not isinstance(min_free, int) or min_free < 0:
         raise ValueError("%s: [launcher] min_free_mb must be a non-negative integer" % source)

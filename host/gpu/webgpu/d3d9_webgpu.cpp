@@ -268,6 +268,10 @@ struct Buf {
     WGPUBuffer buffer = nullptr;
     std::vector<uint8_t> shadow;
     uint64_t used = 0;
+    // Rewritten while the frame being recorded still drew from it. From then
+    // on draws copy the part they use from `shadow` into the frame's ring
+    // instead of reading `buffer`; see draw().
+    bool streamed = false;
 };
 
 class WebGpuRenderer final : public D9Backend {
@@ -415,8 +419,11 @@ class WebGpuRenderer final : public D9Backend {
         Tex &t = *tp;
         if (level >= t.levels || t.depth)
             return;
-        if (t.used == serial_ && encoder_)
+        ++st_.tex_up;
+        if (t.used == serial_ && encoder_) {
+            ++st_.forced_tex;
             submit(); // draws already recorded read the old contents
+        }
         uint32_t w = std::max<uint32_t>(t.desc.width >> level, 1);
         uint32_t h = std::max<uint32_t>((t.cube ? t.desc.width : t.desc.height) >> level, 1);
         WGPUTexelCopyTextureInfo dst = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -436,6 +443,7 @@ class WebGpuRenderer final : public D9Backend {
             size.height = std::min(size.height, std::max<uint32_t>(t.height >> level, 1));
             size.width = (size.width + 3) & ~3u;
             size.height = (size.height + 3) & ~3u;
+            st_.tex_bytes += scratch_.size();
             wgpuQueueWriteTexture(queue_, &dst, scratch_.data(), scratch_.size(), &layout, &size);
             return;
         }
@@ -482,6 +490,7 @@ class WebGpuRenderer final : public D9Backend {
         }
         layout.bytesPerRow = pw * out_bpp;
         WGPUExtent3D size = {pw, ph, 1};
+        st_.tex_bytes += packed.size();
         wgpuQueueWriteTexture(queue_, &dst, packed.data(), packed.size(), &layout, &size);
     }
 
@@ -497,21 +506,31 @@ class WebGpuRenderer final : public D9Backend {
         Buf &b = buffers_[id];
         if (offset + size > total || !bytes)
             return;
+        ++st_.buf_up;
+        st_.buf_bytes += size;
         if (b.shadow.size() < total)
             b.shadow.resize(total, 0);
         memcpy(b.shadow.data() + offset, bytes, size);
+        if (b.streamed)
+            return; // draws read the shadow
         const uint64_t need = (total + 3) & ~3u;
         if (!b.buffer || wgpuBufferGetSize(b.buffer) < need) {
             if (b.buffer)
-                wgpuBufferRelease(b.buffer);
+                drop_buffer(b.buffer);
             b.buffer = make_buffer(std::max<uint64_t>(need, 4),
                                    WGPUBufferUsage_Vertex | WGPUBufferUsage_Index);
             write_padded(b.buffer, 0, b.shadow.data(), b.shadow.size());
             b.used = 0;
             return;
         }
-        if (b.used == serial_ && encoder_)
-            submit(); // draws already recorded read the old contents
+        if (b.used == serial_ && encoder_) {
+            // Draws already recorded read the old contents. Submitting here
+            // cost Crazy Taxi one queue submission per draw (2,000 a frame):
+            // a buffer the game refills between draws is streamed instead.
+            ++st_.forced_buf;
+            b.streamed = true;
+            return;
+        }
         write_padded(b.buffer, offset, bytes, size);
     }
     void buffer_drop(uint32_t id) override {
@@ -519,7 +538,7 @@ class WebGpuRenderer final : public D9Backend {
         if (it == buffers_.end())
             return;
         if (it->second.buffer)
-            wgpuBufferRelease(it->second.buffer);
+            drop_buffer(it->second.buffer);
         buffers_.erase(it);
     }
 
@@ -754,6 +773,24 @@ class WebGpuRenderer final : public D9Backend {
         }
         wgpuRenderPassEncoderSetBindGroup(pass_, 0, group, 4, offsets);
 
+        // Streamed vertex buffers: copy only the vertices this draw uses,
+        // [vfirst, vend), into the ring, and shift the draw by vfirst. Other
+        // streams are then bound vfirst vertices further in.
+        bool any_streamed = false;
+        for (uint32_t i = 0; i < 8; ++i) {
+            if (!(vl.streams >> i & 1) || !d.stream[i].buffer)
+                continue;
+            auto b = buffers_.find(d.stream[i].buffer);
+            any_streamed |= b != buffers_.end() && b->second.streamed;
+        }
+        uint32_t vfirst = 0, vend = 0;
+        bool sliced = any_streamed && vertex_span(d, &vfirst, &vend);
+        if (sliced)
+            for (uint32_t i = 0; i < 8; ++i)
+                if ((vl.streams >> i & 1) && (uint64_t)vfirst * d.stream[i].stride % 4)
+                    sliced = false;
+        if (!sliced)
+            vfirst = 0;
         for (uint32_t i = 0; i < 8; ++i) {
             if (!(vl.streams >> i & 1))
                 continue;
@@ -762,13 +799,29 @@ class WebGpuRenderer final : public D9Backend {
             uint64_t off = 0;
             if (st.buffer) {
                 auto b = buffers_.find(st.buffer);
-                if (b == buffers_.end() || !b->second.buffer) {
+                if (b == buffers_.end() || (!b->second.buffer && !b->second.streamed)) {
                     skip("missing vertex buffer");
                     return;
                 }
-                b->second.used = serial_;
-                vb = b->second.buffer;
-                off = st.offset;
+                Buf &bb = b->second;
+                const uint64_t skipped = (uint64_t)vfirst * st.stride;
+                if (bb.streamed) {
+                    const uint64_t from = st.offset + skipped;
+                    uint64_t to =
+                        sliced ? st.offset + (uint64_t)vend * st.stride : bb.shadow.size();
+                    to = std::min<uint64_t>(to, bb.shadow.size());
+                    if (from >= to) {
+                        skip("streamed vertex range");
+                        return;
+                    }
+                    vb = ring_write(bb.shadow.data() + from, to - from, &off,
+                                    WGPUBufferUsage_Vertex);
+                    st_.streamed_bytes += to - from;
+                } else {
+                    bb.used = serial_;
+                    vb = bb.buffer;
+                    off = st.offset + skipped;
+                }
             } else if (d.inline_vertices) {
                 vb = ring_write(d.inline_vertices, d.inline_bytes, &off, WGPUBufferUsage_Vertex);
             } else {
@@ -778,7 +831,7 @@ class WebGpuRenderer final : public D9Backend {
         }
         if (vl.zero)
             wgpuRenderPassEncoderSetVertexBuffer(pass_, vl.zero_slot, zero_, 0, WGPU_WHOLE_SIZE);
-        encode_primitives(d);
+        encode_primitives(d, vfirst);
         ++draws_;
     }
 
@@ -965,7 +1018,7 @@ class WebGpuRenderer final : public D9Backend {
             dev_->commit(cb);
         }
         ++presents_;
-        if (presents_ % 300 == 1)
+        if (presents_ % 60 == 1)
             report();
         follow_drawable();
     }
@@ -1013,7 +1066,18 @@ class WebGpuRenderer final : public D9Backend {
             return;
         wgpuQueueWriteBuffer(queue_, b, offset, pad_.data(), aligned);
     }
-    // Space in this frame's ring buffers; the data is written at once.
+    struct Ring {
+        std::vector<WGPUBuffer> chunks;
+        std::vector<std::vector<uint8_t>> cpu; // this submission's bytes per chunk
+        std::vector<uint64_t> dirty;           // how much of each is written
+        size_t chunk = 0;
+        uint64_t used = 0;
+        uint64_t chunk_size = 8u << 20;
+    };
+    // Space in this frame's ring buffers. The bytes are gathered on the CPU
+    // and written with one queue write per chunk just before the submit
+    // (flush_ring): a write per draw meant thousands of small browser calls a
+    // frame, each crossing to the GPU process.
     WGPUBuffer ring_write(const void *bytes, uint64_t size, uint64_t *offset,
                           WGPUBufferUsage usage = WGPUBufferUsage_Uniform) {
         Ring &r = usage == WGPUBufferUsage_Uniform ? uniform_ring_ : vertex_ring_;
@@ -1024,7 +1088,13 @@ class WebGpuRenderer final : public D9Backend {
                 const uint64_t at = round_up(r.used, align);
                 if (at + aligned <= r.chunk_size) {
                     r.used = at + aligned;
-                    write_padded(r.chunks[r.chunk], at, (const uint8_t *)bytes, size);
+                    std::vector<uint8_t> &cpu = r.cpu[r.chunk];
+                    if (cpu.size() < r.chunk_size)
+                        cpu.resize(r.chunk_size);
+                    memcpy(cpu.data() + at, bytes, size);
+                    if (aligned != size)
+                        memset(cpu.data() + at + size, 0, aligned - size);
+                    r.dirty[r.chunk] = std::max(r.dirty[r.chunk], at + aligned);
                     *offset = at;
                     return r.chunks[r.chunk];
                 }
@@ -1033,14 +1103,17 @@ class WebGpuRenderer final : public D9Backend {
                 continue;
             }
             r.chunks.push_back(make_buffer(r.chunk_size, usage | WGPUBufferUsage_Index));
+            r.cpu.emplace_back();
+            r.dirty.push_back(0);
         }
     }
-    struct Ring {
-        std::vector<WGPUBuffer> chunks;
-        size_t chunk = 0;
-        uint64_t used = 0;
-        uint64_t chunk_size = 8u << 20;
-    };
+    void flush_ring(Ring &r) {
+        for (size_t i = 0; i < r.chunks.size(); ++i)
+            if (r.dirty[i]) {
+                wgpuQueueWriteBuffer(queue_, r.chunks[i], 0, r.cpu[i].data(), r.dirty[i]);
+                r.dirty[i] = 0;
+            }
+    }
 
     WFmt format_for(uint32_t fmt) const {
         const FormatInfo f = d9gpu::format_info(fmt, bc_);
@@ -1180,6 +1253,7 @@ class WebGpuRenderer final : public D9Backend {
         if (!encoder_)
             return;
         end_pass();
+        ++st_.submits;
         WGPUQuerySet qs = query_set_;
         WGPUBuffer resolve = nullptr, readback = nullptr;
         const uint32_t nq = queries_used_;
@@ -1195,8 +1269,13 @@ class WebGpuRenderer final : public D9Backend {
         WGPUCommandBuffer cb = wgpuCommandEncoderFinish(encoder_, nullptr);
         wgpuCommandEncoderRelease(encoder_);
         encoder_ = nullptr;
+        flush_ring(uniform_ring_);
+        flush_ring(vertex_ring_);
         wgpuQueueSubmit(queue_, 1, &cb);
         wgpuCommandBufferRelease(cb);
+        for (WGPUBuffer b : doomed_)
+            destroy_now(b);
+        doomed_.clear();
         if (readback)
             read_queries(serial_, readback, nq, resolve, qs);
         else if (qs)
@@ -1246,8 +1325,11 @@ class WebGpuRenderer final : public D9Backend {
                     }
                     slots.resize(keep);
                 }
+                wgpuBufferDestroy(j->readback);
                 wgpuBufferRelease(j->readback);
+                wgpuBufferDestroy(j->resolve);
                 wgpuBufferRelease(j->resolve);
+                wgpuQuerySetDestroy(j->qs);
                 wgpuQuerySetRelease(j->qs);
                 delete j;
             });
@@ -1736,6 +1818,7 @@ class WebGpuRenderer final : public D9Backend {
         pd.depthStencil = pass_depth_view_ ? &ds : nullptr;
         pd.multisample.count = pass_samples_;
         pd.fragment = &fs;
+        ++st_.psos;
         WGPURenderPipeline pso = wgpuDeviceCreateRenderPipeline(device_, &pd);
         pipelines_[key] = pso;
         last_pipeline_key_ = key;
@@ -1780,6 +1863,7 @@ class WebGpuRenderer final : public D9Backend {
         d.layout = k.layout;
         d.entryCount = e.size();
         d.entries = e.data();
+        ++st_.groups;
         WGPUBindGroup g = wgpuDeviceCreateBindGroup(device_, &d);
         groups_[key] = g;
         return g;
@@ -1951,6 +2035,7 @@ class WebGpuRenderer final : public D9Backend {
             (copy_format == WGPUTextureFormat_Undefined && pass_depth_view_) ? &ds : nullptr;
         pd.multisample.count = pass_samples_;
         pd.fragment = &fs;
+        ++st_.psos;
         WGPURenderPipeline pso = wgpuDeviceCreateRenderPipeline(device_, &pd);
         pipelines_[key] = pso;
         return pso;
@@ -1981,6 +2066,7 @@ class WebGpuRenderer final : public D9Backend {
         d.layout = utility_layout();
         d.entryCount = 3;
         d.entries = e;
+        ++st_.groups;
         WGPUBindGroup g = wgpuDeviceCreateBindGroup(device_, &d);
         wgpuRenderPassEncoderSetBindGroup(pass_, 0, g, 0, nullptr);
         wgpuRenderPassEncoderDraw(pass_, 4, 1, 0, 0);
@@ -1997,7 +2083,68 @@ class WebGpuRenderer final : public D9Backend {
                 memcpy(out + (size_t)def.first * 16, def.second.data(), 16);
     }
 
-    void encode_primitives(const HostD9Draw &d) {
+    // The vertices a draw reads, [*first, *end), counted as the game numbers
+    // them (base vertex included). False when they cannot be worked out.
+    bool vertex_span(const HostD9Draw &d, uint32_t *first, uint32_t *end) {
+        uint32_t n = d.primitive_count;
+        switch (d.primitive) {
+        case 1:
+            break;
+        case 2:
+            n *= 2;
+            break;
+        case 3:
+            n += 1;
+            break;
+        case 4:
+            n *= 3;
+            break;
+        case 5:
+        case 6:
+            n += 2;
+            break;
+        default:
+            return false;
+        }
+        if (!n)
+            return false;
+        if (!d.index_buffer && !d.inline_indices) {
+            *first = d.start;
+            *end = d.start + n;
+            return true;
+        }
+        if (!d.index_buffer)
+            return false; // inline indices go with inline vertices
+        auto b = buffers_.find(d.index_buffer);
+        const uint32_t isize = d.index_size == 4 ? 4 : 2;
+        if (b == buffers_.end() || (uint64_t)(d.start + n) * isize > b->second.shadow.size())
+            return false;
+        const uint8_t *p = b->second.shadow.data() + (size_t)d.start * isize;
+        uint32_t lo = 0xffffffffu, hi = 0;
+        if (isize == 2) {
+            for (uint32_t i = 0; i < n; ++i) {
+                uint32_t v = (uint32_t)(p[2 * i] | p[2 * i + 1] << 8);
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+        } else {
+            for (uint32_t i = 0; i < n; ++i) {
+                uint32_t v;
+                memcpy(&v, p + 4 * i, 4);
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+        }
+        const int64_t f = (int64_t)d.base_vertex + lo, e = (int64_t)d.base_vertex + hi + 1;
+        if (f < 0 || e > 0xffffffffll)
+            return false;
+        *first = (uint32_t)f;
+        *end = (uint32_t)e;
+        return true;
+    }
+
+    // `shift`: the vertex buffers were bound that many vertices further in.
+    void encode_primitives(const HostD9Draw &d, uint32_t shift = 0) {
         uint32_t count = d.primitive_count;
         bool fan = false;
         switch (d.primitive) {
@@ -2025,7 +2172,7 @@ class WebGpuRenderer final : public D9Backend {
             return;
         bool indexed = d.index_buffer || d.inline_indices;
         if (!indexed && !fan) {
-            wgpuRenderPassEncoderDraw(pass_, count, 1, d.start, 0);
+            wgpuRenderPassEncoderDraw(pass_, count, 1, d.start - shift, 0);
             return;
         }
         const WGPUIndexFormat itype =
@@ -2038,10 +2185,23 @@ class WebGpuRenderer final : public D9Backend {
                     return;
                 if ((uint64_t)(d.start + count) * isize > b->second.shadow.size())
                     return;
+                const int32_t base = d.base_vertex - (int32_t)shift;
+                if (b->second.streamed) {
+                    uint64_t off = 0;
+                    const uint64_t bytes = (uint64_t)count * isize;
+                    WGPUBuffer rb = ring_write(b->second.shadow.data() + (size_t)d.start * isize,
+                                               bytes, &off, WGPUBufferUsage_Vertex);
+                    st_.streamed_bytes += bytes;
+                    wgpuRenderPassEncoderSetIndexBuffer(pass_, rb, itype, off, round_up(bytes, 4));
+                    wgpuRenderPassEncoderDrawIndexed(pass_, count, 1, 0, base, 0);
+                    return;
+                }
+                if (!b->second.buffer)
+                    return;
                 b->second.used = serial_;
                 wgpuRenderPassEncoderSetIndexBuffer(pass_, b->second.buffer, itype, 0,
                                                     WGPU_WHOLE_SIZE);
-                wgpuRenderPassEncoderDrawIndexed(pass_, count, 1, d.start, d.base_vertex, 0);
+                wgpuRenderPassEncoderDrawIndexed(pass_, count, 1, d.start, base, 0);
             } else {
                 uint64_t off = 0;
                 WGPUBuffer b = ring_write(d.inline_indices, (uint64_t)count * isize, &off,
@@ -2055,7 +2215,7 @@ class WebGpuRenderer final : public D9Backend {
         fan_.resize((size_t)count * 3);
         auto source = [&](uint32_t i) -> uint32_t {
             if (!indexed)
-                return d.start + i;
+                return d.start + i - shift;
             const uint8_t *p = nullptr;
             if (d.inline_indices) {
                 p = d.inline_indices + (size_t)i * isize;
@@ -2069,7 +2229,7 @@ class WebGpuRenderer final : public D9Backend {
             uint32_t v = isize == 4
                              ? (uint32_t)(p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24)
                              : (uint32_t)(p[0] | p[1] << 8);
-            return v + (uint32_t)(d.inline_indices ? 0 : d.base_vertex);
+            return v + (uint32_t)(d.inline_indices ? 0 : d.base_vertex) - shift;
         };
         for (uint32_t i = 0; i < count; ++i) {
             fan_[i * 3] = source(0);
@@ -2133,7 +2293,28 @@ class WebGpuRenderer final : public D9Backend {
                 textures_.size(), pipelines_.size());
         for (auto &s : skips_)
             fprintf(stderr, ", %s %llu", s.first.c_str(), (unsigned long long)s.second);
-        fprintf(stderr, "\n");
+        const double f = double(frames);
+        double tex_mb = 0, big_mb = 0;
+        for (auto &kv : textures_) {
+            const Tex &t = kv.second;
+            double b = (double)t.width * t.height * std::max<uint32_t>(t.info.bytes, 1) *
+                       (t.cube ? 6 : t.layers) * (t.levels > 1 ? 4.0 / 3.0 : 1.0);
+            if (t.msaa)
+                b += (double)t.width * t.height * 4 * t.samples;
+            tex_mb += b / 1048576.0;
+            big_mb = std::max(big_mb, b / 1048576.0);
+        }
+        fprintf(stderr, "; textures about %.0f MB (largest %.0f MB), scale %.2f, %zu fitted depth",
+                tex_mb, big_mb, scale_, fitted_.size());
+        fprintf(stderr,
+                "; per frame: %.1f submits (%.1f buffers newly streamed, %.1f by texture writes), "
+                "%.0f buffer writes %.0f KB, %.1f texture writes %.0f KB, %.0f bind groups, "
+                "%.2f new pipelines, %.0f KB streamed; ring chunks %zu+%zu\n",
+                st_.submits / f, st_.forced_buf / f, st_.forced_tex / f, st_.buf_up / f,
+                st_.buf_bytes / f / 1024.0, st_.tex_up / f, st_.tex_bytes / f / 1024.0,
+                st_.groups / f, st_.psos / f, st_.streamed_bytes / f / 1024.0,
+                uniform_ring_.chunks.size(), vertex_ring_.chunks.size());
+        st_ = Stats{};
         report_time_ = t;
         report_frames_ = presents_;
         report_draws_ = draws_;
@@ -2187,6 +2368,20 @@ class WebGpuRenderer final : public D9Backend {
     std::unordered_map<uint32_t, Tex> textures_;
     std::vector<Tex *> tex_index_;
     std::unordered_map<uint32_t, Buf> buffers_;
+    // Buffers dropped while the open encoder may use them; destroyed after
+    // its submit. Release alone leaves the memory to the browser's garbage
+    // collector.
+    std::vector<WGPUBuffer> doomed_;
+    void drop_buffer(WGPUBuffer b) {
+        if (encoder_)
+            doomed_.push_back(b);
+        else
+            destroy_now(b);
+    }
+    static void destroy_now(WGPUBuffer b) {
+        wgpuBufferDestroy(b);
+        wgpuBufferRelease(b);
+    }
     std::unordered_map<uint64_t, WGPUShaderModule> modules_;
     std::unordered_map<uint64_t, Layout> layouts_;
     std::unordered_map<uint64_t, VLayout> vlayouts_;
@@ -2204,6 +2399,11 @@ class WebGpuRenderer final : public D9Backend {
     uint32_t query_ = 0;
 
     uint64_t draws_ = 0, presents_ = 0, stat_calls_ = 0;
+    // RECOMP_D3D9_STATS counters since the last report.
+    struct Stats {
+        uint64_t submits = 0, forced_buf = 0, forced_tex = 0, buf_up = 0, buf_bytes = 0, tex_up = 0,
+                 tex_bytes = 0, groups = 0, psos = 0, streamed_bytes = 0, draws_streamed_pre = 0;
+    } st_;
     double report_time_ = 0;
     uint64_t report_frames_ = 0, report_draws_ = 0;
     std::map<std::string, uint64_t> skips_;

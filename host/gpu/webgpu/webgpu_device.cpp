@@ -321,10 +321,25 @@ void WebGpuDevice::destroy(Texture tex) {
     textures_.erase(it);
     if (t.external)
         return;
-    // A texture recorded into a command buffer stays valid until that buffer
-    // is submitted: WebGPU keeps it alive, so releasing our reference is safe.
+    // Destroying frees the memory at once (after submitted work using it);
+    // a texture an open recording uses must wait for that recording.
     wgpuTextureViewRelease(t.view);
-    wgpuTextureRelease(t.texture);
+    doomed_textures_.push_back(t.texture);
+    if (!recording_count_)
+        free_doomed();
+}
+
+void WebGpuDevice::free_doomed() {
+    for (WGPUTexture t : doomed_textures_) {
+        wgpuTextureDestroy(t);
+        wgpuTextureRelease(t);
+    }
+    for (WGPUBuffer b : doomed_buffers_) {
+        wgpuBufferDestroy(b);
+        wgpuBufferRelease(b);
+    }
+    doomed_textures_.clear();
+    doomed_buffers_.clear();
 }
 
 TextureDesc WebGpuDevice::describe(Texture tex) {
@@ -388,11 +403,13 @@ void WebGpuDevice::destroy(Buffer b) {
     auto it = buffers_.find(b.id);
     if (it == buffers_.end())
         return;
-    wgpuBufferRelease(it->second.buffer);
+    doomed_buffers_.push_back(it->second.buffer);
     buffers_.erase(it);
+    if (!recording_count_)
+        free_doomed();
 }
 
-WebGpuDevice::Binding WebGpuDevice::stage_bytes(const void *bytes, uint64_t count) {
+WebGpuDevice::Binding WebGpuDevice::stage_bytes(Cmd &c, const void *bytes, uint64_t count) {
     const uint64_t align = std::max<uint64_t>(limits_.minStorageBufferOffsetAlignment, 4);
     const uint64_t size = round_up(count, 4);
     if (size > kRingChunk)
@@ -402,6 +419,12 @@ WebGpuDevice::Binding WebGpuDevice::stage_bytes(const void *bytes, uint64_t coun
             const uint64_t at = round_up(ring_used_, align);
             if (at + size <= kRingChunk) {
                 ring_used_ = at + size;
+                // Until this recording is committed the chunk is not reused.
+                if (std::find(c.ring_chunks.begin(), c.ring_chunks.end(), ring_chunk_) ==
+                    c.ring_chunks.end()) {
+                    c.ring_chunks.push_back(ring_chunk_);
+                    ++ring_users_[ring_chunk_];
+                }
                 wgpuQueueWriteBuffer(queue_, ring_[ring_chunk_], at, bytes, size_t(count));
                 if (size != count) {
                     const uint8_t zero[4] = {};
@@ -410,14 +433,29 @@ WebGpuDevice::Binding WebGpuDevice::stage_bytes(const void *bytes, uint64_t coun
                 }
                 return {ring_[ring_chunk_], at, size};
             }
-            ++ring_chunk_;
+            // Full: move to a chunk no open recording uses, or add one. A
+            // reset only when nothing at all was recording grew this ring by a
+            // chunk a frame while the presenter and the game overlapped.
+            size_t next = ring_.size();
+            for (size_t k = 1; k <= ring_.size(); ++k) {
+                const size_t j = (ring_chunk_ + k) % ring_.size();
+                if (j != ring_chunk_ && ring_users_[j] == 0) {
+                    next = j;
+                    break;
+                }
+            }
+            ring_chunk_ = next;
             ring_used_ = 0;
-            continue;
+            if (next < ring_.size())
+                continue;
         }
         WGPUBufferDescriptor bd = WGPU_BUFFER_DESCRIPTOR_INIT;
         bd.size = kRingChunk;
         bd.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
         ring_.push_back(wgpuDeviceCreateBuffer(device_, &bd));
+        ring_users_.push_back(0);
+        ring_chunk_ = ring_.size() - 1;
+        ring_used_ = 0;
     }
 }
 
@@ -732,7 +770,7 @@ void WebGpuDevice::set_bytes(CommandBuffer cb, Stage stage, int slot, const void
         stage == Stage::Compute ? (slot >= 0 && slot < 8 ? slot : -1) : binding_index(stage, slot);
     if (!c || i < 0 || !bytes || !count)
         return;
-    c->buffers[i] = stage_bytes(bytes, count);
+    c->buffers[i] = stage_bytes(*c, bytes, count);
     c->bindings_dirty = true;
 }
 void WebGpuDevice::set_buffer(CommandBuffer cb, Stage stage, int slot, Buffer b, uint64_t offset) {
@@ -972,10 +1010,14 @@ void WebGpuDevice::commit(CommandBuffer cb) {
     wgpuCommandEncoderRelease(c->encoder);
     wgpuQueueSubmit(queue_, 1, &buffer);
     wgpuCommandBufferRelease(buffer);
+    for (size_t chunk : c->ring_chunks)
+        if (chunk < ring_users_.size() && ring_users_[chunk])
+            --ring_users_[chunk];
     if (recording_count_ > 0 && --recording_count_ == 0) {
         // Nothing recording can name an earlier ring offset any more.
         ring_chunk_ = 0;
         ring_used_ = 0;
+        free_doomed();
     }
     const double submitted = now_seconds();
     const uint64_t id = cb.id;

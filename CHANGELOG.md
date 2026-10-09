@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-08 21:40 CDT — Claude Opus 5.5: merged `giggity-d3d8` again
+  (8f9f537: WebGPU object lifetime and buffer streaming, ranged buffer
+  locks, half-axis pad mapping). `[controls.native]` takes both branches'
+  keys (`axis_range`, `mouse_stick`, `mouse_speed`); `ReadFile` keeps the
+  overlapped path and uses the read-ahead buffer otherwise. The translator's
+  automatic spin-wait checkpoints and `[translate] yield_points` both stay:
+  the second covers a polling loop the detector does not recognise.
+
 - 2026-10-08 19:15 CDT — Claude Opus 5.5: what Metal Gear Solid 2 needs
   after the Direct3D 8 merge.
   - DirectMusic (`dx/dmusic.cpp`, new): `CLSID_DirectMusic` and
@@ -97,6 +105,134 @@
     imports "ordN" as the loader does even where pefile knows the name.
   - Merge note: `giggity-d3d8` also adds `wsprintfA`; keep one entry.
 
+- 2026-10-08 21:10 CDT (branch giggity-d3d8) — Claude Opus 5.5: the WebGPU
+  renderer no longer leaks browser GPU memory, Direct3D 9 games with dynamic
+  vertex buffers run several times faster in the browser, and pad triggers
+  can share an axis as analog pedals.
+  - Browser memory (`host/gpu/webgpu/webgpu_device.{h,cpp}`,
+    `d3d9_webgpu.cpp`): freed textures and buffers were only released. A
+    browser frees WebGPU memory on `destroy()` or at garbage collection, so
+    the compositor's per-frame UI textures and replaced vertex buffers piled
+    up in Chrome's GPU process (about 210 to 330 MB/s, to 3 to 6 GB; Crazy
+    Taxi and Battlefront II both saw it). `WebGpuDevice::destroy` now
+    destroys them, deferred until no open command buffer can use them
+    (`free_doomed` at the commit that leaves nothing recording); the D3D9
+    backend destroys dropped or resized buffers after the open encoder's
+    submit, and its occlusion-query buffers and query sets when read back.
+    Crazy Taxi's GPU process: about 350 MB, flat; whole browser about 1.5 GB
+    instead of 4.3 to 6 GB.
+  - Streamed vertex/index buffers (`d3d9_webgpu.cpp`): a buffer rewritten
+    while the frame being recorded still drew from it used to force a queue
+    submission (Crazy Taxi: about 2,100 a frame, each with a new bind group
+    and a full re-upload). Such a buffer is now marked streamed: each draw
+    copies just the vertices it reads (worked out from the index range,
+    `vertex_span`) or its index range from the CPU shadow into the frame's
+    ring, and the draw is shifted to match (`encode_primitives(d, shift)`).
+    The frame's uniform and vertex ring bytes are gathered on the CPU and
+    written with one queue write per chunk just before the submit
+    (`flush_ring`).
+  - The device's `set_bytes` staging ring (`webgpu_device.cpp`) counts the
+    open recordings that use each chunk and reuses any chunk none uses,
+    instead of resetting only when nothing at all is recording (which let it
+    grow while the presenter and the game overlapped).
+  - Vertex/index buffer locks (`dx/d3d9.cpp`, `dx/com.h` `lock_lo/lock_hi`):
+    a buffer keeps its guest copy for life; Lock returns a pointer into it
+    at once and Unlock copies back and uploads only the locked bytes (size 0
+    = to the end). Every lock used to allocate a guest copy of the whole
+    buffer, copy it in and out, free it and upload all of it. Crazy Taxi:
+    buffer uploads 67 MB a frame to 0.9 MB; city 6 to 46 to 50 fps in
+    headless Chrome (the game's cap), GPU time 2.5 ms a frame.
+  - Half-axis pad mapping (`dx/dinput_joystick.cpp`, `tools/game_config.py`):
+    a `[controls.native] axes` entry may be `+name` or `-name`; that control
+    then drives one half of the axis (centre released, that end fully
+    pressed; a trigger's whole travel, a stick's positive side). An axis
+    fed by several controls reads the one furthest from centre, and axes may
+    now repeat. Crazy Taxi maps the triggers to `+y`/`-y` because the game
+    reads analog gas and brake as lY's two halves (combined pedals).
+  - `RECOMP_D3D9_STATS` reports also give streamed bytes, buffer and texture
+    write sizes, bind groups and the largest texture.
+  - Tests: pad_tests "joystick half axes (combined pedals)".
+
+- 2026-10-08 20:15 CDT (branch giggity-d3d8) — Claude Opus 5.5: faster
+  loading, natively and above all in the browser.
+  - `runtime/kernel32.cpp` `sched_leave_critsec`: LeaveCriticalSection wakes
+    the parked guest threads only when one of them waits on that section.
+    The C runtime locks a stream around every fread/getc, and the
+    unconditional `notify_all` woke every timed waiter (audio, input
+    workers) each time. Crazy Taxi's 12 MB `Binc1.afs` loaded in 14.6 s
+    natively before and 3.4 s after; in headless Chrome the title screen now
+    appears about 60 s after Start instead of about 200 s. A waiter cannot
+    run before the baton is handed to it, and the handoff already notifies,
+    so nothing depended on the extra wake-ups.
+  - `runtime/kernel32.cpp` `file_read`: ReadFile serves reads under 64 KB
+    from a 256 KB read-ahead buffer per handle. The descriptor's position
+    still ends where the guest's read ended, and a write or truncation
+    through any handle on the same host file drops the buffered bytes.
+  - Tests: runtime_tests "file layer" (small reads in order, the position,
+    a write through another handle is seen, short read at the end, empty
+    read past it).
+
+- 2026-10-08 19:30 CDT (branch giggity-d3d8) — Claude Opus 5.5: a game can
+  set its joystick axis range, and data-only core mods reach the web build.
+  - `[controls.native] axis_range = [min, max]` in game.toml (default
+    `[-32768, 32767]`, the DirectInput default). `tools/game_config.py`
+    validates it (two integers, min below max); `tools/gen_game_config.py`
+    emits `RECOMP_CONTROLS_NATIVE_AXIS_MIN/MAX`; the new host call
+    `host_pad_native_axis_range` (`dx/host_api.h`, weak default in
+    `dx/host_api.cpp`, configured value in `host/controls/vpad_host_api.cpp`)
+    hands it to `dx/dinput.cpp`, which gives every axis of a new joystick
+    device that range. Some games, such as Crazy Taxi, never set
+    DIPROP_RANGE and read the stick as -128..127; with the full default
+    range the stick was pinned to its ends.
+  - `host/CMakeLists.txt`: the web build's copy of `mods/core` also takes
+    `*.cfg` and `*.ini` files, so a core mod that only replaces a settings
+    file (Crazy Taxi's Taxi.cfg controller bindings) ships in the browser.
+  - Tests: pad_tests "joystick configured default range" (-128 / 0 / 127 and
+    GetProperty(DIPROP_RANGE)); tests/test_game_config.py axis_range header
+    output and validation.
+
+- 2026-10-08 17:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: CPU renderer
+  depth and fog, Direct3D 9 pixel centres, CD3DFont text, static asset export.
+  - `dx/d3d9_raster.cpp`: a depth test (D3DRS_ZENABLE, ZFUNC, ZWRITEENABLE,
+    viewport MinZ/MaxZ) against a host-side float buffer per depth surface,
+    cleared by `Clear(D3DCLEAR_ZBUFFER)` (`d9_raster_clear_depth`); the
+    top-left fill rule, so triangles sharing an edge never both draw it;
+    pixel centres on integer coordinates as Direct3D 9 defines them; point
+    sampling when D3DSAMP_MAGFILTER is POINT (the default); clamped
+    addressing repeats edge texels instead of wrapping to the far side; fog
+    applied after the pixel shader towards D3DRS_FOGCOLOR. Together these
+    removed the seams between 2D tiles and the 3D draw-order errors in Crazy
+    Taxi's frames.
+  - `dx/d3d9_ffp.cpp`: table fog (D3DRS_FOGTABLEMODE) is generated, per
+    vertex from the eye depth (1 / RHW for pre-transformed vertices); the GPU
+    backends keep computing table fog per pixel.
+  - `runtime/gdi32_text.cpp`: ExtTextOut ignores ETO_OPAQUE/ETO_CLIPPED when no
+    rectangle is given, as Windows does; the DirectX SDK's CD3DFont builds its
+    glyph texture that way and every call used to fail.
+  - `tools/web_launcher.py --export-assets`: copies the `--asset-dir` files
+    into `<out>/<game id>/assets/` with relative URLs, so a site can be
+    uploaded to a static host that supports HEAD and byte ranges.
+  - Merged `fork/browser-release` (streamed hosted assets, browser session
+    lifecycle, input hints) so the web build carries them.
+  - Spin-wait loops hand over to other guest threads. Guest threads take
+    turns and only switch inside runtime calls, so a loop that just re-reads
+    one byte until another thread sets it (Crazy Taxi 0040861a, a lock between
+    its game thread and audio thread) never ended: pressing Start froze the
+    game. `tools/recomp/translate.py` now finds such loops (at most six loads,
+    compares and tests; no store; address registers unchanged inside the
+    loop) and puts `recomp_spin_wait(c)` on the back edge, as it does for
+    PAUSE. `runtime/cpu.cpp` makes that a scheduler checkpoint. List walks,
+    which move their address register, are untouched.
+  - Unexplained exits name their caller: ExitProcess, PostQuitMessage and a
+    WM_CLOSE sent or posted by the guest log the guest return address.
+    (Crazy Taxi's "exit after about 1000 frames" turned out to be the
+    headless host's own wall-clock cap.)
+  - `host/script.cpp`: scripts can press every letter key, not only P, Y and N.
+  - Tests: gdi_tests "ETO_OPAQUE with no rectangle"; tests/test_web_launcher.py
+    exported assets; tools/recomp/tests/test_translate_spin.py (a byte poll
+    yields, a list walk and a storing loop do not, PAUSE yields); runtime_tests
+    "GetLogicalDriveStringsW double terminates" allows the virtual CD drive.
+
 - 2026-10-08 15:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: Direct3D 8,
   fixed-function rendering, DirectShow RenderFile and game-named setjmp, the
   pieces that take Crazy Taxi from the Direct3D 8 wall to its title screen in
@@ -176,6 +312,62 @@
     next block or yield.
   - Reserved ComIface slots for the Direct3D 8 interfaces.
   - Tests: tests/test_game_config.py covers the CD keys.
+
+- 2026-10-08 11:32 CDT — GPT-6 (Codex): Corrected duplicated carriage
+  returns introduced while recording the streaming release notes on Windows.
+  No runtime behavior changed.
+
+- 2026-10-08 11:30 CDT — GPT-6 (Codex): Added opt-in streamed browser assets. Startup
+  verifies and caches only the executable, then constructs a read-only FetchFS
+  directory catalogue on the guest worker; profiles remain in OPFS and existing
+  fully imported games keep their local read path. Hosted asset routes support
+  sized HEAD responses and exact HTTP byte ranges, suffix reads, EOF clipping
+  and 416 failures. Added a FetchFS bridge with a shared 64 MiB LRU and at most
+  1 MiB per request instead of retaining every read chunk indefinitely. Range,
+  startup-only imports, cache reuse, cross-chunk reads, eviction and incomplete
+  responses are covered by tests. The release web engine built and an empty
+  OPFS profile reached the actual title using range requests; its OPFS held
+  only the 6,029,312-byte executable, catalogue and import metadata. Long default
+  browser probes were stopped by the external resource watchdog near 4 GiB or
+  below 2 GiB system headroom. Career, saved alias round trips and race completion
+  remain unverified for this path. Streamed ranges are session memory, not a
+  persistent offline installation. No public asset hosting was deployed.
+
+- 2026-10-08 10:58 CDT — GPT-6 (Codex): Prevented duplicate keyboard text
+  from host WM_CHAR delivery followed by TranslateMessage. Host-only provenance
+  follows each delivered MSG buffer, including nested message reads, while the
+  guest MSG layout is unchanged. SDL text retains keyboard Shift/Caps Lock.
+  Added a native regression for one uppercase character across a nested read;
+  the web application rebuild and real alias-entry check succeeded (James and
+  Backspace/retyping). Added adaptive browser menu hints for keyboard, Xbox,
+  PlayStation, Nintendo and generic controllers, preferring newly active input
+  and falling back on disconnect. 53 combined browser/config/build checks pass.
+  Hosted manifest fetches now bypass browser caches so a same-second retry
+  cannot reuse obsolete download metadata. Physical controller gameplay and
+  the standalone native regression suite were not exercised on this host.
+
+- 2026-10-08 10:29 CDT — GPT-6 (Codex): Added optional hosted game assets to
+  the local web server (--asset-dir ID=DIR) with pinned-executable validation,
+  bundle exclusions and explicit file routes. The player automatically populates
+  missing OPFS data from the hosted source with progress before engine startup;
+  valid cached imports still work. Network sources stream one file at a time,
+  reject truncated content and use the existing resume/stamp validation. Import
+  source failures now abort their file writer. Added browser regressions for
+  first downloads, cached offline-source visits and short-download retry, plus
+  route/exclusion/hash checks. 52 combined game/launcher/build/player tests pass.
+  Generic configurations without hosted assets retain their import workflow.
+
+- 2026-10-08 10:15 CDT — GPT-6 (Codex): Added an idle browser player shell
+  with explicit Start/Stop and exclusive per-game Web Locks. Runtime documents
+  and owned workers are discarded before session ownership is released;
+  direct runtime-page launches are rejected. Bounded the web viewport to
+  1280×720, disabled automatic high-DPI backing growth and retained only 1,000
+  diagnostic lines. Reduced the web pthread prewarm pool from 24 to eight and
+  initial growable Wasm heap from 1 GiB to 512 MiB. Staged the new runtime page
+  through both CMake and the launcher. Four Chrome lifecycle regressions and
+  45 existing game/launcher/build checks passed. A complete Windows web build
+  and monitored title/menu run confirmed the new pool, heap and backing size;
+  desktop freeze resolution and full gameplay compatibility remain unverified.
 
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and

@@ -3881,7 +3881,7 @@ static void test_dshow_refused_source_completes() {
     if (ev) {
         wr32(code, 0);
         CHECK_EQ(call_method(ev, 8, {code, p1, p2, 0}), S_OK_); // GetEvent
-        CHECK_EQ(rd32(code), 1u);                                // EC_COMPLETE
+        CHECK_EQ(rd32(code), 1u);                               // EC_COMPLETE
         CHECK_EQ(call_method(ev, 8, {code, p1, p2, 0}), E_ABORT_);
         call_method(ev, 2);
     }
