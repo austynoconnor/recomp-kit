@@ -1,4 +1,5 @@
 // UTF-16 kernel32 entry points. File operations share the ANSI shim's path seam.
+#include "../platform/stall.h"
 #include "kernel32_internal.h"
 #include "windows_version.h"
 #include "loader.h"
@@ -26,6 +27,7 @@ uint32_t wide_units(const std::string &s) {
 }
 
 void k_CreateFileW(X86 *c) {
+    RecompStallScope stall(RECOMP_STALL_FILE);
     create_file_named(c, gm_wstr(arg(c, 0)));
 }
 void k_GetFileAttributesW(X86 *c) {

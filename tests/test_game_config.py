@@ -264,6 +264,12 @@ class LoadTests(unittest.TestCase):
             (game / "game.toml").write_text(base + '\n[controls]\nmouse = "sideways"\n')
             with self.assertRaises(ValueError):
                 game_config.load(game)
+            self.assertEqual(cfg["controls"]["cursor"], "free")
+            (game / "game.toml").write_text(base + '\n[controls]\ncursor = "tracked"\n')
+            self.assertEqual(game_config.load(game)["controls"]["cursor"], "tracked")
+            (game / "game.toml").write_text(base + '\n[controls]\ncursor = "glued"\n')
+            with self.assertRaises(ValueError):
+                game_config.load(game)
 
             # The old [touch] keypad knob maps onto default_layout when the
             # game names no default_layout of its own.

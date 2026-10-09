@@ -16,6 +16,7 @@
 
 #include "../../dx/d3d9_shader.h"
 #include "../../platform/os.h"
+#include "../../platform/stall.h"
 #include "../d3d_render.h"
 
 #include <atomic>
@@ -218,6 +219,7 @@ class RenderThread {
         if (pumped_)
             return sync_on_pump(std::forward<F>(f));
         hand_over();
+        RecompStallScope stall(RECOMP_STALL_RENDER);
         std::unique_lock<std::mutex> lock(m_);
         idle_cv_.wait(lock, [this] { return queue_.empty() && !busy_; });
         return f(); // the worker waits on m_ for new work, so it cannot run now
@@ -243,6 +245,7 @@ class RenderThread {
     // frame's own present cost the browser game thread a tenth of its time.
     void present_pipelined(uint32_t backbuffer, uint32_t w, uint32_t h) {
         {
+            RecompStallScope stall(RECOMP_STALL_RENDER);
             std::unique_lock<std::mutex> lock(m_);
             idle_cv_.wait(lock, [this] { return presents_done_ >= presents_sent_; });
             ++presents_sent_;
@@ -259,6 +262,7 @@ class RenderThread {
         c.call = job;
         filling_->commands.push_back(c);
         hand_over();
+        RecompStallScope stall(RECOMP_STALL_RENDER);
         std::unique_lock<std::mutex> lock(m_);
         idle_cv_.wait(lock, [this] { return queue_.empty() && !busy_; });
     }
@@ -642,6 +646,7 @@ void host_d9_stretch(HostD9Surface src, const int32_t src_rect[4], HostD9Surface
     t->submitted();
 }
 void host_d9_present(uint32_t backbuffer, uint32_t width, uint32_t height) {
+    recomp_stall_frame();
     RenderThread *t = render_thread();
     if (!t)
         return;
