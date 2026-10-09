@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <stdarg.h>
 #include <map>
 #include <algorithm>
@@ -968,6 +969,36 @@ static void test_resumable_stacks() {
           "return restored the original stack and reached its caller");
     check(rd32(worker_stack + 4) == 0x12345678, "suspended worker stack was preserved");
     heap_free(stacks);
+}
+
+static void test_ftol2_intrinsic() {
+    section("_ftol2 intrinsic");
+    struct Case { double v; int64_t want; bool invalid; };
+    const Case cases[] = {
+        {2.7, 2, false}, {-2.7, -2, false}, {2.5, 2, false}, {-0.5, 0, false},
+        {0.0, 0, false}, {123456789012.9, 123456789012LL, false},
+        {-4294967296.5, -4294967296LL, false}, {1e30, INT64_MIN, true},
+        {-1e30, INT64_MIN, true}, {NAN, INT64_MIN, true},
+    };
+    for (const Case &k : cases) {
+        X86 c{};
+        c.fpu_cw = 0x037f;
+        c.fpu_tag = 0xffff;
+        fpush(&c, 1.0);
+        fpush(&c, k.v);
+        recomp_ftol2_value(&c);
+        const int64_t got = (int64_t)(((uint64_t)c.r[R_EDX] << 32) | c.r[R_EAX]);
+        check(got == k.want && ST(&c, 0) == 1.0 && ((c.fpu_sw & 1u) != 0) == k.invalid,
+              "_ftol2(%g) truncates to %lld (got %lld), pops once", k.v,
+              (long long)k.want, (long long)got);
+    }
+    X86 c{};
+    c.fpu_cw = 0x037f;
+    c.fpu_tag = 0xffff;
+    fpush_int(&c, INT64_MAX - 3);
+    recomp_ftol2_value(&c);
+    check(c.r[R_EAX] == 0xfffffffcu && c.r[R_EDX] == 0x7fffffffu && c.fpu_tag == 0xffff,
+          "an exact FILD value above 2^53 survives and the stack is left empty");
 }
 
 static void test_allocator() {
@@ -6795,6 +6826,7 @@ int main(int argc, char **argv) {
         child_setjmp_abort(c);
     scratch = 0x0ee00000; // scratch area below the stack, inside the arena
 
+    test_ftol2_intrinsic();
     test_allocator();
     test_heap_shims(c);
     test_memory_shims_2(c);

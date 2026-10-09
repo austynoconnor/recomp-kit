@@ -140,6 +140,11 @@ def configure(cfg):
     INTRINSIC_BODY.clear()
     INTRINSIC_BODY[INTRINSIC_LONGJMP] = "recomp_longjmp(c);"
     INTRINSIC_BODY[INTRINSIC_SETJMP] = "recomp_setjmp(c);"
+    # The CRT's _ftol2, when named: run natively, and in line at a direct call.
+    global INTRINSIC_FTOL2
+    INTRINSIC_FTOL2 = int(cfg["translate"].get("ftol2", 0)) or None
+    if INTRINSIC_FTOL2 is not None:
+        INTRINSIC_BODY[INTRINSIC_FTOL2] = "recomp_ftol2(c);"
     global OPERAND_REDIRECTS, INSTRUCTION_PATCHES, DATA_SEEDS
     OPERAND_REDIRECTS = {int(r["at"]): (int(r["from"]), int(r["to"]))
                          for r in cfg["translate"].get("operand_redirects", ())}
@@ -261,7 +266,7 @@ def hook_kind(addr, listed, alt_owner, provenance, evidence, intrinsics):
     place the program *names* has a meaning stable enough to hook, and the
     exclusions come first:
 
-      intrinsic     a substituted body (setjmp, longjmp).  Its address is an
+      intrinsic     a substituted body (setjmp, longjmp, _ftol2).  Its address is an
                     implementation detail of this translator.
       block         a recovered block, or an alternate entry a jump table
                     names.  A jump-table target is an internal block of its
@@ -306,6 +311,7 @@ GUEST_SHIM_END = 0x10000000
 # Populous's addresses; a game names its own with [translate] setjmp/longjmp.
 INTRINSIC_LONGJMP = 0x0055DB78          # _longjmp
 INTRINSIC_SETJMP  = 0x0055DAFC          # __setjmp3, buffer at ESP+4
+INTRINSIC_FTOL2 = None                  # _ftol2, only when [translate] ftol2 names it
 INTRINSIC_BODY = {
     INTRINSIC_LONGJMP: "recomp_longjmp(c);",
     INTRINSIC_SETJMP:  "recomp_setjmp(c);",   # single-call fallback, indirect only
@@ -3198,6 +3204,14 @@ class Translator(object):
         if m == "CALL":
             if ins.ops and ins.ops[0].startswith("0x"):
                 t = int(ins.ops[0], 16)
+                if t == INTRINSIC_FTOL2:
+                    # The CRT's float-to-integer helper, called a thousand
+                    # times a frame: its effect runs here with no guest frame.
+                    # Only the return address it would have left below ESP,
+                    # dead stack, is not written.
+                    self.stats["_intrinsic_ftol2"] += 1
+                    L.append("recomp_ftol2_value(c); c->eip = %s;" % hexlit(nxt))
+                    return L
                 L.append("c->r[4] -= 4; wr32(c->r[4], %s);" % hexlit(nxt))
                 if t == INTRINSIC_SETJMP:
                     # The host jmp_buf has to belong to a frame that is still
