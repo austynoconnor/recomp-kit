@@ -1,6 +1,7 @@
 #include "performance_overlay.h"
 
 #include "../mods/mods_internal.h"
+#include "../platform/stall.h"
 
 #include <algorithm>
 #include <cmath>
@@ -46,7 +47,7 @@ PerformanceOverlay::~PerformanceOverlay() {
 // 50 ms scale and marks samples exceeding the selected frame budget.
 void PerformanceOverlay::update(gpu::Device *device, const FramePacingSnapshot &s, int mode,
                                 int limit) {
-    const int used = mode == 2 ? height : 88;
+    const int used = mode == 2 ? height : 106;
     pixels_.assign(size_t(width) * used * 4, 0);
     Canvas c{pixels_, width, used};
     c.fill(0, 0, width, used, 6, 9, 15, 224);
@@ -66,6 +67,16 @@ void PerformanceOverlay::update(gpu::Device *device, const FramePacingSnapshot &
              (unsigned long long)s.drops, cap);
     line[26] = 0;
     c.text(10, 60, line, 204, 217, 237);
+    // Frames over 100 ms (platform/stall.h): how many, the last one's length
+    // and what took most of it. The page console has the full breakdown.
+    const RecompStallStats st = recomp_stall_stats();
+    if (st.stalls)
+        snprintf(line, sizeof line, "STALL %llu %4.0f ms %s", (unsigned long long)st.stalls,
+                 st.last_ms, st.last_cause);
+    else
+        snprintf(line, sizeof line, "STALL 0");
+    line[26] = 0;
+    c.text(10, 78, line, st.stalls ? 255 : 204, st.stalls ? 196 : 217, st.stalls ? 128 : 237);
     if (mode == 2) {
         // Fixed 0..50ms axis from the bottom edge. A red bar means a missed budget.
         const double budget = 1000.0 / (limit ? limit : 60);

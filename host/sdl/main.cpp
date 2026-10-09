@@ -416,12 +416,21 @@ bool pointer_capture_wanted() {
 void update_platform_pointer_capture() {
     const bool want = g_platform_capture_requested && pointer_capture_wanted() &&
                       !g_close_requested && !g_fullscreen_transition;
-    if (want && !g_pointer_hidden) {
+    bool hide = want;
+#if defined(__EMSCRIPTEN__) && RECOMP_CONTROLS_CURSOR_TRACKED
+    // A browser hides the pointer only over the canvas, and the game's own
+    // cursor follows it there (host/input_gate.cpp), so it stays hidden while
+    // the game draws its own cursor - captured or not, focused or not - and
+    // there is never a second cursor beside the game's.
+    hide = hide || (platform_ui_pointer_capture_supported() && ddraw_gdi_primary_active() &&
+                    !mods_page_visible() && !mods_controls_editing() && !g_close_requested);
+#endif
+    if (hide && !g_pointer_hidden) {
         trace_state("capture ON: hiding the OS cursor");
         SDL_HideCursor();
         g_pointer_hidden = true;
     }
-    if (!want && g_pointer_hidden) {
+    if (!hide && g_pointer_hidden) {
         trace_state("capture OFF: showing the OS cursor");
         SDL_ShowCursor();
         g_pointer_hidden = false;

@@ -45,10 +45,14 @@ camera = 0x00600400
 # (DirectInput joystick and XInput) or "off". mouse: "absolute" (the guest
 # sees the host pointer's position) or "relative" (while the pointer is
 # captured the guest sees raw motion: SDL relative mode, pointer lock in a
-# browser; for games that aim with the mouse).
+# browser; for games that aim with the mouse). cursor: "free" (default) or
+# "tracked" (the game draws its own cursor from relative mouse motion and the
+# host cannot read it: the host keeps a copy of it and moves it to the real
+# pointer, so it stays under the pointer in a browser's menus).
 default_layout = "pad"
 pad = "mapped"
 mouse = "absolute"
+cursor = "free"
 
 [bundle]
 exclude = []

@@ -935,11 +935,66 @@ HitResult host_gate_window_pointer(int32_t x, int32_t y, int32_t *dx, int32_t *d
     return hit;
 }
 
+#ifndef RECOMP_CONTROLS_CURSOR_TRACKED
+#define RECOMP_CONTROLS_CURSOR_TRACKED 0
+#endif
+
 void host_gate_relative_motion(int32_t dx, int32_t dy) {
     g_pointer_target_valid = false;
+#if RECOMP_CONTROLS_CURSOR_TRACKED
+    // Raw motion in game pixels, as the absolute pointer moves: a menu cursor
+    // driven while the pointer is locked then keeps the scale the picture is
+    // drawn at.
+    take_layout();
+    if (g_layout.scene.scale_x > 0 && g_layout.scene.scale_y > 0) {
+        static double carry_x = 0, carry_y = 0;
+        carry_x += dx / double(g_layout.scene.scale_x);
+        carry_y += dy / double(g_layout.scene.scale_y);
+        dx = int32_t(carry_x);
+        dy = int32_t(carry_y);
+        carry_x -= dx;
+        carry_y -= dy;
+    }
+#endif
     if (dx || dy)
         host_input_relative_motion(dx, dy);
 }
+
+namespace {
+// [controls] cursor = "tracked": the game draws its own cursor from the mouse's
+// relative motion, and the host cannot read where it is. The host keeps its
+// own copy instead - every delta it delivers, clamped to the game's screen as
+// the game clamps - and asks for the difference between that copy and the
+// real pointer, so the game's cursor sits under the pointer however it left
+// and re-entered the page. It starts by pushing the cursor into the top-left
+// corner, where both copies agree.
+struct TrackedCursor {
+    bool valid = false;
+    int32_t x = 0, y = 0;
+} g_tracked;
+
+bool tracked_cursor_correction(int32_t *dx, int32_t *dy) {
+    const int w = g_layout.guest_w, h = g_layout.guest_h;
+    if (w <= 0 || h <= 0)
+        return false;
+    if (!g_tracked.valid) {
+        *dx = -2 * w;
+        *dy = -2 * h;
+        g_tracked = {true, 0, 0};
+        return true;
+    }
+    if (g_pointer_target_valid) {
+        const auto hit = host_gate_hit_test(nullptr, g_target_window_x, g_target_window_y);
+        if (hit.kind != HitResult::HIT_NONE) {
+            *dx = std::clamp(hit.gx, 0, w - 1) - g_tracked.x;
+            *dy = std::clamp(hit.gy, 0, h - 1) - g_tracked.y;
+        }
+    }
+    g_tracked.x = std::clamp(g_tracked.x + *dx, 0, w - 1);
+    g_tracked.y = std::clamp(g_tracked.y + *dy, 0, h - 1);
+    return true;
+}
+} // namespace
 
 bool host_gate_window_motion(int32_t x, int32_t y, double dx, double dy, HitResult *hit) {
     int32_t gx, gy;
@@ -976,6 +1031,13 @@ extern "C" void host_input_pointer_correction(int32_t *dx, int32_t *dy) {
             wr32(RECOMP_HOOK_MOUSE_DEVICE_RIGHT, saved_right);
             saved_right = installed_right = 0;
         }
+    }
+    if (RECOMP_CONTROLS_CURSOR_TRACKED &&
+        host_guest_pointer_resolve(g_mem, GUEST_SIZE, RECOMP_HOOK_MOUSE_DEVICE_PTR).failure !=
+            HostGuestPointer::None) {
+        take_layout();
+        tracked_cursor_correction(dx, dy);
+        return;
     }
     if (!g_pointer_target_valid)
         return;

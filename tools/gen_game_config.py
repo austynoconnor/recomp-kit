@@ -57,6 +57,8 @@ def render_header(cfg):
     # 1: while the pointer is captured the host reports raw mouse motion
     # (SDL relative mode; pointer lock in a browser) instead of a position.
     lines.append("#define RECOMP_CONTROLS_RELATIVE_MOUSE %d" % int(controls["mouse"] == "relative"))
+    # 1: the game's own cursor follows the host's copy of it (host/input_gate.cpp).
+    lines.append("#define RECOMP_CONTROLS_CURSOR_TRACKED %d" % int(controls.get("cursor") == "tracked"))
     lines.append("#define RECOMP_CONTROLS_MAPPED %s" % c_string(
         ";".join("%s=%s" % (k, controls["mapped"][k]) for k in sorted(controls["mapped"]))))
     native = controls["native"]

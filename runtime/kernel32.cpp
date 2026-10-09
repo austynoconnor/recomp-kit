@@ -22,6 +22,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include "../platform/os.h"
+#include "../platform/stall.h"
 
 #include <setjmp.h>
 #include <stdio.h>
@@ -811,6 +812,7 @@ static bool file_promote_for_write(HObj *o) {
 }
 
 void k_CreateFileA(X86 *c) {
+    RecompStallScope stall(RECOMP_STALL_FILE);
     create_file_named(c, gm_str(arg(c, 0)));
 }
 
@@ -876,7 +878,11 @@ void k_ReadFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
-    int64_t n = file_read(o, g_mem + buf, want);
+    int64_t n;
+    {
+        RecompStallScope stall(RECOMP_STALL_FILE);
+        n = file_read(o, g_mem + buf, want);
+    }
     if (recomp_env("TRACE_FILES"))
         LOGW("file: read handle=%08x want=%u got=%lld", arg(c, 0), want, (long long)n);
     if (n < 0) {
