@@ -3889,6 +3889,231 @@ static void test_dshow_refused_source_completes() {
     CHECK_EQ(com_live_count(), live);
 }
 
+// Three 32x16 red pictures at 25 fps, an MPEG-1 elementary stream as a
+// DirectShow file source would read it. Byte 7 carries aspect code 12 and
+// rate code 3, the aspect Konami's streams use.
+static const uint8_t kRedMpeg1[] = {
+    0x00, 0x00, 0x01, 0xb3, 0x02, 0x00, 0x10, 0xc3, 0xff, 0xff, 0xe0, 0x18, 0x00, 0x00, 0x01, 0xb8,
+    0x00, 0x08, 0x00, 0x40, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0f, 0xff, 0xf8, 0x00, 0x00, 0x01, 0x01,
+    0x13, 0xf2, 0x14, 0xa5, 0x2f, 0x99, 0xbf, 0x70, 0xb9, 0x4a, 0x52, 0x22, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x57, 0xff, 0xf8, 0x80, 0x00, 0x00, 0x01, 0x01, 0x12, 0x79, 0xc0, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x97, 0xff, 0xf8, 0x80, 0x00, 0x00, 0x01, 0x01, 0x12, 0x79, 0xc0};
+
+// The stream's header is read and its pictures counted without a decoder,
+// and the aspect fix touches only the aspect nibble.
+static void test_mpeg1_scan_and_aspect() {
+    mf::Mpeg1Info info;
+    CHECK(mf::mpeg1_scan(kRedMpeg1, sizeof kRedMpeg1, &info));
+    CHECK_EQ(info.width, 32);
+    CHECK_EQ(info.height, 16);
+    CHECK(info.fps == 25.0);
+    CHECK_EQ(info.pictures, 3);
+    std::vector<uint8_t> bytes(kRedMpeg1, kRedMpeg1 + sizeof kRedMpeg1);
+    CHECK_EQ(mf::mpeg1_fix_aspect(bytes), 1);
+    CHECK_EQ(bytes[7], 0x13u);
+    CHECK_EQ(mf::mpeg1_fix_aspect(bytes), 0);
+    const uint8_t not_video[12] = {0, 0, 1, 0xba};
+    CHECK(!mf::mpeg1_scan(not_video, sizeof not_video, &info));
+}
+
+#ifdef RECOMP_HAVE_FFMPEG
+// A renderer the game implements, as MGS2's is: guest objects whose vtables
+// are test trampolines. The graph joins it, opens the movie, connects the
+// source to it in RGB24 and, once running, hands it one red picture per due
+// frame, then reports EC_COMPLETE.
+static uint32_t g_dsv_mem_pin = 0, g_dsv_alloc = 0, g_dsv_join = 0, g_dsv_receives = 0;
+static uint32_t g_dsv_run = 0, g_dsv_stop = 0, g_dsv_ms = 0;
+static bool g_dsv_type_ok = false, g_dsv_red = false;
+static uint32_t dsv_clock() {
+    return g_dsv_ms;
+}
+static void dsv_ret0(X86 *c) {
+    set_eax(c, 0);
+}
+static void dsv_ret1(X86 *c) {
+    set_eax(c, 1);
+}
+static void dsv_join(X86 *c) {
+    ++g_dsv_join;
+    set_eax(c, 0);
+}
+static void dsv_run(X86 *c) {
+    ++g_dsv_run;
+    set_eax(c, 0);
+}
+static void dsv_stop(X86 *c) {
+    ++g_dsv_stop;
+    set_eax(c, 0);
+}
+static void dsv_pin_qi(X86 *c) {
+    wr32(arg(c, 2), g_dsv_mem_pin);
+    set_eax(c, 0);
+}
+static void dsv_receive_connection(X86 *c) {
+    uint32_t mt = arg(c, 2);
+    static const uint8_t rgb24[16] = {0x7d, 0xeb, 0x36, 0xe4, 0x4f, 0x52, 0xce, 0x11,
+                                      0x9f, 0x53, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70};
+    uint32_t vih = rd32(mt + 0x44);
+    g_dsv_type_ok = memcmp(g_mem + mt + 0x10, rgb24, 16) == 0 && vih && rd32(vih + 0x34) == 32 &&
+                    rd32(vih + 0x38) == 16 && rd16(vih + 0x3e) == 24;
+    set_eax(c, 0);
+}
+static void dsv_notify_allocator(X86 *c) {
+    g_dsv_alloc = arg(c, 1);
+    set_eax(c, 0);
+}
+static void dsv_receive(X86 *c) {
+    uint32_t sample = arg(c, 1), out = sc(0x1e60);
+    wr32(out, 0);
+    CHECK_EQ(call_method(sample, 3, {out}), 0u);       // GetPointer
+    CHECK_EQ(call_method(sample, 11), 32u * 3u * 16u); // GetActualDataLength
+    uint32_t buf = rd32(out);
+    // RGB24 is blue, green, red in memory.
+    g_dsv_red = buf && rd8(buf + 2) > 200 && rd8(buf + 1) < 60 && rd8(buf) < 60;
+    ++g_dsv_receives;
+    set_eax(c, 0);
+}
+
+static void test_dshow_movie_into_game_renderer() {
+    cpu_reset();
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s/recomp-dsv-XXXXXX", os_temp_dir());
+    CHECK(os_mkdtemp(dir) == 0);
+    std::string file = std::string(dir) + "/movie.pac";
+    FILE *f = fopen(file.c_str(), "wb");
+    CHECK(f != nullptr);
+    if (!f)
+        return;
+    fwrite(kRedMpeg1, 1, sizeof kRedMpeg1, f);
+    fclose(f);
+    win32_init(dir);
+    host_set_time_source(dsv_clock);
+    g_dsv_ms = 1000;
+    g_dsv_join = g_dsv_receives = g_dsv_run = g_dsv_stop = g_dsv_alloc = 0;
+    g_dsv_type_ok = g_dsv_red = false;
+
+    // The game's renderer filter, its "In" pin and that pin's IMemInputPin.
+    auto fake = [](const char *name, void (*fn)(X86 *), uint8_t argc) {
+        return imports_alloc_trampoline("TEST", name, fn, argc);
+    };
+    uint32_t filter = sc(0x2000), in = sc(0x2040), mem = sc(0x2080);
+    uint32_t fvt = sc(0x2100), pvt = sc(0x2200), mvt = sc(0x2300);
+    g_dsv_mem_pin = mem;
+    wr32(filter, fvt);
+    wr32(in, pvt);
+    wr32(mem, mvt);
+    const uint8_t filter_argc[15] = {3, 1, 1, 2, 1, 1, 3, 3, 2, 2, 2, 3, 2, 3, 2};
+    for (uint32_t i = 0; i < 15; ++i)
+        wr32(fvt + 4 * i,
+             fake("DsvFilter", filter_argc[i] == 1 ? dsv_ret1 : dsv_ret0, filter_argc[i]));
+    wr32(fvt + 4 * 4, fake("DsvStop", dsv_stop, 1));
+    wr32(fvt + 4 * 6, fake("DsvRun", dsv_run, 3));
+    wr32(fvt + 4 * 13, fake("DsvJoin", dsv_join, 3));
+    const uint8_t pin_argc[18] = {3, 1, 1, 3, 3, 1, 2, 2, 2, 2, 2, 2, 2, 3, 1, 1, 1, 7};
+    for (uint32_t i = 0; i < 18; ++i)
+        wr32(pvt + 4 * i, fake("DsvPin", pin_argc[i] == 1 ? dsv_ret1 : dsv_ret0, pin_argc[i]));
+    wr32(pvt, fake("DsvPinQI", dsv_pin_qi, 3));
+    wr32(pvt + 4 * 4, fake("DsvReceiveConnection", dsv_receive_connection, 3));
+    const uint8_t mem_argc[9] = {3, 1, 1, 2, 3, 2, 2, 4, 1};
+    for (uint32_t i = 0; i < 9; ++i)
+        wr32(mvt + 4 * i, fake("DsvMem", mem_argc[i] == 1 ? dsv_ret1 : dsv_ret0, mem_argc[i]));
+    wr32(mvt + 4 * 4, fake("DsvNotifyAllocator", dsv_notify_allocator, 3));
+    wr32(mvt + 4 * 6, fake("DsvReceive", dsv_receive, 2));
+
+    static const uint8_t clsid_filtergraph[16] = {0xb3, 0xeb, 0x36, 0xe4, 0x4f, 0x52, 0xce, 0x11,
+                                                  0x9f, 0x53, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70};
+    auto quartz = [](uint8_t lo) {
+        std::array<uint8_t, 16> g = {lo,   0x68, 0xa8, 0x56, 0xd4, 0x0a, 0xce, 0x11,
+                                     0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70};
+        return g;
+    };
+    static const uint8_t iid_seeking[16] = {0x80, 0x38, 0xb7, 0x36, 0xc8, 0xc2, 0xcf, 0x11,
+                                            0x8b, 0x46, 0x00, 0x80, 0x5f, 0x6c, 0xef, 0x60};
+    uint32_t clsid = sc(0x1e00), iid = sc(0x1e10), ppv = sc(0x1e20), pfilter = sc(0x1e30),
+             ppin = sc(0x1e34), pctl = sc(0x1e38), pseek = sc(0x1e3c), pev = sc(0x1e40),
+             t64 = sc(0x1e48), code = sc(0x1e50), wpath = sc(0x1f00), wout = sc(0x1f80);
+    auto put_wide = [](uint32_t at, const char *s) {
+        for (size_t i = 0; i <= strlen(s); ++i)
+            wr16(at + 2 * (uint32_t)i, (uint16_t)s[i]);
+    };
+    uint32_t live = com_live_count();
+    memcpy(g_mem + clsid, clsid_filtergraph, 16);
+    memcpy(g_mem + iid, quartz(0xa9).data(), 16); // IID_IGraphBuilder
+    CHECK_EQ(call_shim(tramp("ole32.dll", "CoCreateInstance"), {clsid, 0, 1, iid, ppv}), 0u);
+    uint32_t graph = rd32(ppv);
+    CHECK(graph != 0);
+    if (!graph)
+        return;
+    CHECK_EQ(call_method(graph, 3, {filter, 0}), 0u); // AddFilter
+    CHECK_EQ(g_dsv_join, 1u);
+    put_wide(wpath, "movie.pac");
+    CHECK_EQ(call_method(graph, 14, {wpath, 0, pfilter}), 0u); // AddSourceFilter
+    uint32_t source = rd32(pfilter);
+    CHECK(source != 0);
+    put_wide(wout, "Output");
+    CHECK_EQ(call_method(source, 11, {wout, ppin}), 0u); // FindPin
+    uint32_t out = rd32(ppin);
+    CHECK(out != 0);
+    CHECK_EQ(call_method(graph, 11, {out, in}), 0u); // Connect
+    CHECK(g_dsv_type_ok);
+    CHECK(g_dsv_alloc != 0);
+
+    memcpy(g_mem + iid, iid_seeking, 16);
+    CHECK_EQ(call_method(graph, 0, {iid, pseek}), 0u);
+    uint32_t seek = rd32(pseek);
+    CHECK_EQ(call_method(seek, 11, {t64}), 0u); // GetStopPosition: three pictures at 25 fps
+    CHECK_EQ(rd32(t64), 1200000u);
+    memcpy(g_mem + iid, quartz(0xb1).data(), 16);
+    CHECK_EQ(call_method(graph, 0, {iid, pctl}), 0u);
+    uint32_t ctl = rd32(pctl);
+    memcpy(g_mem + iid, quartz(0xc0).data(), 16);
+    CHECK_EQ(call_method(graph, 0, {iid, pev}), 0u);
+    uint32_t ev = rd32(pev);
+
+    dshow_frame_pump(&g_cpu); // stopped: nothing is delivered
+    CHECK_EQ(g_dsv_receives, 0u);
+    CHECK_EQ(call_method(ctl, 7), 0u); // Run
+    CHECK_EQ(g_dsv_run, 1u);
+    dshow_frame_pump(&g_cpu);
+    CHECK_EQ(g_dsv_receives, 1u); // the first picture is due at once
+    CHECK(g_dsv_red);
+    dshow_frame_pump(&g_cpu);
+    CHECK_EQ(g_dsv_receives, 1u); // and only once
+    g_dsv_ms += 45;
+    dshow_frame_pump(&g_cpu);
+    CHECK_EQ(g_dsv_receives, 2u);
+    CHECK_EQ(call_method(seek, 12, {t64}), 0u); // GetCurrentPosition
+    CHECK_EQ(rd32(t64), 450000u);
+    CHECK_EQ(call_method(ev, 8, {code, sc(0x1e54), sc(0x1e58), 0}), 0x80004004u); // E_ABORT
+    g_dsv_ms += 200;
+    dshow_frame_pump(&g_cpu);
+    CHECK_EQ(g_dsv_receives, 3u);
+    wr32(code, 0);
+    CHECK_EQ(call_method(ev, 8, {code, sc(0x1e54), sc(0x1e58), 0}), 0u);
+    CHECK_EQ(rd32(code), 1u); // EC_COMPLETE
+
+    // Rewound, the movie plays from its first picture again.
+    wr32(t64, 0);
+    wr32(t64 + 4, 0);
+    CHECK_EQ(call_method(seek, 14, {t64, 1, 0, 0}), 0u); // SetPositions(absolute)
+    dshow_frame_pump(&g_cpu);
+    CHECK_EQ(g_dsv_receives, 4u);
+    CHECK_EQ(call_method(ctl, 9), 0u); // Stop
+    CHECK_EQ(g_dsv_stop, 1u);
+
+    call_method(out, 2);
+    call_method(source, 2);
+    call_method(seek, 2);
+    call_method(ev, 2);
+    call_method(ctl, 2);
+    call_method(graph, 2);
+    CHECK_EQ(com_live_count(), live);
+    host_set_time_source(nullptr);
+    remove(file.c_str());
+    os_rmdir(dir);
+}
+#endif
+
 // Direct3D 8 over the Direct3D 9 objects, drawn through the fixed-function
 // pipeline: Direct3DCreate8, a windowed device, Clear, an FVF vertex shader
 // handle (XYZRHW | DIFFUSE) and DrawPrimitiveUP. With no GPU host the CPU
@@ -13222,6 +13447,10 @@ int main() {
         {"DirectShow graph playback", test_dshow_graph_playback},
         {"DirectShow FilterGraph RenderFile", test_dshow_filtergraph_renderfile},
         {"DirectShow refused source completes", test_dshow_refused_source_completes},
+        {"MPEG-1 stream scan and aspect fix", test_mpeg1_scan_and_aspect},
+#ifdef RECOMP_HAVE_FFMPEG
+        {"DirectShow movie into a game renderer", test_dshow_movie_into_game_renderer},
+#endif
         {"Direct3D 8 fixed-function triangle", test_d3d8_fixed_function_triangle},
         {"Direct3D 8 CopyRects DXT blocks", test_d3d8_copyrects_dxt},
         {"palette versions", test_palette_versions},

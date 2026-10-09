@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- 2026-10-09 02:20 CDT — Claude Opus 5.5: DirectShow movies into a renderer
+  the game implements (`dx/dshow_video.cpp`). A graph the game builds by hand
+  (MGS2: its own CBaseRenderer, `AddSourceFilter` on an MPEG-1 file,
+  `Connect` from the source's "Output" pin to the renderer's "In" pin) now
+  plays: `AddFilter` joins the guest filter to the graph, `AddSourceFilter`
+  on an MPEG-1 video elementary stream makes a source that stands in for the
+  file source, MPEG-1 splitter and MPEG Video Decoder, and `Connect` offers
+  the renderer RGB24 (`VIDEOINFOHEADER`, bottom-up) through `ReceiveConnection`
+  and an allocator and sample of its own. Pictures are paced by the guest
+  clock from the frame pump and delivered only while running; the graph's
+  `IMediaControl`, `IMediaSeeking` and `IMediaPosition` drive the movie, and
+  EC_COMPLETE is queued at the end. `mf::Mpeg1Stream` decodes with FFmpeg's
+  `mpeg1video` decoder and `mpegvideo` parser (now enabled in
+  `cmake/Dependencies.cmake`); `mf::mpeg1_fix_aspect` sets every sequence
+  header's aspect code to 1, since Konami's streams carry codes FFmpeg
+  refuses. Tests: "MPEG-1 stream scan and aspect fix", "DirectShow movie into
+  a game renderer" (a renderer made of test trampolines receives three red
+  pictures on time, then EC_COMPLETE, then plays again after a rewind).
+
 - 2026-10-09 01:55 CDT — Claude Opus 5.5: merged `giggity-d3d8` at
   b94ebfe (browser speed fixes from `giggity-swbf2`: visibility-query cache,
   pipelined present, optional native `_ftol2`, call-return bitmap). The

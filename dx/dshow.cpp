@@ -37,6 +37,7 @@
 // amstream.h, austream.h, strmif.h and control.h.
 #include "com.h"
 #include "dx.h"
+#include "dshow_video.h"
 #include "host_api.h"
 #include "mp3_source.h"
 #include "../runtime/memory.h"
@@ -1270,8 +1271,17 @@ const ComMethod g_enumfilters[] = {
     {"Clone", 2, EF_Clone},
 };
 
-// --- IGraphBuilder: there are no filters to build with.
-DX_STUB(GB_AddFilter, E_NOTIMPL)
+// --- IGraphBuilder. The only filters are a game's own renderer, joined by
+// AddFilter, and the movie source AddSourceFilter makes (dshow_video.cpp).
+// AddFilter(pFilter, pName)
+void GB_AddFilter(X86 *c) {
+    GraphThis t = graph_this(c);
+    if (!t.g) {
+        com_ret(c, E_FAIL);
+        return;
+    }
+    com_ret(c, dsv::add_filter(c, t.g->id, arg(c, 0), arg(c, 1), arg(c, 2)));
+}
 DX_STUB(GB_RemoveFilter, E_NOTIMPL)
 
 void GB_EnumFilters(X86 *c) {
@@ -1303,7 +1313,17 @@ DX_STUB(GB_ConnectDirect, E_NOTIMPL)
 DX_STUB(GB_Reconnect, E_NOTIMPL)
 DX_STUB(GB_Disconnect, E_NOTIMPL)
 DX_STUB(GB_SetDefaultSyncSource, S_OK)
-DX_STUB(GB_Connect, E_NOTIMPL)
+// Connect(ppinOut, ppinIn): the movie source's output to the game's renderer.
+void GB_Connect(X86 *c) {
+    GraphThis t = graph_this(c);
+    uint32_t hr = t.g ? dsv::connect(c, t.g->id, arg(c, 1), arg(c, 2)) : E_FAIL;
+    if (hr == S_FALSE) {
+        log_once("dx.GB_Connect", "dx: GB_Connect between pins that are not a movie source's "
+                                  "is not implemented; returning E_NOTIMPL");
+        hr = E_NOTIMPL;
+    }
+    com_ret(c, hr);
+}
 DX_STUB(GB_Render, E_NOTIMPL)
 // IGraphBuilder::RenderFile(lpcwstrFile, lpcwstrPlayList) and
 // IMediaControl::RenderFile(BSTR): the "graph" a CLSID_FilterGraph object
@@ -1332,6 +1352,15 @@ void GB_AddSourceFilter(X86 *c) {
     uint32_t out = arg(c, 3);
     if (out && gm_valid(out, 4))
         wr32(out, 0);
+    // An MPEG-1 video file plays into the game's renderer instead.
+    if (t.g && arg(c, 1) && gm_valid(arg(c, 1), 2)) {
+        std::string guest = read_wide(arg(c, 1));
+        std::string host = win32_host_path(guest, false);
+        if (!host.empty() && dsv::is_movie_file(host)) {
+            com_ret(c, dsv::add_source(c, t.g->id, guest, host, out));
+            return;
+        }
+    }
     if (t.s) {
         log_once("dshow.addsource", "dshow: IGraphBuilder::AddSourceFilter: there are no source "
                                     "filters here; the movie is skipped and reported complete");
@@ -1367,6 +1396,10 @@ const ComMethod g_graph[] = {
 // --- IMediaControl
 void MC_Run(X86 *c) {
     GraphThis t = graph_this(c);
+    if (t.g && dsv::has_movie(t.g->id)) {
+        com_ret(c, dsv::run(c, t.g->id));
+        return;
+    }
     if (!t.s) {
         com_ret(c, E_FAIL);
         return;
@@ -1386,6 +1419,10 @@ void MC_Run(X86 *c) {
 // what a later Run continues from; DirectShow's Stop keeps it too.
 void MC_Pause(X86 *c) {
     GraphThis t = graph_this(c);
+    if (t.g && dsv::has_movie(t.g->id)) {
+        com_ret(c, dsv::pause(c, t.g->id));
+        return;
+    }
     if (!t.s) {
         com_ret(c, E_FAIL);
         return;
@@ -1397,6 +1434,10 @@ void MC_Pause(X86 *c) {
 
 void MC_Stop(X86 *c) {
     GraphThis t = graph_this(c);
+    if (t.g && dsv::has_movie(t.g->id)) {
+        com_ret(c, dsv::stop(c, t.g->id));
+        return;
+    }
     if (!t.s) {
         com_ret(c, E_FAIL);
         return;
@@ -1418,7 +1459,10 @@ void MC_GetState(X86 *c) {
         com_ret(c, E_POINTER);
         return;
     }
-    wr32(out, t.s->running ? State_Running : t.s->paused ? State_Paused : State_Stopped);
+    if (t.g && dsv::has_movie(t.g->id))
+        wr32(out, dsv::state(t.g->id));
+    else
+        wr32(out, t.s->running ? State_Running : t.s->paused ? State_Paused : State_Stopped);
     com_ret(c, S_OK);
 }
 
@@ -1615,6 +1659,11 @@ void SK_GetDuration(X86 *c) {
         com_ret(c, t.s ? E_POINTER : E_FAIL);
         return;
     }
+    if (t.g && dsv::has_movie(t.g->id)) {
+        write_u64(out, dsv::duration(t.g->id));
+        com_ret(c, S_OK);
+        return;
+    }
     if (!t.s->loaded) {
         com_ret(c, MS_E_NOSTREAM);
         return;
@@ -1630,7 +1679,10 @@ void SK_GetCurrentPosition(X86 *c) {
         com_ret(c, t.s ? E_POINTER : E_FAIL);
         return;
     }
-    write_u64(out, t.s->loaded ? frames_to_time(current_frames(*t.s), t.s->hz) : 0);
+    if (t.g && dsv::has_movie(t.g->id))
+        write_u64(out, dsv::position(t.g->id));
+    else
+        write_u64(out, t.s->loaded ? frames_to_time(current_frames(*t.s), t.s->hz) : 0);
     com_ret(c, S_OK);
 }
 
@@ -1655,6 +1707,21 @@ void SK_SetPositions(X86 *c) {
     uint32_t cur = arg(c, 1), cur_flags = arg(c, 2);
     if (!t.s) {
         com_ret(c, E_FAIL);
+        return;
+    }
+    if (t.g && dsv::has_movie(t.g->id)) {
+        uint32_t how = cur_flags & AM_SEEKING_PositioningBitsMask;
+        if (how == AM_SEEKING_AbsolutePositioning || how == AM_SEEKING_RelativePositioning) {
+            if (!cur || !gm_valid(cur, 8)) {
+                com_ret(c, E_POINTER);
+                return;
+            }
+            uint64_t target = read_u64(cur);
+            if (how == AM_SEEKING_RelativePositioning)
+                target += dsv::position(t.g->id);
+            dsv::seek(t.g->id, target);
+        }
+        com_ret(c, S_OK);
         return;
     }
     if (!t.s->loaded) {
@@ -1839,6 +1906,11 @@ void MP_get_Duration(X86 *c) {
         com_ret(c, t.s ? E_POINTER : E_FAIL);
         return;
     }
+    if (t.g && dsv::has_movie(t.g->id)) {
+        write_double(out, (double)dsv::duration(t.g->id) / 1e7);
+        com_ret(c, S_OK);
+        return;
+    }
     if (!t.s->loaded) {
         com_ret(c, MS_E_NOSTREAM);
         return;
@@ -1852,6 +1924,11 @@ void MP_put_CurrentPosition(X86 *c) {
     double secs = arg_double(c, 1);
     if (!t.s) {
         com_ret(c, E_FAIL);
+        return;
+    }
+    if (t.g && dsv::has_movie(t.g->id)) {
+        dsv::seek(t.g->id, secs > 0 ? (uint64_t)(secs * 1e7) : 0);
+        com_ret(c, S_OK);
         return;
     }
     if (!t.s->loaded) {
@@ -1873,7 +1950,10 @@ void MP_get_CurrentPosition(X86 *c) {
         com_ret(c, t.s ? E_POINTER : E_FAIL);
         return;
     }
-    write_double(out, t.s->loaded ? seconds_of(*t.s, current_frames(*t.s)) : 0.0);
+    if (t.g && dsv::has_movie(t.g->id))
+        write_double(out, (double)dsv::position(t.g->id) / 1e7);
+    else
+        write_double(out, t.s->loaded ? seconds_of(*t.s, current_frames(*t.s)) : 0.0);
     com_ret(c, S_OK);
 }
 
@@ -1991,6 +2071,7 @@ ComObj *filtergraph_create() {
     return g;
 }
 void graph_destroy(ComObj *g) {
+    dsv::forget(g->id);
     if (!g->dsh_initialised)
         return;
     ComObj *mm = owner_of(g);
@@ -2003,9 +2084,17 @@ void graph_destroy(ComObj *g) {
 
 } // namespace
 
-void dshow_frame_pump(X86 *) {
+void dshow_frame_pump(X86 *c) {
     for (auto &entry : sources())
         pump(entry.second);
+    dsv::pump(c);
+}
+
+void dshow_post_graph_event(uint32_t graph_id, uint32_t code) {
+    ComObj *g = com_get(graph_id);
+    ComObj *mm = g && g->kind == K_GRAPH ? owner_of(g) : nullptr;
+    if (mm)
+        post_event(source_for(mm), code);
 }
 
 void dshow_register() {
@@ -2076,6 +2165,7 @@ void dshow_register() {
     com_register_class(CLSID_FilterGraph_, "FilterGraph", IF_GRAPH, filtergraph_create);
     void dshow_register_mapper();
     dshow_register_mapper();
+    dsv::register_interfaces();
 }
 
 // ---------------------------------------------------------------------------
@@ -2130,4 +2220,5 @@ void dshow_reset() {
     // The guest heap the rings and events lived in is gone with mem_init;
     // the host channels are released by the audio reset.
     sources().clear();
+    dsv::reset();
 }

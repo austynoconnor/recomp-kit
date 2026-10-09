@@ -165,6 +165,13 @@ enum ComIface : uint16_t {
     // DirectSound effects (dsound.cpp): what SetFX put on a buffer.
     IF_DSFXWAVESREVERB8,
     IF_FILTERMAPPER2, // DirectShow's filter registry (dshow.cpp), which lists no filters
+    // DirectShow movie playback into a renderer the game implements
+    // (dshow_video.cpp): the file source, its output pin, the allocator and
+    // the samples it hands the renderer.
+    IF_DSV_FILTER,
+    IF_DSV_PIN,
+    IF_DSV_ALLOCATOR,
+    IF_DSV_SAMPLE,
     IF_COUNT
 };
 
@@ -240,6 +247,10 @@ enum ComKind : uint16_t {
     K_DMTOOL,         // the performance's output tool
     K_DSFX,           // one effect set on a DirectSound buffer
     K_FILTERMAPPER,   // DirectShow's filter mapper
+    K_DSV_SOURCE,     // an MPEG-1 movie source filter (dshow_video.cpp)
+    K_DSV_PIN,        // its output pin
+    K_DSV_ALLOCATOR,  // the allocator it gives the renderer's input pin
+    K_DSV_SAMPLE,     // one picture handed to the renderer
     K_COUNT
 };
 // ComKind values index bit masks of this size (com.cpp).

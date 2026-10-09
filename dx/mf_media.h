@@ -54,4 +54,58 @@ class Media {
     State *s_ = nullptr;
 };
 
+// ---------------------------------------------------------------------------
+// A bare MPEG-1 video elementary stream (sequence header, GOPs, pictures, no
+// container), as DirectShow's MPEG Video Decoder would take it from a file
+// source. Metal Gear Solid 2 keeps its movies like this in cdrom.img/pac/.
+// ---------------------------------------------------------------------------
+struct Mpeg1Info {
+    int32_t width = 0, height = 0;
+    double fps = 0;       // from the sequence header's frame-rate code
+    int64_t pictures = 0; // picture start codes in the stream
+};
+
+// Reads the first sequence header and counts the pictures. False when the
+// bytes do not start with an MPEG-1 sequence header or name no known rate.
+bool mpeg1_scan(const uint8_t *data, size_t size, Mpeg1Info *out);
+
+// Every sequence header's aspect-ratio code set to 1 (square pixels). Konami's
+// streams carry codes FFmpeg refuses in some headers; the aspect is a display
+// hint that nothing here uses, so normalising it costs nothing. Returns the
+// number of headers changed.
+int mpeg1_fix_aspect(std::vector<uint8_t> &bytes);
+
+class Mpeg1Stream {
+  public:
+    Mpeg1Stream() = default;
+    ~Mpeg1Stream();
+    Mpeg1Stream(const Mpeg1Stream &) = delete;
+    Mpeg1Stream &operator=(const Mpeg1Stream &) = delete;
+
+    // Takes the whole stream (headers already fixed). False when this build
+    // has no MPEG-1 decoder or the bytes are not a stream.
+    bool open(std::vector<uint8_t> bytes, std::string *why = nullptr);
+    bool is_open() const;
+    const Mpeg1Info &info() const {
+        return info_;
+    }
+    // The next picture in display order; false at the end.
+    bool next(VideoFrame *out);
+    // Back to the first picture.
+    bool rewind();
+    // Pictures handed out since open or the last rewind.
+    int64_t decoded() const {
+        return decoded_;
+    }
+
+    struct State;
+
+  private:
+    bool start();
+    State *s_ = nullptr;
+    std::vector<uint8_t> bytes_;
+    Mpeg1Info info_;
+    int64_t decoded_ = 0;
+};
+
 } // namespace mf
