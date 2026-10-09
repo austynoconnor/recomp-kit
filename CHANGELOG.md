@@ -16,7 +16,15 @@
     controller, so scripted triggers drive `mapped` pads like real ones.
   - `runtime/kernel32.cpp`: `RECOMP_TRACE_FILES` also logs each
     `FindFirstFile` pattern and its match count.
-  - Tests: runtime_tests checks both keyboard SPI answers.
+  - `host/gpu/webgpu/d3d9_webgpu.cpp`: an indexed triangle or line strip
+    gets a pipeline that names its index format (16 or 32 bit), part of the
+    pipeline key. WebGPU rejected such draws ("strip index format of
+    Undefined"), which threw away the whole frame's command buffer; Star
+    Wars Battlefront II's profile screen drew black in the browser.
+  - Tests: runtime_tests checks both keyboard SPI answers. Native suites
+    25 of 25 and Python 419 passed, 5 skipped, on Linux. The web build
+    compiles; headless Chrome reaches Battlefront II's main menu at 77
+    fps, 1.5 GB flat, about 1.6 cores.
 
 - 2026-10-08 20:15 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: Bink through a game's own reader, a joystick trace,
