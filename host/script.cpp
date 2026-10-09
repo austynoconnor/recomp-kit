@@ -42,6 +42,14 @@ const Named kKeys[] = {
     {"P", 0x19},      {"Y", 0x15},      {"N", 0x31},        {"F10", 0x44},   {"F1", 0x3b},
     {"F2", 0x3c},     {"F3", 0x3d},     {"F4", 0x3e},       {"1", 0x02},     {"2", 0x03},
     {"3", 0x04},      {"LSHIFT", 0x2a}, {"LCONTROL", 0x1d}, {"LALT", 0x38},
+    // The rest of the letters and digits, for games that move with WASD and
+    // bind their actions across the keyboard.
+    {"A", 0x1e},      {"B", 0x30},      {"C", 0x2e},        {"D", 0x20},     {"E", 0x12},
+    {"F", 0x21},      {"G", 0x22},      {"H", 0x23},        {"I", 0x17},     {"J", 0x24},
+    {"K", 0x25},      {"L", 0x26},      {"M", 0x32},        {"O", 0x18},     {"Q", 0x10},
+    {"R", 0x13},      {"S", 0x1f},      {"T", 0x14},        {"U", 0x16},     {"V", 0x2f},
+    {"W", 0x11},      {"X", 0x2d},      {"Z", 0x2c},        {"4", 0x05},     {"5", 0x06},
+    {"6", 0x07},      {"7", 0x08},      {"8", 0x09},        {"9", 0x0a},     {"0", 0x0b},
 };
 const int kKeyCount = (int)(sizeof kKeys / sizeof kKeys[0]);
 
