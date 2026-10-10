@@ -286,6 +286,69 @@
     version-resource checks for an image without one, and names ordinal
     imports "ordN" as the loader does even where pefile knows the name.
   - Merge note: `giggity-d3d8` also adds `wsprintfA`; keep one entry.
+- 2026-10-10 16:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: audio follow-up from `giggity-swbf2` (b164cd9, 36d8de9).
+  The stalled-ring silence from d333bcc kept a running total of unplayed
+  frames, and a write made while the first lap was still counted as fresh
+  was lost against its one-lap cap, so a game writing half a ring every
+  half lap could go quiet for part of each half lap. `host/audio/mixer.cpp`
+  now tracks how far the writes reach by position (at most one lap ahead
+  of the player). `RECOMP_AUDIO_STALE_SILENCE=0` keeps the old repeat, for
+  comparison. New case in `host/tests/host_tests.cpp` "ring and clock":
+  half-ring writes every half lap never go quiet, checked in 20 ms steps.
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
+- 2026-10-10 16:07 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: three more web fixes from `giggity-swbf2` (218f53c,
+  7a9aa21, 033d67a), found in a visible Chrome test of Star Wars
+  Battlefront II. They touch the presenter, the canvas and the mixer's ring
+  path, not the Crazy Taxi agent's WebGPU clock or AudioWorklet sink.
+  - **250 ms page freezes** (`host/present_thread.cpp`): `acquire()` waited
+    up to 250 ms for a free target slot. In a browser the waiting thread is
+    the page thread, which is also what frees the slots (GPU completions and
+    presents arrive only when it returns to the event loop), so the wait
+    always ran out: the page froze, audio callbacks included, then the frame
+    was dropped anyway ("target pool stalled for 250ms"). On the page thread
+    it now drops the frame at once. In Battlefront II this removed every
+    250-310 ms hitch around level load and the late audio callbacks that
+    went with them.
+  - **Sharper picture on scaled displays** (`host/sdl/main.cpp`): the web
+    canvas was always sized in CSS pixels, so at 125% or 150% Windows
+    scaling the browser stretched the finished frame again and blurred it.
+    The canvas now takes the display's pixel density when the result fits
+    in 2560x1440 pixels; bigger high-density displays keep CSS pixels. The
+    log says which (`web canvas: ...`).
+  - **Stalled streaming audio** (`host/audio/mixer.cpp`): a DirectSound
+    ring the game stops feeding now goes quiet as soon as the frames it
+    wrote have played (with a one-block fade), instead of after a whole
+    extra lap. New case in `host/tests/host_tests.cpp` "ring and clock".
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
+- 2026-10-10 14:31 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: from `giggity-swbf2` (2335797, f077fb3), for every
+  game's web build. The Crazy Taxi agent owns the shared lag and audio
+  work on this branch; these are the Battlefront II pieces that help any
+  game, picked so the two do not clash.
+  - **Relative mouse** (`[controls] mouse = "relative"`, default
+    `"absolute"`): while the pointer is captured the guest gets raw motion
+    (SDL relative mode; pointer lock in a browser) for games that aim with
+    the mouse.
+  - **Tracked cursor** (`[controls] cursor = "tracked"`, default `"free"`):
+    for games that draw their own cursor from relative motion, the host
+    keeps a copy and moves it to the real pointer, so the game's cursor sits
+    under the mouse after leaving and re-entering a browser page, and the
+    system cursor stays hidden over the canvas (no second cursor).
+  - **Stall logger** (`platform/stall.*`): any frame over `RECOMP_STALL_MS`
+    (default 100) prints a `[stall]` line splitting the time into file
+    reads, render-queue/WebGPU-proxy waits and the rest; the performance
+    overlay shows `STALL n worst-ms CAUSE`.
+  - **Audio** (`host/audio/mixer.cpp`): a DirectSound streaming buffer the
+    game stops refilling goes quiet after one more lap instead of looping.
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
 - 2026-10-09 15:00 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: keyboard aliases, the d-pad as the left stick, and
   per-game control hints in the browser.

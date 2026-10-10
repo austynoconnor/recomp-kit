@@ -110,6 +110,12 @@ def load_controls(controls, touch, source):
         raise ValueError("%s: [controls] default_layout must be one of %s, not %r"
                          % (source, ", ".join(CONTROLS_LAYOUTS), controls["default_layout"]))
     pad = controls.setdefault("pad", "mapped")
+    mouse = controls.setdefault("mouse", "absolute")
+    if mouse not in ("absolute", "relative"):
+        raise ValueError('%s: [controls] mouse must be "absolute" or "relative", not %r' % (source, mouse))
+    cursor = controls.setdefault("cursor", "free")
+    if cursor not in ("free", "tracked"):
+        raise ValueError('%s: [controls] cursor must be "free" or "tracked", not %r' % (source, cursor))
     if pad not in ("native", "mapped", "off"):
         raise ValueError('%s: [controls] pad must be "native", "mapped" or "off", not %r' % (source, pad))
 

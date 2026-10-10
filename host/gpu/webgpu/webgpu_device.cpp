@@ -6,6 +6,8 @@
 #include <emscripten/proxying.h>
 #include <emscripten/threading.h>
 
+#include "../../../platform/stall.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -137,6 +139,7 @@ template <class F> auto on_main(F &&f) -> decltype(f()) {
     };
     R out{};
     Job job{&f, &out};
+    RecompStallScope stall(RECOMP_STALL_RENDER);
     emscripten_proxy_sync(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(),
                           &Job::run, &job);
     return out;
@@ -149,6 +152,7 @@ template <class F> void on_main_void(F &&f) {
         }
     };
     Job job{&f};
+    RecompStallScope stall(RECOMP_STALL_RENDER);
     emscripten_proxy_sync(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(),
                           &Job::run, &job);
 }
