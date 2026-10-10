@@ -697,8 +697,7 @@ controls::KeyRemap &key_remap() {
     static const bool parsed = [] {
         std::string error;
         if (!remap.parse(RECOMP_CONTROLS_NATIVE_KEYS, &error))
-            fprintf(stderr, "[controls] native keys ignored: %s
-", error.c_str());
+            fprintf(stderr, "[controls] native keys ignored: %s\n", error.c_str());
         return true;
     }();
     (void)parsed;
