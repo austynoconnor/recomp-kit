@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- 2026-10-10 16:07 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: three more web fixes from `giggity-swbf2` (218f53c,
+  7a9aa21, 033d67a), found in a visible Chrome test of Star Wars
+  Battlefront II. They touch the presenter, the canvas and the mixer's ring
+  path, not the Crazy Taxi agent's WebGPU clock or AudioWorklet sink.
+  - **250 ms page freezes** (`host/present_thread.cpp`): `acquire()` waited
+    up to 250 ms for a free target slot. In a browser the waiting thread is
+    the page thread, which is also what frees the slots (GPU completions and
+    presents arrive only when it returns to the event loop), so the wait
+    always ran out: the page froze, audio callbacks included, then the frame
+    was dropped anyway ("target pool stalled for 250ms"). On the page thread
+    it now drops the frame at once. In Battlefront II this removed every
+    250-310 ms hitch around level load and the late audio callbacks that
+    went with them.
+  - **Sharper picture on scaled displays** (`host/sdl/main.cpp`): the web
+    canvas was always sized in CSS pixels, so at 125% or 150% Windows
+    scaling the browser stretched the finished frame again and blurred it.
+    The canvas now takes the display's pixel density when the result fits
+    in 2560x1440 pixels; bigger high-density displays keep CSS pixels. The
+    log says which (`web canvas: ...`).
+  - **Stalled streaming audio** (`host/audio/mixer.cpp`): a DirectSound
+    ring the game stops feeding now goes quiet as soon as the frames it
+    wrote have played (with a one-block fade), instead of after a whole
+    extra lap. New case in `host/tests/host_tests.cpp` "ring and clock".
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
 - 2026-10-10 14:31 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: from `giggity-swbf2` (2335797, f077fb3), for every
   game's web build. The Crazy Taxi agent owns the shared lag and audio
