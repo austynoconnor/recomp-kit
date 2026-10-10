@@ -43,7 +43,7 @@ NATIVE_AXES = ("x", "y", "z", "rx", "ry", "rz")
 # [controls.native] keys, and mouse_stick's choices: which stick mouse
 # movement deflects (none leaves the mouse to the game).
 NATIVE_KEYS = ("xinput", "dinput", "axes", "buttons", "axis_range", "mouse_stick", "mouse_speed",
-               "keys")
+               "keys", "dpad")
 MOUSE_STICKS = ("none", "left", "right")
 # Mirrors the name column of host/controls/layout.cpp's kScancodes table (its
 # scancode_from_name); keep both lists in sync.
@@ -138,6 +138,16 @@ def load_controls(controls, touch, source):
             raise ValueError("%s: [controls.mapped] %s names no key: %r" % (source, key, value))
     controls["mapped"] = mapped
 
+    # Extra keys that also press a key the game reads, {"Up" = "W"}: the
+    # DirectInput keyboard reports the target held while the alias is held,
+    # so a game with one binding per action takes arrows and WASD alike.
+    aliases = controls.setdefault("key_aliases", {})
+    if not isinstance(aliases, dict) or not all(
+            k in KEY_NAMES and isinstance(v, str) and v in KEY_NAMES and k != v
+            for k, v in aliases.items()):
+        raise ValueError("%s: [controls] key_aliases must map key names to other key names "
+                         "(%s), not %r" % (source, ", ".join(KEY_NAMES), aliases))
+
     native = dict(controls.get("native", {}))
     unknown_native = sorted(k for k in native if k not in NATIVE_KEYS)
     if unknown_native:
@@ -191,6 +201,11 @@ def load_controls(controls, touch, source):
                 or physical in fixed or guest in fixed):
             raise ValueError("%s: [controls.native] keys: %s = %r must name two keys of %s "
                              "(not a modifier or Escape)" % (source, physical, guest, ", ".join(KEY_NAMES)))
+    # "stick": the d-pad also moves the left stick's axes, for games that
+    # read menus and steering only from axes; "hat" (default): only the POV.
+    if native.setdefault("dpad", "hat") not in ("hat", "stick"):
+        raise ValueError('%s: [controls.native] dpad must be "hat" or "stick", not %r'
+                         % (source, native["dpad"]))
     controls["native"] = native
     return controls
 
@@ -265,6 +280,13 @@ def load(game_dir):
     # only, the DirectShow movie path) or "all" (the desktop decoder list).
     if launcher.setdefault("web_video", "off") not in WEB_VIDEO:
         raise ValueError("%s: [launcher] web_video must be one of %s" % (source, ", ".join(WEB_VIDEO)))
+    # The control lines under the game in the browser: {keyboard = "...",
+    # controller = "..."}, the controller one with {name}/{confirm}/{back}.
+    hints = launcher.setdefault("input_hints", {})
+    if not isinstance(hints, dict) or not all(
+            k in ("keyboard", "controller") and isinstance(v, str) for k, v in hints.items()):
+        raise ValueError('%s: [launcher] input_hints may set only "keyboard" and "controller" '
+                         "strings, not %r" % (source, hints))
     min_free = launcher.setdefault("min_free_mb", 0)
     if not isinstance(min_free, int) or min_free < 0:
         raise ValueError("%s: [launcher] min_free_mb must be a non-negative integer" % source)

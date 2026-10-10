@@ -211,6 +211,17 @@ void fill_state(uint8_t *buf, const HostPadState &s, const JoyAxisRange ranges[6
     double pos[JOY_AXES] = {stick_position(s.lx),           stick_position(s.ly),
                             stick_position(s.rx),           stick_position(s.ry),
                             trigger_position(s.l2 / 255.0), trigger_position(s.r2 / 255.0)};
+    // [controls.native] dpad = "stick": the d-pad also pushes the left stick
+    // (hat bits up 1, right 2, down 4, left 8), for games that read menus and
+    // steering only from axes. The further of the two wins.
+    if (host_pad_native_dpad_stick()) {
+        const double hx = ((s.hat & 2) ? 1.0 : 0.0) - ((s.hat & 8) ? 1.0 : 0.0);
+        const double hy = ((s.hat & 4) ? 1.0 : 0.0) - ((s.hat & 1) ? 1.0 : 0.0);
+        if (std::fabs(hx) > std::fabs(pos[0]))
+            pos[0] = hx;
+        if (std::fabs(hy) > std::fabs(pos[1]))
+            pos[1] = hy;
+    }
     // A slot fed by several pad axes reads whichever is furthest from centre.
     bool fed[JOY_AXES] = {false};
     double at[JOY_AXES] = {0};

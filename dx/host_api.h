@@ -339,6 +339,13 @@ const char *host_pad_native_buttons(void);
 /* The range each axis reports until the guest sets DIPROP_RANGE
  * (RECOMP_CONTROLS_NATIVE_AXIS_MIN/MAX). Weak default: -32768..32767. */
 void host_pad_native_axis_range(int32_t *min, int32_t *max);
+/* Non-zero when the d-pad also moves the left stick's axes
+ * (RECOMP_CONTROLS_NATIVE_DPAD_STICK). Weak default: 0. */
+int host_pad_native_dpad_stick(void);
+/* Keyboard aliases, "Up=W,Left=A" (key names as in game.toml; RECOMP_CONTROLS_KEY_ALIASES):
+ * while the first key is held the DirectInput keyboard also reports the second.
+ * Weak default: "". */
+const char *host_key_aliases(void);
 
 // ---------------------------------------------------------------------------
 // How the guest has been reaching its surfaces.

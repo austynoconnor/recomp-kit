@@ -53,6 +53,7 @@ def game_entry(cfg):
         "installNames": launcher["install_names"],
         "minFreeMb": launcher["min_free_mb"],
         "streamAssets": launcher.get("stream_assets", False),
+        "inputHints": launcher.get("input_hints") or None,
     }
 
 

@@ -351,6 +351,29 @@ class LoadTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     game_config.load(game)
 
+            # Half axes, d-pad on the stick, keyboard aliases.
+            (game / "game.toml").write_text(
+                base + '\n[controls]\nkey_aliases = { Up = "W", Escape = "Return" }\n'
+                '[controls.native]\naxes = ["x", "y", "z", "rz", "+y", "-y"]\ndpad = "stick"\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CONTROLS_KEY_ALIASES "Escape=Return,Up=W"', header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK 1", header)
+            self.assertIn('"x,y,z,rz,+y,-y"', header)
+            (game / "game.toml").write_text(base)
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CONTROLS_KEY_ALIASES ""', header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK 0", header)
+            for bad in ('key_aliases = { Up = "Nope" }', 'key_aliases = { W = "W" }',
+                        'key_aliases = ["Up"]'):
+                (game / "game.toml").write_text(base + '\n[controls]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+            for bad in ('dpad = "both"', 'axes = ["x", "y", "z", "rz", "++y", "-y"]',
+                        'axes = ["x", "y", "z", "rz", "w", "-y"]'):
+                (game / "game.toml").write_text(base + '\n[controls]\n[controls.native]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+
             # The old rows spelling still loads.
             (game / "game.toml").write_text(base + '\n[settings]\nrows = ["window", "keypad"]\n')
             game_config.load(game)

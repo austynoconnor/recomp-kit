@@ -525,6 +525,10 @@ int32_t host_audio_is_playing(int32_t ch) {
 
 // The contract in host_api.h says the deltas are consumed on read, so this
 // test host clears them exactly as the real one must.
+const char *g_key_aliases = "";
+const char *host_key_aliases(void) {
+    return g_key_aliases;
+}
 void host_input_state(HostInputState *out) {
     *out = g_input;
     g_input.mouse_dx = g_input.mouse_dy = g_input.mouse_dz = 0;
@@ -7299,6 +7303,27 @@ static void test_dinput() {
     CHECK_EQ(rd8(state + 0x1e), 0x80);
     CHECK_EQ(rd8(state + 0x11), 0x80);
     CHECK_EQ(rd8(state + 0x20), 0);
+
+    // [controls] key_aliases: a held Right also reports D; Up=W changes
+    // nothing W already reports, and an unheld alias reports nothing.
+    g_key_aliases = "Right=D,Up=W,Escape=Return,Return=Space";
+    g_input.keys[0xCD] = 0x80; // DIK_RIGHT
+    gm_zero(state, 256);
+    CHECK_EQ(call_method(kb, DID_GetDeviceState, {256, state}), DI_OK);
+    CHECK_EQ(rd8(state + 0x20), 0x80); // DIK_D
+    CHECK_EQ(rd8(state + 0xCD), 0x80);
+    CHECK_EQ(rd8(state + 0x1C), 0); // DIK_RETURN
+    g_input.keys[0x01] = 0x80;      // Escape: Return, not chained on to Space
+    gm_zero(state, 256);
+    CHECK_EQ(call_method(kb, DID_GetDeviceState, {256, state}), DI_OK);
+    CHECK_EQ(rd8(state + 0x1C), 0x80);
+    CHECK_EQ(rd8(state + 0x39), 0);
+    g_input.keys[0x01] = 0;
+    g_input.keys[0xCD] = 0;
+    gm_zero(state, 256);
+    CHECK_EQ(call_method(kb, DID_GetDeviceState, {256, state}), DI_OK);
+    CHECK_EQ(rd8(state + 0x20), 0);
+    g_key_aliases = "";
 
     // The mouse, with a buffer, reporting relative motion.
     uint8_t mouse[16] = {0x60, 0x2B, 0x1D, 0x6F, 0xA0, 0xD5, 0xCF, 0x11,
