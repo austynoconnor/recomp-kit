@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 2026-10-10 16:33 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: audio follow-up from `giggity-swbf2` (b164cd9, 36d8de9).
+  The stalled-ring silence from d333bcc kept a running total of unplayed
+  frames, and a write made while the first lap was still counted as fresh
+  was lost against its one-lap cap, so a game writing half a ring every
+  half lap could go quiet for part of each half lap. `host/audio/mixer.cpp`
+  now tracks how far the writes reach by position (at most one lap ahead
+  of the player). `RECOMP_AUDIO_STALE_SILENCE=0` keeps the old repeat, for
+  comparison. New case in `host/tests/host_tests.cpp` "ring and clock":
+  half-ring writes every half lap never go quiet, checked in 20 ms steps.
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
 - 2026-10-10 16:07 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: three more web fixes from `giggity-swbf2` (218f53c,
   7a9aa21, 033d67a), found in a visible Chrome test of Star Wars
