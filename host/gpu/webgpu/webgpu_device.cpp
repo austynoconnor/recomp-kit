@@ -1159,9 +1159,12 @@ void WebGpuDevice::destroy(Swapchain s) {
     chains_.erase(it);
 }
 
+// Any thread reads the clock itself: emscripten_get_now() is
+// performance.timeOrigin + performance.now(), the same timeline on every
+// thread. It used to be fetched from the main thread, and the game's every
+// Present asks for it, so the game stood still whenever the page's main thread
+// was busy elsewhere: 50 fps fell to 30 under a 40% busy main thread.
 double WebGpuDevice::now_seconds() {
-    if (off_main())
-        return on_main([&] { return now_seconds(); });
     return emscripten_get_now() / 1000.0;
 }
 

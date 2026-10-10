@@ -127,6 +127,12 @@ HOST_DEFAULT void host_pad_native_axis_range(int32_t *min, int32_t *max) {
     *min = -32768;
     *max = 32767;
 }
+HOST_DEFAULT int host_pad_native_dpad_stick(void) {
+    return 0;
+}
+HOST_DEFAULT const char *host_key_aliases(void) {
+    return "";
+}
 
 } // extern "C"
 
