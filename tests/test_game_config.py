@@ -297,6 +297,19 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 game_config.load(game)
 
+            for bad in ('keys = "W=Up"', 'keys = { W = "Nope" }', 'keys = { Nope = "Up" }',
+                        'keys = { W = 5 }', 'keys = { LShift = "Up" }', 'keys = { W = "Escape" }'):
+                (game / "game.toml").write_text(base + '\n[controls]\n[controls.native]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+            (game / "game.toml").write_text(base)
+            self.assertIn('#define RECOMP_CONTROLS_NATIVE_KEYS ""',
+                          gen_game_config.render_header(game_config.load(game)))
+            (game / "game.toml").write_text(
+                base + '\n[controls]\n[controls.native]\nkeys = { W = "Up", "1" = "E", Space = "Z" }\n')
+            self.assertIn('#define RECOMP_CONTROLS_NATIVE_KEYS "1=E;Space=Z;W=Up"',
+                          gen_game_config.render_header(game_config.load(game)))
+
             # The header.
             (game / "game.toml").write_text(
                 base + '\n[controls.mapped]\nleft_stick = "horizontal_arrows"\n')

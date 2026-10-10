@@ -138,10 +138,10 @@ def load_controls(controls, touch, source):
     native = dict(controls.get("native", {}))
     unknown_native = sorted(k for k in native
                             if k not in ("xinput", "dinput", "axes", "buttons", "axis_range",
-                                         "dpad"))
+                                         "keys", "dpad"))
     if unknown_native:
         raise ValueError("%s: [controls.native] may name only xinput, dinput, axes, buttons, "
-                         "axis_range, not %s" % (source, ", ".join(unknown_native)))
+                         "axis_range, keys, dpad, not %s" % (source, ", ".join(unknown_native)))
     native.setdefault("xinput", True)
     native.setdefault("dinput", True)
     if not isinstance(native["xinput"], bool) or not isinstance(native["dinput"], bool):
@@ -170,6 +170,18 @@ def load_controls(controls, touch, source):
             or not -2**31 <= axis_range[0] < axis_range[1] < 2**31):
         raise ValueError("%s: [controls.native] axis_range must be [min, max] integers with "
                          "min < max, not %r" % (source, axis_range))
+    # keys = { W = "Up", ... }: the key the game sees for each physical key
+    # (host/controls/key_remap.h). Modifiers and Escape stay themselves: the
+    # host tracks modifiers separately and Escape frees the mouse.
+    keys = native.setdefault("keys", {})
+    if not isinstance(keys, dict):
+        raise ValueError("%s: [controls.native] keys must be a table of key = key" % source)
+    fixed = ("LCtrl", "LShift", "LAlt", "Escape")
+    for physical, guest in keys.items():
+        if (physical not in KEY_NAMES or not isinstance(guest, str) or guest not in KEY_NAMES
+                or physical in fixed or guest in fixed):
+            raise ValueError("%s: [controls.native] keys: %s = %r must name two keys of %s "
+                             "(not a modifier or Escape)" % (source, physical, guest, ", ".join(KEY_NAMES)))
     # "stick": the d-pad also moves the left stick's axes, for games that
     # read menus and steering only from axes; "hat" (default): only the POV.
     if native.setdefault("dpad", "hat") not in ("hat", "stick"):

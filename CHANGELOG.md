@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- 2026-10-10 17:25 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8` (from `giggity-mgs2` `09c64c1` and `5dda06e`):
+  - **Fog measured the wrong distance.** Table fog used the vertex's
+    clip-space z, so a game that sets FOGSTART 0 / FOGEND 1 (fog by depth
+    buffer value, as MGS2 does) had every pixel fully fogged: a flat
+    fog-coloured screen. Table fog now uses what Direct3D uses: the depth
+    buffer's z for a game's own vertex shaders or a flat projection, and eye
+    distance (clip w) for perspective fixed-function draws. New
+    `HostD9Draw::fog_depth` and `D9PSParams::fog_depth` (the old padding)
+    carry the choice to the WebGPU, Vulkan and Metal shaders.
+  - **`[controls.native] keys`.** A table such as `keys = { W = "Up",
+    A = "Left" }` changes which key the game sees for each physical key,
+    before the game reads it (host/controls/key_remap.*). Unlike
+    `key_aliases` it replaces the key, for games that already use the
+    physical key for something else. Two physical keys on one game key are
+    reference-counted; held keys are released when the window loses focus.
+    Modifiers and Escape cannot be remapped. Header macro
+    `RECOMP_CONTROLS_NATIVE_KEYS`; tests in controls_tests and
+    test_game_config.
+  - **D3D9 frame trace (debug aid).** `RECOMP_D3D9_TRACE_FRAME`,
+    `RECOMP_D3D9_TRACE_FRAMES` and `RECOMP_D3D9_TRACE_FILE` log every clear,
+    copy, draw and present of chosen frames (targets, shaders, blend, fog and
+    texture-stage states). Off unless set.
+
 - 2026-10-10 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: browser lag and audio. Measured in a visible Chrome window
   (144 Hz display) on Crazy Taxi.

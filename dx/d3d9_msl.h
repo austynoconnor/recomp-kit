@@ -30,7 +30,7 @@ struct D9PSParams {
     float alpha_ref;    // 0..1
     int32_t alpha_func; // D3DCMPFUNC; 8 (always) means no test
     int32_t fog_mode;   // 0 off, 1 vertex factor, 2 linear, 3 exp, 4 exp2
-    int32_t pad0;
+    int32_t fog_depth;  // table fog measures 0: eye distance (clip w), 1: the depth buffer's z
     float fog_color[4];
     float fog_start, fog_end, fog_density, pad1;
 };
