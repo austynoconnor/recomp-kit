@@ -175,7 +175,13 @@ void render_player(int32_t id, Player &p, float *left, float *right, uint32_t fr
     float ring_from = p.ring_gain, ring_to = p.ring_gain;
     if (!p.segments.empty() && p.segments.front()->ring) {
         Segment &s = *p.segments.front();
-        ring_to = s.fresh_until - s.played >= 1.0 ? 1.0f : 0.0f; // under a frame is rounding
+        // RECOMP_AUDIO_STALE_SILENCE=0 keeps the old repeat, for comparison.
+        static const bool silence = [] {
+            const char *v = recomp_env("AUDIO_STALE_SILENCE");
+            return !(v && v[0] == '0');
+        }();
+        ring_to =
+            !silence || s.fresh_until - s.played >= 1.0 ? 1.0f : 0.0f; // under a frame is rounding
         s.played += double(frames) * double(s.rate) / g_render_rate;
     } else {
         ring_to = 1.0f;
