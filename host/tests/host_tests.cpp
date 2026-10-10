@@ -2127,12 +2127,27 @@ static void test_audio_ring_and_clock() {
     // A guest that stops writing (a stalled game thread): once what it wrote
     // has played, the ring goes quiet instead of repeating old sound, and the
     // next write brings it back.
-    host_audio_offline_render(19200, &peak); // a whole lap: what is left, then the fade
+    host_audio_offline_render(19200, &peak); // a whole lap: what is left
+    host_audio_offline_render(4096, &peak);  // the fade
     host_audio_offline_render(9600, &peak);
     CHECK(peak == 0.0f);
     CHECK_EQ(host_audio_write(21, ring.data(), 0, ring_bytes), (int32_t)ring_bytes);
     host_audio_offline_render(4800, &peak);
     CHECK(peak > 0.0f);
+
+    // A guest that writes half a ring every half lap - the usual DirectSound
+    // pattern, and the one a running total lost track of - never goes quiet,
+    // not even for 20 ms.
+    for (int half = 0; half < 8; ++half) {
+        const uint32_t half_bytes = ring_bytes / 2;
+        CHECK_EQ(host_audio_write(21, ring.data() + (half % 2) * half_bytes,
+                                  (half % 2) * half_bytes, half_bytes),
+                 (int32_t)half_bytes);
+        for (int chunk = 0; chunk < 10; ++chunk) {
+            host_audio_offline_render(960, &peak);
+            CHECK(peak > 0.0f);
+        }
+    }
 
     // And the queue's own answer comes from the clock, not from a completion.
     // A stream that has been playing for a while reports less outstanding than
