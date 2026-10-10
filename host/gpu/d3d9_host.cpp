@@ -243,8 +243,10 @@ class RenderThread {
     // frame's own present cost the browser game thread a tenth of its time.
     void present_pipelined(uint32_t backbuffer, uint32_t w, uint32_t h) {
         {
+            const uint64_t wait_from = os_monotonic_ns();
             std::unique_lock<std::mutex> lock(m_);
             idle_cv_.wait(lock, [this] { return presents_done_ >= presents_sent_; });
+            game_wait_ns_ += os_monotonic_ns() - wait_from;
             ++presents_sent_;
         }
         Command c{Op::Present};
@@ -299,7 +301,9 @@ class RenderThread {
             queue_.pop_front();
             busy_ = true;
             lock.unlock();
+            const uint64_t from = os_monotonic_ns();
             execute(*b);
+            pump_ns_ += os_monotonic_ns() - from;
             b->clear();
             lock.lock();
             busy_ = false;
@@ -438,6 +442,7 @@ class RenderThread {
                 std::lock_guard<std::mutex> lock(m_);
                 ++presents_done_;
                 idle_cv_.notify_all();
+                report_timing();
                 break;
             }
             case Op::Probe:
@@ -454,6 +459,18 @@ class RenderThread {
     D9Backend *r_;
     bool threaded_ = false;
     bool pumped_ = false;
+    // RECOMP_D3D9_STATS on the web: per presented frame, how long the main
+    // thread spent encoding the game's Direct3D work and how long the game
+    // waited for the previous frame's present.
+    uint64_t pump_ns_ = 0, game_wait_ns_ = 0, timed_frames_ = 0;
+    void report_timing() {
+        static const bool on = recomp_env("D3D9_STATS") != nullptr;
+        if (!on || !pumped_ || ++timed_frames_ < 60)
+            return;
+        fprintf(stderr, "d3d9 queue: per frame %.1f ms encoding on the main thread, game waited %.1f ms\n",
+                pump_ns_ / 1e6 / timed_frames_, game_wait_ns_ / 1e6 / timed_frames_);
+        pump_ns_ = game_wait_ns_ = timed_frames_ = 0;
+    }
     std::atomic<bool> pump_asked_{false}; // a main-thread pump is on its way
     int main_depth_ = 0;                  // main thread only
     bool pump_missed_ = false;            // main thread only

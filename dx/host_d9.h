@@ -100,6 +100,10 @@ typedef struct HostD9Draw {
     const uint32_t *render_state;    // 256, D3DRENDERSTATETYPE
     const uint8_t *render_state_set; // 256 flags: the game set it
     uint32_t projected_mask;         // stages with D3DTTFF_PROJECTED
+    // What table fog measures: 0 the distance from the eye (clip w, Direct3D's
+    // "w fog"), 1 the depth buffer's z. Direct3D uses z for a game's own vertex
+    // shader and for a fixed-function draw whose projection is not perspective.
+    uint32_t fog_depth;
     // Nonzero: the three state tables above are unchanged for as long as this
     // is, so a host may reuse its copy from an earlier draw with the same value.
     uint64_t state_version;

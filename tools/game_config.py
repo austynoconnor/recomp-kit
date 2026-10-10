@@ -42,7 +42,8 @@ MAPPED_DEFAULTS = {"left_stick": "arrows", "right_stick": "cursor", "dpad": "arr
 NATIVE_AXES = ("x", "y", "z", "rx", "ry", "rz")
 # [controls.native] keys, and mouse_stick's choices: which stick mouse
 # movement deflects (none leaves the mouse to the game).
-NATIVE_KEYS = ("xinput", "dinput", "axes", "buttons", "axis_range", "mouse_stick", "mouse_speed")
+NATIVE_KEYS = ("xinput", "dinput", "axes", "buttons", "axis_range", "mouse_stick", "mouse_speed",
+               "keys")
 MOUSE_STICKS = ("none", "left", "right")
 # Mirrors the name column of host/controls/layout.cpp's kScancodes table (its
 # scancode_from_name); keep both lists in sync.
@@ -178,6 +179,18 @@ def load_controls(controls, touch, source):
             or not -2**31 <= axis_range[0] < axis_range[1] < 2**31):
         raise ValueError("%s: [controls.native] axis_range must be [min, max] integers with "
                          "min < max, not %r" % (source, axis_range))
+    # keys = { W = "Up", ... }: the key the game sees for each physical key
+    # (host/controls/key_remap.h). Modifiers and Escape stay themselves: the
+    # host tracks modifiers separately and Escape frees the mouse.
+    keys = native.setdefault("keys", {})
+    if not isinstance(keys, dict):
+        raise ValueError("%s: [controls.native] keys must be a table of key = key" % source)
+    fixed = ("LCtrl", "LShift", "LAlt", "Escape")
+    for physical, guest in keys.items():
+        if (physical not in KEY_NAMES or not isinstance(guest, str) or guest not in KEY_NAMES
+                or physical in fixed or guest in fixed):
+            raise ValueError("%s: [controls.native] keys: %s = %r must name two keys of %s "
+                             "(not a modifier or Escape)" % (source, physical, guest, ", ".join(KEY_NAMES)))
     controls["native"] = native
     return controls
 

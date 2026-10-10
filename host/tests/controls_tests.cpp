@@ -6,6 +6,7 @@
 #include "../controls/editor_actions.h"
 #include "../controls/haptics.h"
 #include "../controls/json.h"
+#include "../controls/key_remap.h"
 #include "../controls/layout.h"
 #include "../controls/layout_fallback.h"
 #include "../controls/layout_store.h"
@@ -1048,6 +1049,26 @@ static void test_stick_output() {
 
     stick_output(100, 100, 100, 0.15, &x, &y); // diagonal: magnitude 1
     CHECK(fabs(std::hypot(double(x), double(y)) - 1.0) < 0.001);
+}
+
+static void test_key_remap() {
+    controls::KeyRemap r;
+    CHECK(r.empty() && r.target(kScanW) == kScanW);
+    std::string error;
+    CHECK(!r.parse("W=Up;Q=NotAKey", &error) && !error.empty() && r.empty()); // nothing changed
+    CHECK(r.parse("W=Up;A=Left;;Space=Z", &error));
+    CHECK(!r.empty() && r.target(kScanW) == kScanUp && r.target(kScanSpace) == kScanZ);
+    CHECK(r.target(kScanUp) == kScanUp); // unlisted keys reach the game as themselves
+    int g = 0;
+    CHECK(r.press(kScanW, true, &g) && g == kScanUp);
+    CHECK(r.press(kScanW, true, &g) && g == kScanUp); // a repeat is still delivered
+    CHECK(!r.press(kScanUp, true, &g) && g == kScanUp); // already held through W
+    CHECK(!r.press(kScanW, false, &g));                 // the arrow still holds Up
+    CHECK(r.press(kScanUp, false, &g) && g == kScanUp); // now both are up
+    CHECK(!r.press(kScanA, false, &g));                 // a release nobody pressed
+    CHECK(r.press(kScanA, true, &g) && g == kScanLeft);
+    r.release_all();
+    CHECK(r.press(kScanA, true, &g)); // forgotten, so a fresh press
 }
 
 static void test_mouse_stick_output() {
@@ -4224,6 +4245,7 @@ int main(int argc, char **argv) {
     test_router_state_out_of_range_is_zero();
     test_stick_output();
     test_mouse_stick_output();
+    test_key_remap();
     test_dpad_hat();
     test_pad_state_merge();
     test_vpad_edges();

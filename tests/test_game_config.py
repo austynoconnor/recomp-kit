@@ -307,7 +307,9 @@ class LoadTests(unittest.TestCase):
                 game_config.load(game)
 
             for bad in ('mouse_stick = "both"', 'mouse_speed = 0', 'mouse_speed = 21',
-                        'mouse_speed = true'):
+                        'mouse_speed = true', 'keys = "W=Up"', 'keys = { W = "Nope" }',
+                        'keys = { Nope = "Up" }', 'keys = { W = 5 }', 'keys = { LShift = "Up" }',
+                        'keys = { W = "Escape" }'):
                 (game / "game.toml").write_text(base + '\n[controls]\n[controls.native]\n%s\n' % bad)
                 with self.assertRaises(ValueError):
                     game_config.load(game)
@@ -317,6 +319,11 @@ class LoadTests(unittest.TestCase):
             header = gen_game_config.render_header(game_config.load(game))
             self.assertIn("#define RECOMP_CONTROLS_MOUSE_STICK 2", header)
             self.assertIn("#define RECOMP_CONTROLS_MOUSE_SPEED 8", header)
+            self.assertIn('#define RECOMP_CONTROLS_NATIVE_KEYS ""', header)
+            (game / "game.toml").write_text(
+                base + '\n[controls]\n[controls.native]\nkeys = { W = "Up", "1" = "E", Space = "Z" }\n')
+            self.assertIn('#define RECOMP_CONTROLS_NATIVE_KEYS "1=E;Space=Z;W=Up"',
+                          gen_game_config.render_header(game_config.load(game)))
             (game / "game.toml").write_text(base)
             self.assertIn("#define RECOMP_CONTROLS_MOUSE_STICK 0",
                           gen_game_config.render_header(game_config.load(game)))

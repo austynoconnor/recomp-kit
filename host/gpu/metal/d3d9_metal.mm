@@ -785,6 +785,7 @@ class Renderer final : public D9Backend {
         if (rs[28]) {
             uint32_t table = rs[35];
             pparams.fog_mode = table == 3 ? 2 : table == 1 ? 3 : table == 2 ? 4 : 1;
+            pparams.fog_depth = (int32_t)d.fog_depth;
             uint32_t fc = rs[34];
             pparams.fog_color[0] = ((fc >> 16) & 255) / 255.0f;
             pparams.fog_color[1] = ((fc >> 8) & 255) / 255.0f;

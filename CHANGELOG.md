@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- 2026-10-10 00:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-mgs2`:
+  - **Fog measured the wrong distance (the "brown/green wash").** Table fog
+    used the vertex's clip-space z, which is many units for a perspective
+    draw, so a game that sets FOGSTART 0 / FOGEND 1 (MGS2 on every Tanker
+    draw) had every pixel fully fogged: a flat fog-coloured screen with
+    the geometry barely showing, in the browser and on desktop alike. Table
+    fog now uses what Direct3D uses: the depth buffer's z for a game's own
+    vertex shader or a flat projection, and the eye distance (clip w) for a
+    fixed-function draw with a perspective projection
+    (`HostD9Draw::fog_depth`, `D9PSParams::fog_depth`, all three shader
+    languages and the Vulkan, WebGPU and Metal backends). The MGS2 deck now
+    shows Snake, the cable reels and the ship (native smoke check).
+  - **`[controls.native] keys`**: which key the game sees for each
+    physical key (`host/controls/key_remap.*`, applied to SDL key events in
+    `host/sdl/main.cpp`). Unlike `key_aliases` the physical key stops being
+    itself, so a game whose own defaults use W/A/S/D for actions can move
+    with WASD. Two physical keys may feed one game key; it is released when
+    both are up. Modifiers and Escape cannot be remapped. Tests in
+    `controls_tests` and `tests/test_game_config.py`.
+  - Debugging aids: `RECOMP_D3D9_TRACE_FRAME=N` / `RECOMP_D3D9_TRACE_FILE`
+    (+ `RECOMP_D3D9_TRACE_FRAMES`) print every draw, clear and copy of a
+    frame with its states on stderr; with `RECOMP_D3D9_STATS` the browser
+    build also reports the main thread's encoding time and the game's wait
+    per frame.
+
 - 2026-10-09 10:10 CDT — Claude Opus 5.5: merged `giggity-d3d8` `aad7107`
   (the generic web fixes from this branch, with FFmpeg in the web build
   made opt-in). The `web` preset is back to `RECOMP_VIDEO` OFF; a game

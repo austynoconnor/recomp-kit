@@ -30,7 +30,7 @@ struct D9V2F {
 };
 struct D9VSParams { float4 halfpix; float4 ascale[16]; };
 struct D9PSParams {
-    float alpha_ref; int alpha_func; int fog_mode; int pad0;
+    float alpha_ref; int alpha_func; int fog_mode; int fog_depth;
     float4 fog_color;
     float fog_start; float fog_end; float fog_density; float pad1;
 };
@@ -119,7 +119,7 @@ fn d9_cmp(f: i32, a: f32, b: f32) -> bool {
 }
 struct VSP { halfpix: vec4f, ascale: array<vec4f, 16>, bgra: vec4i };
 struct PSP {
-    alpha_ref: f32, alpha_func: i32, fog_mode: i32, pad0: i32,
+    alpha_ref: f32, alpha_func: i32, fog_mode: i32, fog_depth: i32,
     fog_color: vec4f,
     fog_start: f32, fog_end: f32, fog_density: f32, pad1: f32,
 };
@@ -865,7 +865,7 @@ bool vertex_source(const Program &p, std::string *out, std::string *why) {
          "    o.t0 = ot[0]; o.t1 = ot[1]; o.t2 = ot[2]; o.t3 = ot[3];\n"
          "    o.t4 = ot[4]; o.t5 = ot[5]; o.t6 = ot[6]; o.t7 = ot[7];\n"
          "    o.fog = ofog.x;\n"
-         "    o.fogz = opos.z;\n"
+         "    o.fogz = opos.w;\n"
          "    return o;\n"
          "}\n";
     *out = s;
@@ -932,7 +932,7 @@ bool pixel_source(const Program &p, const PixelVariant &v, std::string *out, std
          std::string(p.major >= 3 ? "false && " : "") +
          "P.fog_mode != 0) {\n"
          "        float f;\n"
-         "        float z = vin.fogz;\n"
+         "        float z = P.fog_depth != 0 ? vin.pos.z : vin.fogz;\n"
          "        if (P.fog_mode == 1) f = vin.fog;\n"
          "        else if (P.fog_mode == 2) f = (P.fog_end - z) / (P.fog_end - P.fog_start);\n"
          "        else if (P.fog_mode == 3) f = exp(-P.fog_density * z);\n"
@@ -1052,7 +1052,7 @@ bool vertex_source(const d9sh::Program &p, std::string *out, std::string *why) {
          ";\n"
          "    o_t = ot;\n"
          "    o_fog = ofog.x;\n"
-         "    o_fogz = opos.z;\n"
+         "    o_fogz = opos.w;\n"
          "}\n";
     *out = s;
     return true;
@@ -1074,7 +1074,7 @@ bool pixel_source(const d9sh::Program &p, const d9msl::PixelVariant &v, std::str
          std::to_string(g.const_limit) +
          "]; };\n"
          "layout(std140, set = 0, binding = 3) uniform PSP {\n"
-         "    float alpha_ref; int alpha_func; int fog_mode; int pad0;\n"
+         "    float alpha_ref; int alpha_func; int fog_mode; int fog_depth;\n"
          "    vec4 fog_color;\n"
          "    float fog_start; float fog_end; float fog_density; float pad1;\n"
          "} P;\n";
@@ -1118,7 +1118,7 @@ bool pixel_source(const d9sh::Program &p, const d9msl::PixelVariant &v, std::str
          std::string(p.major >= 3 ? "false && " : "") +
          "P.fog_mode != 0) {\n"
          "        float f;\n"
-         "        float z = i_fogz;\n"
+         "        float z = P.fog_depth != 0 ? gl_FragCoord.z : i_fogz;\n"
          "        if (P.fog_mode == 1) f = i_fog;\n"
          "        else if (P.fog_mode == 2) f = (P.fog_end - z) / (P.fog_end - P.fog_start);\n"
          "        else if (P.fog_mode == 3) f = exp(-P.fog_density * z);\n"
@@ -1196,7 +1196,7 @@ bool vertex_source(const d9sh::Program &p, std::string *out, std::string *why) {
          "    o.t0 = ot[0]; o.t1 = ot[1]; o.t2 = ot[2]; o.t3 = ot[3];\n"
          "    o.t4 = ot[4]; o.t5 = ot[5]; o.t6 = ot[6]; o.t7 = ot[7];\n"
          "    o.fog = ofog.x;\n"
-         "    o.fogz = opos.z;\n"
+         "    o.fogz = opos.w;\n"
          "    return o;\n"
          "}\n";
     *out = s;
@@ -1269,7 +1269,7 @@ bool pixel_source(const d9sh::Program &p, const d9msl::PixelVariant &v, std::str
          std::string(p.major >= 3 ? "false && " : "") +
          "P.fog_mode != 0) {\n"
          "        var f = 1.0;\n"
-         "        let z = vin.fogz;\n"
+         "        let z = select(vin.fogz, vin.pos.z, P.fog_depth != 0);\n"
          "        if (P.fog_mode == 1) { f = vin.fog; }\n"
          "        else if (P.fog_mode == 2) { f = (P.fog_end - z) / (P.fog_end - P.fog_start); }\n"
          "        else if (P.fog_mode == 3) { f = exp(-P.fog_density * z); }\n"
