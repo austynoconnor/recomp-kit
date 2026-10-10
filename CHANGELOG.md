@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- 2026-10-10 17:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: merged `giggity-d3d8` 90eb38e, the Crazy Taxi agent's
+  shared web fixes: the WebGPU clock read locally, the AudioWorklet sink
+  (`host/audio/web_sink.cpp`), two frames queued ahead, and the loader
+  reload in `runtime.html`. The one conflict was `host/gpu/d3d9_host.cpp`
+  `present_pipelined`/sync wait: both sides kept (the stall scopes from
+  here, the wait timings and frames-ahead from there).
+  - Tests: native suites 25 of 25 and Python 421 passed, 5 skipped, on
+    Linux. Visible Chrome, same route as before (menus, a Dagobah match,
+    mouse look, 175 s): 77 new frames a second in play, unchanged; audio
+    0 underruns in 56,269 worklet quanta, where the ScriptProcessor before
+    it had 2 late pulls (126 and 88 ms); stalls over 100 ms only at
+    startup (129 ms) and level load (2.6 s, 0.5 s, 112 ms), as before;
+    the game thread waits on the page thread under 0.01 ms a frame.
+
 - 2026-10-10 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: browser lag and audio. Measured in a visible Chrome window
   (144 Hz display) on Crazy Taxi.
