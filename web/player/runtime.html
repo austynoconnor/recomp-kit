@@ -188,8 +188,17 @@ async function start() {
     },
   };
   window.Module = Module;
+  // The loader script must match the program: a browser may keep an old
+  // copy of it in its HTTP cache after an update while the program above is
+  // fetched fresh, and the pair then fails to link ("function import
+  // requires a callable"). Revalidate it and load it under its own date.
+  let version = "";
+  try {
+    const head = await fetch("@APP@.js", { method: "HEAD", cache: "no-cache" });
+    version = head.headers.get("Last-Modified") || head.headers.get("ETag") || "";
+  } catch {}
   const script = document.createElement("script");
-  script.src = "@APP@.js";
+  script.src = version ? `@APP@.js?v=${encodeURIComponent(version)}` : "@APP@.js";
   script.onerror = () => status("The game's web build is missing.", true);
   document.body.append(script);
 }
