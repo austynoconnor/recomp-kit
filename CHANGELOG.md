@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- 2026-10-10 14:31 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: from `giggity-swbf2` (2335797, f077fb3), for every
+  game's web build. The Crazy Taxi agent owns the shared lag and audio
+  work on this branch; these are the Battlefront II pieces that help any
+  game, picked so the two do not clash.
+  - **Relative mouse** (`[controls] mouse = "relative"`, default
+    `"absolute"`): while the pointer is captured the guest gets raw motion
+    (SDL relative mode; pointer lock in a browser) for games that aim with
+    the mouse.
+  - **Tracked cursor** (`[controls] cursor = "tracked"`, default `"free"`):
+    for games that draw their own cursor from relative motion, the host
+    keeps a copy and moves it to the real pointer, so the game's cursor sits
+    under the mouse after leaving and re-entering a browser page, and the
+    system cursor stays hidden over the canvas (no second cursor).
+  - **Stall logger** (`platform/stall.*`): any frame over `RECOMP_STALL_MS`
+    (default 100) prints a `[stall]` line splitting the time into file
+    reads, render-queue/WebGPU-proxy waits and the rest; the performance
+    overlay shows `STALL n worst-ms CAUSE`.
+  - **Audio** (`host/audio/mixer.cpp`): a DirectSound streaming buffer the
+    game stops refilling goes quiet after one more lap instead of looping.
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
 - 2026-10-09 15:00 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: keyboard aliases, the d-pad as the left stick, and
   per-game control hints in the browser.
