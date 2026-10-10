@@ -286,6 +286,36 @@
     version-resource checks for an image without one, and names ordinal
     imports "ordN" as the loader does even where pefile knows the name.
   - Merge note: `giggity-d3d8` also adds `wsprintfA`; keep one entry.
+- 2026-10-10 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: browser lag and audio. Measured in a visible Chrome window
+  (144 Hz display) on Crazy Taxi.
+  - The game stalled whenever the page's main thread was busy:
+    `WebGpuDevice::now_seconds()` proxied to the main thread on every
+    Present just to read the clock. `emscripten_get_now()` is
+    `performance.timeOrigin + performance.now()`, the same timeline on every
+    thread, so it is now read locally. With the page thread 40% busy
+    (60 ms of every 150 ms), the game went from 30 fps to 44-48 fps.
+    Unloaded it stays at 50 fps, the game's own fixed step.
+  - Audio in the browser plays through an AudioWorklet
+    (`host/audio/web_sink.cpp`), not SDL's ScriptProcessorNode. That node
+    rendered the mix on the main thread with no backlog, so every hitch of
+    that thread was a gap. The worklet copies from a ring buffer in wasm
+    memory, and a worker of the sink's own renders 4096 frames ahead
+    (`RECOMP_AUDIO_AHEAD`). Under the same load, SDL's path had 375 of
+    1408 pulls late (gaps up to 113 ms); the worklet had 0 underruns in
+    22493 quanta. `RECOMP_AUDIO_SINK=sdl` brings back the old path. A report
+    line every 30 s: quanta, underruns, render time, queued range.
+  - The pumped Direct3D 9 queue may hold 2 presented frames, not 1
+    (`RECOMP_D3D9_FRAMES_AHEAD`, 1-4), so one late main-thread turn no
+    longer holds the game. With `RECOMP_D3D9_STATS`, a `d3d9 queue:` line
+    every 250 frames gives the game thread's waits for the main thread.
+  - `web/player/runtime.html` revalidates the loader script and loads it as
+    `<app>.js?v=<Last-Modified>`. A browser's HTTP cache could otherwise
+    pair an old loader with a new program after an update, and the game
+    failed to start with "function import requires a callable".
+  - Still inherent: 50 fps content on a 144 Hz display shows each frame for
+    2 or 3 refreshes (the overlay's RPT 65%).
+
 - 2026-10-10 16:30 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: audio follow-up from `giggity-swbf2` (b164cd9, 36d8de9).
   The stalled-ring silence from d333bcc kept a running total of unplayed

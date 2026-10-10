@@ -19,10 +19,12 @@
 #include "../../platform/stall.h"
 #include "../d3d_render.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -180,6 +182,10 @@ class RenderThread {
         threaded_ = true;
         pumped_ = true; // the browser's main loop drains the queue
 #endif
+        // Frames the pumped queue may hold before a Present waits: 2, or
+        // RECOMP_D3D9_FRAMES_AHEAD (1-4).
+        if (const char *ahead = recomp_env("D3D9_FRAMES_AHEAD"); ahead && *ahead)
+            frames_ahead_ = std::clamp<uint64_t>(strtoull(ahead, nullptr, 10), 1, 4);
         if (threaded_ && !pumped_)
             worker_ = std::thread([this] { run(); });
     }
@@ -239,18 +245,26 @@ class RenderThread {
             return result;
         }
     }
-    // The pumped queue's present: one frame may be in flight. The game waits
-    // only for the frame before this one, so its next frame runs while the
+    // The pumped queue's present: frames_ahead_ frames may be in flight. The
+    // game waits only for older frames, so its next frame runs while the
     // browser's main thread encodes and presents this one. Waiting for this
-    // frame's own present cost the browser game thread a tenth of its time.
+    // frame's own present cost the browser game thread a tenth of its time,
+    // and allowing only one frame tied the game's pace to the page's main
+    // thread: every 60 ms that thread spent elsewhere (a busy page, a
+    // collection) was 60 ms the game stood still, measured as 50 fps falling
+    // to 31. Two frames ride out a hitch of one game frame; the display shows
+    // the newest frame, so a backlog costs latency only while it lasts.
     void present_pipelined(uint32_t backbuffer, uint32_t w, uint32_t h) {
         {
             const uint64_t wait_from = os_monotonic_ns();
             RecompStallScope stall(RECOMP_STALL_RENDER);
+            const double t0 = (double(os_monotonic_ns()) * 1e-6);
             std::unique_lock<std::mutex> lock(m_);
-            idle_cv_.wait(lock, [this] { return presents_done_ >= presents_sent_; });
+            idle_cv_.wait(lock, [this] { return presents_sent_ - presents_done_ < frames_ahead_; });
             game_wait_ns_ += os_monotonic_ns() - wait_from;
             ++presents_sent_;
+            present_wait_ms_ += (double(os_monotonic_ns()) * 1e-6) - t0;
+            report_waits();
         }
         Command c{Op::Present};
         c.a = backbuffer;
@@ -265,8 +279,26 @@ class RenderThread {
         filling_->commands.push_back(c);
         hand_over();
         RecompStallScope stall(RECOMP_STALL_RENDER);
+        const double t0 = (double(os_monotonic_ns()) * 1e-6);
         std::unique_lock<std::mutex> lock(m_);
         idle_cv_.wait(lock, [this] { return queue_.empty() && !busy_; });
+        ++syncs_;
+        sync_wait_ms_ += (double(os_monotonic_ns()) * 1e-6) - t0;
+    }
+    // RECOMP_D3D9_STATS: where the game thread waited for the page's main
+    // thread, every 250 frames. Under m_, as the counters are.
+    void report_waits() {
+        if (++wait_frames_ < 250)
+            return;
+        static const bool on = recomp_env("D3D9_STATS") != nullptr;
+        if (on)
+            fprintf(stderr,
+                    "d3d9 queue: per frame %.2f waits for the main thread (%.2f ms), %.2f ms "
+                    "waiting to present, %llu frames ahead\n",
+                    double(syncs_) / wait_frames_, sync_wait_ms_ / wait_frames_,
+                    present_wait_ms_ / wait_frames_, (unsigned long long)frames_ahead_);
+        wait_frames_ = syncs_ = 0;
+        sync_wait_ms_ = present_wait_ms_ = 0;
     }
 
 #ifdef __EMSCRIPTEN__
@@ -486,6 +518,10 @@ class RenderThread {
     std::unique_ptr<Batch> filling_ = std::make_unique<Batch>();
     bool busy_ = false;
     uint64_t presents_sent_ = 0, presents_done_ = 0; // the pumped queue's, under m_
+    uint64_t frames_ahead_ = 2;
+    // The game thread's own waits (report_waits).
+    uint32_t wait_frames_ = 0, syncs_ = 0;
+    double sync_wait_ms_ = 0, present_wait_ms_ = 0;
 };
 
 RenderThread *render_thread() {
