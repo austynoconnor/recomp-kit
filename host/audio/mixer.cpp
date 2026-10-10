@@ -49,6 +49,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <time.h>
 
 #include <assert.h>
@@ -105,9 +106,10 @@ struct Segment {
     uint64_t generation = 0;
     uint32_t bytes = 0;
     // A DirectSound streaming buffer played in place (Channel::ring), and how
-    // many times the guest has written into it. Render mutex.
+    // many of its frames the guest has written that have not been played yet
+    // (capped at one lap). Render mutex.
     bool ring = false;
-    uint64_t writes = 0;
+    double fresh = 0;
     uint32_t frames() const {
         return uint32_t(l.size());
     }
@@ -118,12 +120,12 @@ struct Player {
     double played = 0; // frames rendered since play(), at the source rates
     float volume = 1.0f;
     bool playing = false;
-    // A ring's writes as last seen, and the frames played since they changed.
-    // A whole lap with nothing new means the guest has stopped feeding it (a
-    // stalled game thread); what is left in it is old sound, so it plays as
-    // silence until the next write instead of repeating.
-    uint64_t seen_writes = 0;
-    double stale_frames = 0;
+    // A ring whose fresh frames have all been played has nothing new in it:
+    // the guest has stopped feeding it (a stalled game thread) and what is
+    // left is old sound, so it plays as silence until the next write instead
+    // of repeating. The gain ramps over one block either way, so the cut and
+    // the return do not click.
+    float ring_gain = 1.0f;
 };
 
 std::mutex g_render_mutex;
@@ -168,17 +170,19 @@ inline void sample_at(const Segment &s, double pos, float *l, float *r) {
 
 // Render mutex held. Adds `frames` of this player into the mix.
 void render_player(int32_t id, Player &p, float *left, float *right, uint32_t frames) {
-    float gain = p.volume;
+    const float gain = p.volume;
+    float ring_from = p.ring_gain, ring_to = p.ring_gain;
     if (!p.segments.empty() && p.segments.front()->ring) {
-        const Segment &s = *p.segments.front();
-        if (s.writes != p.seen_writes) {
-            p.seen_writes = s.writes;
-            p.stale_frames = 0;
-        }
-        if (s.frames() && p.stale_frames > double(s.frames()))
-            gain = 0.0f;
-        p.stale_frames += double(frames) * double(s.rate) / g_render_rate;
+        Segment &s = *p.segments.front();
+        ring_to = s.fresh >= 1.0 ? 1.0f : 0.0f; // under a frame is rounding
+        s.fresh -= double(frames) * double(s.rate) / g_render_rate;
+        if (s.fresh < 0)
+            s.fresh = 0;
+    } else {
+        ring_to = 1.0f;
     }
+    p.ring_gain = ring_to;
+    const float ring_step = frames ? (ring_to - ring_from) / float(frames) : 0.0f;
     for (uint32_t i = 0; i < frames && p.playing; ++i) {
         if (p.segments.empty()) {
             p.playing = false;
@@ -192,8 +196,9 @@ void render_player(int32_t id, Player &p, float *left, float *right, uint32_t fr
         }
         float l, r;
         sample_at(s, p.pos, &l, &r);
-        left[i] += l * gain;
-        right[i] += r * gain;
+        const float g = gain * (ring_from + ring_step * float(i + 1));
+        left[i] += l * g;
+        right[i] += r * g;
         const double step = double(s.rate) / g_render_rate;
         p.pos += step;
         p.played += step;
@@ -884,6 +889,7 @@ extern "C" int32_t host_audio_write(int32_t id, const void *pcm, uint32_t offset
                 return 0;
             channel->ring->loop = true;
             channel->ring->ring = true;
+            channel->ring->fresh = double(channel->ring->frames());
             channel->ring_from_frame = from / frame;
             channel->ring_head_frames = from ? (total - from) / frame : 0;
             // The rest of the current lap, played once before the loop takes
@@ -994,7 +1000,7 @@ extern "C" int32_t host_audio_write(int32_t id, const void *pcm, uint32_t offset
                 // these same floats. Data lock, then render lock, is the
                 // order the render thread never takes the other way round.
                 std::lock_guard<std::mutex> render(g_render_mutex);
-                ++ring->writes;
+                ring->fresh = std::min(double(ring->frames()), ring->fresh + double(written));
                 float *left = ring->l.data() + at;
                 float *right = ring->r.data() + at;
                 for (uint32_t i = 0; i < written; ++i) {
