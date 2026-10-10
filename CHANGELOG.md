@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- 2026-10-10 16:31 CDT — Claude Opus 5.5 (Claude Code), branch
+- 2026-10-10 16:28 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: fixes from the first visible Chrome tests of Star Wars
   Battlefront II (the user's report: freezing, repeating sound, a picture
   that looked bad). Also on `giggity-d3d8` for every game.
