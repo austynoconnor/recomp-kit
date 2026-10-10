@@ -53,6 +53,7 @@
 #ifdef __EMSCRIPTEN__
 #include "../gpu/d3d9_backend.h"
 #include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
 #include <emscripten/wasmfs.h>
 #include <thread>
 #endif
@@ -1765,9 +1766,26 @@ int web_main(int argc, char **argv) {
         fprintf(stderr, RECOMP_APP_NAME ": this browser gave the page no WebGPU device\n");
         return 3;
     }
-    // The player's bounded CSS viewport is the web rendering budget. Do not
-    // multiply that budget by the monitor's pixel density on large displays.
-    g_window = SDL_CreateWindow(RECOMP_GAME_NAME, g_mode_w, g_mode_h, SDL_WINDOW_RESIZABLE);
+    // The player's bounded CSS viewport is the web rendering budget. A canvas
+    // sized in CSS pixels on a display scaled to 125% or 150% is stretched
+    // again by the browser after the presenter has scaled the game, which
+    // blurs everything, so the canvas takes the display's pixel density when
+    // the result stays within a 2560x1440 budget. A large high-density
+    // display keeps CSS pixels rather than multiplying the GPU's work.
+    SDL_WindowFlags web_flags = SDL_WINDOW_RESIZABLE;
+    {
+        const double dpr = emscripten_get_device_pixel_ratio();
+        double css_w = 0, css_h = 0;
+        if (dpr > 1.0 &&
+            emscripten_get_element_css_size("#canvas", &css_w, &css_h) ==
+                EMSCRIPTEN_RESULT_SUCCESS &&
+            css_w * css_h * dpr * dpr <= 2560.0 * 1440.0)
+            web_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        fprintf(stderr, "web canvas: %.0fx%.0f CSS pixels at density %.2f, %s\n", css_w, css_h, dpr,
+                (web_flags & SDL_WINDOW_HIGH_PIXEL_DENSITY) ? "drawn at full density"
+                                                            : "drawn in CSS pixels");
+    }
+    g_window = SDL_CreateWindow(RECOMP_GAME_NAME, g_mode_w, g_mode_h, web_flags);
     if (!g_window) {
         fprintf(stderr, RECOMP_APP_NAME ": SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 3;
