@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- 2026-10-10 16:31 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: fixes from the first visible Chrome tests of Star Wars
+  Battlefront II (the user's report: freezing, repeating sound, a picture
+  that looked bad). Also on `giggity-d3d8` for every game.
+  - **250 ms page freezes** (`host/present_thread.cpp`): the presenter's
+    `acquire()` waited up to 250 ms for a free target slot. In a browser the
+    thread waiting is the page thread, the same thread that frees slots, so
+    the wait always ran out: the page and its audio callbacks froze, then
+    the frame was dropped anyway. On the page thread it now drops at once.
+    Visible run before: 250-310 ms hitches around every level load plus four
+    audio callbacks about 260 ms late. After: neither.
+  - **Sharper picture on scaled displays** (`host/sdl/main.cpp`): the web
+    canvas now uses the display's pixel density (Windows 125% or 150%
+    scaling) when that stays within 2560x1440 pixels, instead of being
+    stretched and blurred by the browser. The log line `web canvas: ...`
+    says which.
+  - **Stalled streaming audio** (`host/audio/mixer.cpp`): a DirectSound ring
+    goes quiet once playback passes the furthest point the game has written
+    (tracked by position, at most one lap ahead), with a one-block fade,
+    rather than after a whole extra lap. `RECOMP_AUDIO_STALE_SILENCE=0`
+    keeps the old repeat for comparison. Two new cases in "ring and clock"
+    (`host/tests/host_tests.cpp`): a stalled ring goes silent and comes
+    back; half-ring writes every half lap never go quiet.
+  - Tests: native suites 25 of 25 and Python 421 passed, 5 skipped, on
+    Linux. Visible Chrome (separate profile, port 8092, 144 Hz display): the
+    menus, a Dagobah match at 77 new frames a second, and mouse look.
+    Stalls over 100 ms only at level load (one of 2.6 s, one of 0.6 s, game
+    work) plus one of 115 ms. Audio callbacks: 2 late (126 and 88 ms) in
+    175 s, none repeated. The ~130 ms gaps every half second during level
+    load are in the game's loading sound itself: they stay with the
+    silencing switched off.
+
 - 2026-10-09 15:36 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: fixes from the first hand test of the Star Wars
   Battlefront II web build (freezes, repeating sound, a menu cursor that
