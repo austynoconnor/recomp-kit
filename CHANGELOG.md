@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 2026-10-11 — Claude Opus 5.5: Merged `giggity-d3d8` at `7763db2` into
+  `giggity-bully` (frame-slot no-wait, local clock, AudioWorklet sink,
+  FRAMES_AHEAD=2, canvas DPI, stall logger, Direct3D fog fix,
+  `[controls.native]` keys, runtime.html reload). Overlapped ReadFile keeps
+  both its own offset and the stall timing. The merge left two Direct3D 9
+  present counters (`g_presents9` declared twice, counted twice per Present);
+  now one. The web link's optimization level is the cache option
+  `RECOMP_WEB_LINK_OPT` (default `-O2`; a 200 MB translation links in far
+  less memory at `-O1`).
+
 - 2026-10-09 — Claude Opus 5.5: XACT 2 plays sound. The engine that
   accepted banks and played nothing now reads all three XACT 2 formats
   (`dx/xact_banks.cpp`: global settings, sound banks, wave banks) and plays
