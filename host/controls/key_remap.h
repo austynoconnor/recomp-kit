@@ -16,7 +16,9 @@ class KeyRemap {
     // "W=Up;A=Left": physical=guest pairs. Unlisted keys reach the game as
     // themselves. False, with nothing changed, if a name is unknown.
     bool parse(const std::string &spec, std::string *error = nullptr);
-    bool empty() const { return count_ == 0; }
+    bool empty() const {
+        return count_ == 0;
+    }
     int target(int scancode) const;
 
     // A physical key went down or up. Answers the guest key to deliver and
@@ -24,7 +26,9 @@ class KeyRemap {
     // (W and the Up arrow), and the guest key is released only when both are.
     // A held key's repeats are delivered as downs.
     bool press(int scancode, bool down, int *guest);
-    void release_all() { reset_state(); }
+    void release_all() {
+        reset_state();
+    }
 
   private:
     void reset_state();

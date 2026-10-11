@@ -148,8 +148,25 @@ void post(uint32_t msg, uint32_t wparam, uint32_t lparam) {
         host_post_message(hwnd, msg, wparam, lparam);
 }
 
+controls::KeyRemap &key_remap();
+
+// SDL modifier state as the game should see it: a modifier that
+// [controls.native] keys turns into another key is no longer a modifier.
+uint32_t guest_modifier_flags(uint32_t mod) {
+    static const struct {
+        SDL_Scancode scancode;
+        uint32_t bit;
+    } kSides[] = {{SDL_SCANCODE_LCTRL, SDL_KMOD_LCTRL},
+                  {SDL_SCANCODE_LSHIFT, SDL_KMOD_LSHIFT},
+                  {SDL_SCANCODE_LALT, SDL_KMOD_LALT}};
+    for (const auto &side : kSides)
+        if (key_remap().target(side.scancode) != side.scancode)
+            mod &= ~side.bit;
+    return host_modifier_flags_from_sdl(mod);
+}
+
 uint32_t current_modifier_flags() {
-    return host_modifier_flags_from_sdl(SDL_GetModState());
+    return guest_modifier_flags(SDL_GetModState());
 }
 
 // The window for a guest mode on the screen this window is on or opening on,
@@ -740,10 +757,12 @@ controls::KeyRemap &key_remap() {
 }
 
 void handle_key(const SDL_KeyboardEvent &event, bool down) {
-    if (is_modifier_scancode(event.scancode)) {
+    // A modifier remapped by [controls.native] keys goes on as its new key.
+    if (is_modifier_scancode(event.scancode) &&
+        key_remap().target(event.scancode) == event.scancode) {
         PendingInput e;
         e.kind = PendingInput::MODIFIERS;
-        e.flags = host_modifier_flags_from_sdl(event.mod);
+        e.flags = guest_modifier_flags(event.mod);
         queue_or_apply(e);
         return;
     }
@@ -777,7 +796,7 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
     // Keycodes above the Unicode range are not characters.
     const SDL_Keycode plain = SDL_GetKeyFromScancode(scancode, event.mod, false);
     e.character = plain < 0x40000000 && plain >= 0x20 ? (uint32_t)plain : 0u;
-    e.flags = host_modifier_flags_from_sdl(event.mod);
+    e.flags = guest_modifier_flags(event.mod);
     queue_or_apply(e);
 }
 

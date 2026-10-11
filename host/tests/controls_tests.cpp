@@ -1061,7 +1061,7 @@ static void test_key_remap() {
     CHECK(r.target(kScanUp) == kScanUp); // unlisted keys reach the game as themselves
     int g = 0;
     CHECK(r.press(kScanW, true, &g) && g == kScanUp);
-    CHECK(r.press(kScanW, true, &g) && g == kScanUp); // a repeat is still delivered
+    CHECK(r.press(kScanW, true, &g) && g == kScanUp);   // a repeat is still delivered
     CHECK(!r.press(kScanUp, true, &g) && g == kScanUp); // already held through W
     CHECK(!r.press(kScanW, false, &g));                 // the arrow still holds Up
     CHECK(r.press(kScanUp, false, &g) && g == kScanUp); // now both are up

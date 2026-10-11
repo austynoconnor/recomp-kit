@@ -503,7 +503,8 @@ class RenderThread {
         static const bool on = recomp_env("D3D9_STATS") != nullptr;
         if (!on || !pumped_ || ++timed_frames_ < 60)
             return;
-        fprintf(stderr, "d3d9 queue: per frame %.1f ms encoding on the main thread, game waited %.1f ms\n",
+        fprintf(stderr,
+                "d3d9 queue: per frame %.1f ms encoding on the main thread, game waited %.1f ms\n",
                 pump_ns_ / 1e6 / timed_frames_, game_wait_ns_ / 1e6 / timed_frames_);
         pump_ns_ = game_wait_ns_ = timed_frames_ = 0;
     }

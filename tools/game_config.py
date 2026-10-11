@@ -196,17 +196,19 @@ def load_controls(controls, touch, source):
         raise ValueError("%s: [controls.native] axis_range must be [min, max] integers with "
                          "min < max, not %r" % (source, axis_range))
     # keys = { W = "Up", ... }: the key the game sees for each physical key
-    # (host/controls/key_remap.h). Modifiers and Escape stay themselves: the
-    # host tracks modifiers separately and Escape frees the mouse.
+    # (host/controls/key_remap.h). A modifier may be the physical key (the
+    # game then no longer sees that modifier) but not the game's key, since
+    # the host tracks modifiers separately; Escape always frees the mouse.
     keys = native.setdefault("keys", {})
     if not isinstance(keys, dict):
         raise ValueError("%s: [controls.native] keys must be a table of key = key" % source)
-    fixed = ("LCtrl", "LShift", "LAlt", "Escape")
+    modifiers = ("LCtrl", "LShift", "LAlt")
     for physical, guest in keys.items():
         if (physical not in KEY_NAMES or not isinstance(guest, str) or guest not in KEY_NAMES
-                or physical in fixed or guest in fixed):
+                or physical == "Escape" or guest == "Escape" or guest in modifiers):
             raise ValueError("%s: [controls.native] keys: %s = %r must name two keys of %s "
-                             "(not a modifier or Escape)" % (source, physical, guest, ", ".join(KEY_NAMES)))
+                             "(Escape never, a modifier only on the left)"
+                             % (source, physical, guest, ", ".join(KEY_NAMES)))
     # "stick": the d-pad also moves the left stick's axes, for games that
     # read menus and steering only from axes; "hat" (default): only the POV.
     if native.setdefault("dpad", "hat") not in ("hat", "stick"):
