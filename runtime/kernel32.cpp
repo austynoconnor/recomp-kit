@@ -859,7 +859,21 @@ static int64_t file_read(HObj *o, uint8_t *dst, uint32_t want) {
     if (pos < o->ahead_at || pos + want > o->ahead_at + (int64_t)o->ahead_len) {
         if (o->ahead.size() < kAhead)
             o->ahead.resize(kAhead);
+        static const bool trace = recomp_env("TRACE_DISK") != nullptr;
+        const uint64_t t0 = trace ? os_monotonic_ns() : 0;
         int64_t got = os_fd_read(o->fd, o->ahead.data(), kAhead);
+        if (trace) {
+            // RECOMP_TRACE_DISK: how often small reads missed the buffer and
+            // what refilling it cost (in a browser, a call to another thread).
+            static uint64_t misses, miss_ns, logged;
+            misses++;
+            miss_ns += os_monotonic_ns() - t0;
+            if (misses >= logged + 256) {
+                logged = misses;
+                LOGW("disk: %llu read-ahead refills, %llu ms", (unsigned long long)misses,
+                     (unsigned long long)(miss_ns / 1000000));
+            }
+        }
         if (got < 0) {
             o->ahead_len = 0;
             os_fd_seek(o->fd, pos, OS_SEEK_SET);
