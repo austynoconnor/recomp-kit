@@ -262,6 +262,10 @@ if(TARGET recomp_gen)
     pop_builtin_mods(recomp_app RESOURCES $<TARGET_BUNDLE_CONTENT_DIR:recomp_app>)
     pop_ios_bundle(recomp_app)
   elseif(EMSCRIPTEN)
+    # The link's own optimization level. wasm-opt holds the whole module in
+    # memory, and at -O2 a large translation (a 200 MB module) needs more than
+    # a small machine has; -O1 runs fewer passes in less memory.
+    set(RECOMP_WEB_LINK_OPT "-O2" CACHE STRING "Optimization level of the web link")
     # The web: core mods compiled in, the host's resources packaged at
     # /app/resources (runtime/layout.cpp), threads for the game.
     pop_builtin_mods(recomp_app)
@@ -288,7 +292,7 @@ if(TARGET recomp_gen)
       # Emscripten also optimizes at link time. Release's per-target compile
       # flags do not reach this step; without -g0 every translated function's
       # DWARF is shipped in the download, greatly inflating large translations.
-      $<$<NOT:$<CONFIG:Debug>>:-O2>
+      $<$<NOT:$<CONFIG:Debug>>:${RECOMP_WEB_LINK_OPT}>
       $<$<NOT:$<CONFIG:Debug>>:-g0>
       # Prewarm a modest pool instead of instantiating the large translated
       # module in dozens of idle workers. Additional guest threads can be
