@@ -520,7 +520,6 @@ void Dev_GetDeviceCaps(X86 *c) {
 // levels name their texture): enough to follow a frame's passes from targets
 // to the textures that later sample them.
 // Texture levels are logged whenever the trace is on: games take them once.
-static uint32_t g_presents9 = 0;
 static long rt_trace_from() {
     static const long from = [] {
         const char *e = recomp_env("D3D9_RT_TRACE");
@@ -661,7 +660,6 @@ void Dev_Present(X86 *c) {
     ++g_presents9;
     ComObj *bb = dev ? device_backbuffer(dev) : nullptr;
     RT_TRACE("Present, back buffer %s", g_presents9, rt_name(bb).c_str());
-    ++g_presents9;
     if (bb && gpu_on()) {
         gpu_sync(bb);
         ddraw_external_present_begin();
