@@ -188,8 +188,17 @@ async function start() {
     },
   };
   window.Module = Module;
+  // The loader script must match the program: a browser may keep an old
+  // copy of it in its HTTP cache after an update while the program above is
+  // fetched fresh, and the pair then fails to link ("function import
+  // requires a callable"). Revalidate it and load it under its own date.
+  let version = "";
+  try {
+    const head = await fetch("@APP@.js", { method: "HEAD", cache: "no-cache" });
+    version = head.headers.get("Last-Modified") || head.headers.get("ETag") || "";
+  } catch {}
   const script = document.createElement("script");
-  script.src = "@APP@.js";
+  script.src = version ? `@APP@.js?v=${encodeURIComponent(version)}` : "@APP@.js";
   script.onerror = () => status("The game's web build is missing.", true);
   document.body.append(script);
 }
@@ -200,7 +209,14 @@ start().catch((e) => status(e.message, true));
 </script>
 <script type="module">
 import { startInputHints } from "./input-hints.js";
-startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin));
+// The game's own control lines, when its game.toml names them.
+const parts = location.pathname.split("/").filter(Boolean);
+if (parts.length && parts[parts.length - 1].includes(".")) parts.pop();
+const id = decodeURIComponent(parts[parts.length - 1] || "");
+const games = await fetch("../games.json").then(r => r.json()).catch(() => []);
+const custom = games.find?.(g => g.id === id)?.inputHints || null;
+startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin),
+                undefined, custom);
 </script>
 </body>
 </html>

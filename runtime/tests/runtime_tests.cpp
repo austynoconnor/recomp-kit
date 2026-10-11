@@ -973,12 +973,22 @@ static void test_resumable_stacks() {
 
 static void test_ftol2_intrinsic() {
     section("_ftol2 intrinsic");
-    struct Case { double v; int64_t want; bool invalid; };
+    struct Case {
+        double v;
+        int64_t want;
+        bool invalid;
+    };
     const Case cases[] = {
-        {2.7, 2, false}, {-2.7, -2, false}, {2.5, 2, false}, {-0.5, 0, false},
-        {0.0, 0, false}, {123456789012.9, 123456789012LL, false},
-        {-4294967296.5, -4294967296LL, false}, {1e30, INT64_MIN, true},
-        {-1e30, INT64_MIN, true}, {NAN, INT64_MIN, true},
+        {2.7, 2, false},
+        {-2.7, -2, false},
+        {2.5, 2, false},
+        {-0.5, 0, false},
+        {0.0, 0, false},
+        {123456789012.9, 123456789012LL, false},
+        {-4294967296.5, -4294967296LL, false},
+        {1e30, INT64_MIN, true},
+        {-1e30, INT64_MIN, true},
+        {NAN, INT64_MIN, true},
     };
     for (const Case &k : cases) {
         X86 c{};
@@ -989,8 +999,8 @@ static void test_ftol2_intrinsic() {
         recomp_ftol2_value(&c);
         const int64_t got = (int64_t)(((uint64_t)c.r[R_EDX] << 32) | c.r[R_EAX]);
         check(got == k.want && ST(&c, 0) == 1.0 && ((c.fpu_sw & 1u) != 0) == k.invalid,
-              "_ftol2(%g) truncates to %lld (got %lld), pops once", k.v,
-              (long long)k.want, (long long)got);
+              "_ftol2(%g) truncates to %lld (got %lld), pops once", k.v, (long long)k.want,
+              (long long)got);
     }
     X86 c{};
     c.fpu_cw = 0x037f;

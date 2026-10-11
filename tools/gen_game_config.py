@@ -57,6 +57,11 @@ def render_header(cfg):
     controls = cfg["controls"]
     lines.append("#define RECOMP_CONTROLS_DEFAULT_LAYOUT %s" % c_string(controls["default_layout"]))
     lines.append("#define RECOMP_CONTROLS_PAD %d" % ("off", "mapped", "native").index(controls["pad"]))
+    # 1: while the pointer is captured the host reports raw mouse motion
+    # (SDL relative mode; pointer lock in a browser) instead of a position.
+    lines.append("#define RECOMP_CONTROLS_RELATIVE_MOUSE %d" % int(controls["mouse"] == "relative"))
+    # 1: the game's own cursor follows the host's copy of it (host/input_gate.cpp).
+    lines.append("#define RECOMP_CONTROLS_CURSOR_TRACKED %d" % int(controls.get("cursor") == "tracked"))
     lines.append("#define RECOMP_CONTROLS_MAPPED %s" % c_string(
         ";".join("%s=%s" % (k, controls["mapped"][k]) for k in sorted(controls["mapped"]))))
     native = controls["native"]
@@ -64,8 +69,13 @@ def render_header(cfg):
     lines.append("#define RECOMP_CONTROLS_DINPUT %d" % int(native["dinput"]))
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXES %s" % c_string(",".join(native["axes"])))
     lines.append("#define RECOMP_CONTROLS_NATIVE_BUTTONS %s" % c_string(",".join(native["buttons"])))
+    lines.append("#define RECOMP_CONTROLS_NATIVE_KEYS %s" % c_string(
+        ";".join("%s=%s" % (k, v) for k, v in sorted(native["keys"].items()))))
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (%d)" % native["axis_range"][0])
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXIS_MAX (%d)" % native["axis_range"][1])
+    lines.append("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK %d" % int(native["dpad"] == "stick"))
+    lines.append("#define RECOMP_CONTROLS_KEY_ALIASES %s" % c_string(
+        ",".join("%s=%s" % (k, v) for k, v in sorted(controls["key_aliases"].items()))))
     lines.append("#define RECOMP_GUEST_SIZE %s" % c_hex(game["guest_size"]))
     lines.append("#define RECOMP_RESUMABLE_STACKS %d" %
                  int(cfg["translate"].get("resumable_stacks", False)))

@@ -712,6 +712,7 @@ class WebGpuRenderer final : public D9Backend {
         if (rs[RS_FOGENABLE]) {
             uint32_t table = rs[RS_FOGTABLEMODE];
             pparams.fog_mode = table == 3 ? 2 : table == 1 ? 3 : table == 2 ? 4 : 1;
+            pparams.fog_depth = (int32_t)d.fog_depth;
             uint32_t fc = rs[RS_FOGCOLOR];
             pparams.fog_color[0] = ((fc >> 16) & 255) / 255.0f;
             pparams.fog_color[1] = ((fc >> 8) & 255) / 255.0f;
@@ -1698,9 +1699,9 @@ class WebGpuRenderer final : public D9Backend {
     WGPURenderPipeline pipeline(const PipeState &p, uint64_t vkey) {
         const uint32_t *rs = p.rs;
         uint64_t key = mix(mix((uint64_t)(uintptr_t)p.vmod, (uint64_t)(uintptr_t)p.fmod), vkey);
-        key = mix(key, (uint64_t)p.topology | (uint64_t)p.cull << 8 |
-                           (uint64_t)pass_samples_ << 16 | (uint64_t)pass_color_count_ << 24 |
-                           (uint64_t)p.strip_index << 32);
+        key =
+            mix(key, (uint64_t)p.topology | (uint64_t)p.cull << 8 | (uint64_t)pass_samples_ << 16 |
+                         (uint64_t)pass_color_count_ << 24 | (uint64_t)p.strip_index << 32);
         key = mix(key, (uint64_t)(uintptr_t)p.layout->pipeline);
         for (int i = 0; i < 4; ++i)
             key = mix(key, (uint64_t)pass_formats_[i] + 1000 * (uint64_t)i);

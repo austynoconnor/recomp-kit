@@ -309,7 +309,19 @@ class LoadTests(unittest.TestCase):
             cfg = game_config.load(game)
             self.assertEqual(cfg["controls"]["default_layout"], "keys")
             self.assertEqual(cfg["controls"]["pad"], "mapped")
+            self.assertEqual(cfg["controls"]["mouse"], "absolute")
             self.assertEqual(cfg["controls"]["mapped"], game_config.MAPPED_DEFAULTS)
+            (game / "game.toml").write_text(base + '\n[controls]\nmouse = "relative"\n')
+            self.assertEqual(game_config.load(game)["controls"]["mouse"], "relative")
+            (game / "game.toml").write_text(base + '\n[controls]\nmouse = "sideways"\n')
+            with self.assertRaises(ValueError):
+                game_config.load(game)
+            self.assertEqual(cfg["controls"]["cursor"], "free")
+            (game / "game.toml").write_text(base + '\n[controls]\ncursor = "tracked"\n')
+            self.assertEqual(game_config.load(game)["controls"]["cursor"], "tracked")
+            (game / "game.toml").write_text(base + '\n[controls]\ncursor = "glued"\n')
+            with self.assertRaises(ValueError):
+                game_config.load(game)
 
             # The old [touch] keypad knob maps onto default_layout when the
             # game names no default_layout of its own.
@@ -337,6 +349,19 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 game_config.load(game)
 
+            for bad in ('keys = "W=Up"', 'keys = { W = "Nope" }', 'keys = { Nope = "Up" }',
+                        'keys = { W = 5 }', 'keys = { LShift = "Up" }', 'keys = { W = "Escape" }'):
+                (game / "game.toml").write_text(base + '\n[controls]\n[controls.native]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+            (game / "game.toml").write_text(base)
+            self.assertIn('#define RECOMP_CONTROLS_NATIVE_KEYS ""',
+                          gen_game_config.render_header(game_config.load(game)))
+            (game / "game.toml").write_text(
+                base + '\n[controls]\n[controls.native]\nkeys = { W = "Up", "1" = "E", Space = "Z" }\n')
+            self.assertIn('#define RECOMP_CONTROLS_NATIVE_KEYS "1=E;Space=Z;W=Up"',
+                          gen_game_config.render_header(game_config.load(game)))
+
             # The header.
             (game / "game.toml").write_text(
                 base + '\n[controls.mapped]\nleft_stick = "horizontal_arrows"\n')
@@ -357,6 +382,29 @@ class LoadTests(unittest.TestCase):
             for bad in ("[127, -128]", "[0]", '["a", "b"]', "[true, 2]"):
                 (game / "game.toml").write_text(
                     base + '\n[controls]\n[controls.native]\naxis_range = %s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+
+            # Half axes, d-pad on the stick, keyboard aliases.
+            (game / "game.toml").write_text(
+                base + '\n[controls]\nkey_aliases = { Up = "W", Escape = "Return" }\n'
+                '[controls.native]\naxes = ["x", "y", "z", "rz", "+y", "-y"]\ndpad = "stick"\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CONTROLS_KEY_ALIASES "Escape=Return,Up=W"', header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK 1", header)
+            self.assertIn('"x,y,z,rz,+y,-y"', header)
+            (game / "game.toml").write_text(base)
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CONTROLS_KEY_ALIASES ""', header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK 0", header)
+            for bad in ('key_aliases = { Up = "Nope" }', 'key_aliases = { W = "W" }',
+                        'key_aliases = ["Up"]'):
+                (game / "game.toml").write_text(base + '\n[controls]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+            for bad in ('dpad = "both"', 'axes = ["x", "y", "z", "rz", "++y", "-y"]',
+                        'axes = ["x", "y", "z", "rz", "w", "-y"]'):
+                (game / "game.toml").write_text(base + '\n[controls]\n[controls.native]\n%s\n' % bad)
                 with self.assertRaises(ValueError):
                     game_config.load(game)
 

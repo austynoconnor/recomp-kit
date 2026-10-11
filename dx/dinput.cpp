@@ -18,6 +18,7 @@
 
 #include <string.h>
 #include <iterator>
+#include <string>
 #include <algorithm>
 #include "../platform/os.h"
 
@@ -169,11 +170,78 @@ struct HostInput {
 };
 HostInput g_host_in;
 
+// DIK_ scan codes by the key names game.toml uses.
+const struct {
+    const char *name;
+    uint8_t dik;
+} kDikNames[] = {
+    {"A", 0x1E},         {"B", 0x30},           {"C", 0x2E},
+    {"D", 0x20},         {"E", 0x12},           {"F", 0x21},
+    {"G", 0x22},         {"H", 0x23},           {"I", 0x17},
+    {"J", 0x24},         {"K", 0x25},           {"L", 0x26},
+    {"M", 0x32},         {"N", 0x31},           {"O", 0x18},
+    {"P", 0x19},         {"Q", 0x10},           {"R", 0x13},
+    {"S", 0x1F},         {"T", 0x14},           {"U", 0x16},
+    {"V", 0x2F},         {"W", 0x11},           {"X", 0x2D},
+    {"Y", 0x15},         {"Z", 0x2C},           {"1", 0x02},
+    {"2", 0x03},         {"3", 0x04},           {"4", 0x05},
+    {"5", 0x06},         {"6", 0x07},           {"7", 0x08},
+    {"8", 0x09},         {"9", 0x0A},           {"0", 0x0B},
+    {"Return", 0x1C},    {"Escape", 0x01},      {"Backspace", 0x0E},
+    {"Tab", 0x0F},       {"Space", 0x39},       {"Minus", 0x0C},
+    {"Equals", 0x0D},    {"LeftBracket", 0x1A}, {"RightBracket", 0x1B},
+    {"Backslash", 0x2B}, {"Semicolon", 0x27},   {"Apostrophe", 0x28},
+    {"Grave", 0x29},     {"Comma", 0x33},       {"Period", 0x34},
+    {"Slash", 0x35},     {"F1", 0x3B},          {"F2", 0x3C},
+    {"F3", 0x3D},        {"F4", 0x3E},          {"F5", 0x3F},
+    {"F6", 0x40},        {"F7", 0x41},          {"F8", 0x42},
+    {"F9", 0x43},        {"F10", 0x44},         {"F11", 0x57},
+    {"F12", 0x58},       {"Insert", 0xD2},      {"Home", 0xC7},
+    {"PageUp", 0xC9},    {"Delete", 0xD3},      {"End", 0xCF},
+    {"PageDown", 0xD1},  {"Right", 0xCD},       {"Left", 0xCB},
+    {"Down", 0xD0},      {"Up", 0xC8},          {"LCtrl", 0x1D},
+    {"LShift", 0x2A},    {"LAlt", 0x38},
+};
+int dik_of(const std::string &name) {
+    for (const auto &k : kDikNames)
+        if (name == k.name)
+            return k.dik;
+    return -1;
+}
+
+// [controls] key_aliases: a held alias also holds its target. Aliases read
+// the keys actually held, so they do not chain (Escape=Return beside
+// Return=Space presses Return only).
+void apply_key_aliases(uint8_t keys[256]) {
+    const char *s = host_key_aliases();
+    if (!s || !*s)
+        return;
+    uint8_t held[256];
+    memcpy(held, keys, sizeof held);
+    std::string item;
+    for (const char *p = s;; ++p) {
+        if (*p && *p != ',') {
+            item += *p;
+            continue;
+        }
+        size_t eq = item.find('=');
+        if (eq != std::string::npos) {
+            int from = dik_of(item.substr(0, eq)), to = dik_of(item.substr(eq + 1));
+            if (from >= 0 && to >= 0 && (held[from] & 0x80u))
+                keys[to] |= 0x80u;
+        }
+        item.clear();
+        if (!*p)
+            break;
+    }
+}
+
 void refresh_host_input() {
     HostInputState in;
     memset(&in, 0, sizeof in);
     host_input_state(&in);
     memcpy(g_host_in.keys, in.keys, sizeof g_host_in.keys);
+    apply_key_aliases(g_host_in.keys);
     memcpy(g_host_in.buttons, in.mouse_buttons, sizeof g_host_in.buttons);
     g_host_in.acc_dx += in.mouse_dx;
     g_host_in.acc_dy += in.mouse_dy;

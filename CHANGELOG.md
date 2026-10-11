@@ -217,6 +217,156 @@
     changes, from Windows symlink privileges and no native compiler). No
     native build or native tests were run: this computer has no native
     C/C++ toolchain.
+- 2026-10-10 17:25 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8` (from `giggity-mgs2` `09c64c1` and `5dda06e`):
+  - **Fog measured the wrong distance.** Table fog used the vertex's
+    clip-space z, so a game that sets FOGSTART 0 / FOGEND 1 (fog by depth
+    buffer value, as MGS2 does) had every pixel fully fogged: a flat
+    fog-coloured screen. Table fog now uses what Direct3D uses: the depth
+    buffer's z for a game's own vertex shaders or a flat projection, and eye
+    distance (clip w) for perspective fixed-function draws. New
+    `HostD9Draw::fog_depth` and `D9PSParams::fog_depth` (the old padding)
+    carry the choice to the WebGPU, Vulkan and Metal shaders.
+  - **`[controls.native] keys`.** A table such as `keys = { W = "Up",
+    A = "Left" }` changes which key the game sees for each physical key,
+    before the game reads it (host/controls/key_remap.*). Unlike
+    `key_aliases` it replaces the key, for games that already use the
+    physical key for something else. Two physical keys on one game key are
+    reference-counted; held keys are released when the window loses focus.
+    Modifiers and Escape cannot be remapped. Header macro
+    `RECOMP_CONTROLS_NATIVE_KEYS`; tests in controls_tests and
+    test_game_config.
+  - **D3D9 frame trace (debug aid).** `RECOMP_D3D9_TRACE_FRAME`,
+    `RECOMP_D3D9_TRACE_FRAMES` and `RECOMP_D3D9_TRACE_FILE` log every clear,
+    copy, draw and present of chosen frames (targets, shaders, blend, fog and
+    texture-stage states). Off unless set.
+
+- 2026-10-10 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: browser lag and audio. Measured in a visible Chrome window
+  (144 Hz display) on Crazy Taxi.
+  - The game stalled whenever the page's main thread was busy:
+    `WebGpuDevice::now_seconds()` proxied to the main thread on every
+    Present just to read the clock. `emscripten_get_now()` is
+    `performance.timeOrigin + performance.now()`, the same timeline on every
+    thread, so it is now read locally. With the page thread 40% busy
+    (60 ms of every 150 ms), the game went from 30 fps to 44-48 fps.
+    Unloaded it stays at 50 fps, the game's own fixed step.
+  - Audio in the browser plays through an AudioWorklet
+    (`host/audio/web_sink.cpp`), not SDL's ScriptProcessorNode. That node
+    rendered the mix on the main thread with no backlog, so every hitch of
+    that thread was a gap. The worklet copies from a ring buffer in wasm
+    memory, and a worker of the sink's own renders 4096 frames ahead
+    (`RECOMP_AUDIO_AHEAD`). Under the same load, SDL's path had 375 of
+    1408 pulls late (gaps up to 113 ms); the worklet had 0 underruns in
+    22493 quanta. `RECOMP_AUDIO_SINK=sdl` brings back the old path. A report
+    line every 30 s: quanta, underruns, render time, queued range.
+  - The pumped Direct3D 9 queue may hold 2 presented frames, not 1
+    (`RECOMP_D3D9_FRAMES_AHEAD`, 1-4), so one late main-thread turn no
+    longer holds the game. With `RECOMP_D3D9_STATS`, a `d3d9 queue:` line
+    every 250 frames gives the game thread's waits for the main thread.
+  - `web/player/runtime.html` revalidates the loader script and loads it as
+    `<app>.js?v=<Last-Modified>`. A browser's HTTP cache could otherwise
+    pair an old loader with a new program after an update, and the game
+    failed to start with "function import requires a callable".
+  - Still inherent: 50 fps content on a 144 Hz display shows each frame for
+    2 or 3 refreshes (the overlay's RPT 65%).
+
+- 2026-10-10 16:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: audio follow-up from `giggity-swbf2` (b164cd9, 36d8de9).
+  The stalled-ring silence from d333bcc kept a running total of unplayed
+  frames, and a write made while the first lap was still counted as fresh
+  was lost against its one-lap cap, so a game writing half a ring every
+  half lap could go quiet for part of each half lap. `host/audio/mixer.cpp`
+  now tracks how far the writes reach by position (at most one lap ahead
+  of the player). `RECOMP_AUDIO_STALE_SILENCE=0` keeps the old repeat, for
+  comparison. New case in `host/tests/host_tests.cpp` "ring and clock":
+  half-ring writes every half lap never go quiet, checked in 20 ms steps.
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
+- 2026-10-10 16:07 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: three more web fixes from `giggity-swbf2` (218f53c,
+  7a9aa21, 033d67a), found in a visible Chrome test of Star Wars
+  Battlefront II. They touch the presenter, the canvas and the mixer's ring
+  path, not the Crazy Taxi agent's WebGPU clock or AudioWorklet sink.
+  - **250 ms page freezes** (`host/present_thread.cpp`): `acquire()` waited
+    up to 250 ms for a free target slot. In a browser the waiting thread is
+    the page thread, which is also what frees the slots (GPU completions and
+    presents arrive only when it returns to the event loop), so the wait
+    always ran out: the page froze, audio callbacks included, then the frame
+    was dropped anyway ("target pool stalled for 250ms"). On the page thread
+    it now drops the frame at once. In Battlefront II this removed every
+    250-310 ms hitch around level load and the late audio callbacks that
+    went with them.
+  - **Sharper picture on scaled displays** (`host/sdl/main.cpp`): the web
+    canvas was always sized in CSS pixels, so at 125% or 150% Windows
+    scaling the browser stretched the finished frame again and blurred it.
+    The canvas now takes the display's pixel density when the result fits
+    in 2560x1440 pixels; bigger high-density displays keep CSS pixels. The
+    log says which (`web canvas: ...`).
+  - **Stalled streaming audio** (`host/audio/mixer.cpp`): a DirectSound
+    ring the game stops feeding now goes quiet as soon as the frames it
+    wrote have played (with a one-block fade), instead of after a whole
+    extra lap. New case in `host/tests/host_tests.cpp` "ring and clock".
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
+- 2026-10-10 14:31 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: from `giggity-swbf2` (2335797, f077fb3), for every
+  game's web build. The Crazy Taxi agent owns the shared lag and audio
+  work on this branch; these are the Battlefront II pieces that help any
+  game, picked so the two do not clash.
+  - **Relative mouse** (`[controls] mouse = "relative"`, default
+    `"absolute"`): while the pointer is captured the guest gets raw motion
+    (SDL relative mode; pointer lock in a browser) for games that aim with
+    the mouse.
+  - **Tracked cursor** (`[controls] cursor = "tracked"`, default `"free"`):
+    for games that draw their own cursor from relative motion, the host
+    keeps a copy and moves it to the real pointer, so the game's cursor sits
+    under the mouse after leaving and re-entering a browser page, and the
+    system cursor stays hidden over the canvas (no second cursor).
+  - **Stall logger** (`platform/stall.*`): any frame over `RECOMP_STALL_MS`
+    (default 100) prints a `[stall]` line splitting the time into file
+    reads, render-queue/WebGPU-proxy waits and the rest; the performance
+    overlay shows `STALL n worst-ms CAUSE`.
+  - **Audio** (`host/audio/mixer.cpp`): a DirectSound streaming buffer the
+    game stops refilling goes quiet after one more lap instead of looping.
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
+- 2026-10-09 15:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: keyboard aliases, the d-pad as the left stick, and
+  per-game control hints in the browser.
+  - `[controls] key_aliases = { Up = "W", ... }` in game.toml: while the
+    first key is held the DirectInput keyboard also reports the second, so a
+    game that takes one key per action plays on WASD and the arrows alike
+    (or Escape as its Start key). Aliases read the keys actually held, so
+    they do not chain. `tools/game_config.py` validates the key names (the
+    `[controls.mapped]` list), `tools/gen_game_config.py` emits
+    `RECOMP_CONTROLS_KEY_ALIASES`, new host call `host_key_aliases`
+    (`dx/host_api.h`, weak default ""), applied in `dx/dinput.cpp`
+    `refresh_host_input` with a DIK_ table for those names.
+  - `[controls.native] dpad = "stick"` (default "hat"): the d-pad also moves
+    the left stick's lX/lY (the further of the two wins), for games that
+    read menus and steering only from axes. `RECOMP_CONTROLS_NATIVE_DPAD_STICK`,
+    `host_pad_native_dpad_stick`, `dx/dinput_joystick.cpp` `fill_state`.
+    The `axes` validation now also rejects malformed half-axis names.
+  - `[launcher] input_hints = { keyboard = "...", controller = "..." }`:
+    the game's own control lines under the browser player; the controller
+    line takes `{name}`, `{confirm}` and `{back}` from the pad in use.
+    `tools/web_launcher.py` puts them in games.json (`inputHints`),
+    `web/player/runtime.html` passes them to `input-hints.js` (`hintText`).
+  - Tests: dx_tests keyboard (aliases, no chaining), pad_tests "joystick
+    d-pad on the stick", test_game_config (aliases, dpad, bad names),
+    test_web_launcher (inputHints), new node suite
+    `web/launcher/tests/input-hints.test.mjs`.
+
+- 2026-10-09 10:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: formatting only. `host/gpu/d3d9_host.cpp`,
+  `host/gpu/webgpu/d3d9_webgpu.cpp` and `runtime/tests/runtime_tests.cpp`
+  were left unformatted on this branch, so `tools/format.py` failed; ran it
+  with `--write`. No code changes.
+
 - 2026-10-09 10:00 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: generic web fixes from `giggity-mgs2` (d034c3c), for
   every game's web build. Game pads: `web_main` (`host/sdl/main.cpp`)

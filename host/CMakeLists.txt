@@ -77,6 +77,7 @@ set_tests_properties(keypad_tests PROPERTIES LABELS nogame)
 add_executable(controls_tests ${HOST}/controls/json.cpp ${HOST}/controls/layout.cpp
                               ${HOST}/controls/builtin_layouts.cpp ${HOST}/controls/layout_store.cpp
                               ${HOST}/controls/router.cpp ${HOST}/controls/vpad.cpp
+                              ${HOST}/controls/key_remap.cpp
                               ${HOST}/controls/binding.cpp ${HOST}/controls/overlay_view.cpp
                               ${HOST}/controls/raster.cpp ${HOST}/controls/overlay_paint.cpp
                               ${HOST}/controls/pad_art.cpp
@@ -154,13 +155,15 @@ function(pop_host target)
 endfunction()
 
 # The mixer, its output device and the synth: portable, over SDL audio.
-set(POP_AUDIO_SOURCES ${HOST}/audio/mixer.cpp ${HOST}/audio/sdl_sink.cpp ${HOST}/audio/midi_synth.cpp
+set(POP_AUDIO_SOURCES ${HOST}/audio/mixer.cpp ${HOST}/audio/sdl_sink.cpp ${HOST}/audio/web_sink.cpp
+                      ${HOST}/audio/midi_synth.cpp
                       ${HOST}/audio_math.cpp ${HOST}/audio_capture.cpp)
 set(POP_CORE_LIBS recomp_platform recomp_runtime recomp_snapshot recomp_dx recomp_mods lua host_common gpu_backend)
 # The on-screen controls the presenter draws (controls_host.cpp is the app's own).
 set(POP_CONTROLS_SOURCES ${HOST}/controls/json.cpp ${HOST}/controls/layout.cpp
                          ${HOST}/controls/builtin_layouts.cpp ${HOST}/controls/layout_store.cpp
                          ${HOST}/controls/router.cpp ${HOST}/controls/vpad.cpp
+                         ${HOST}/controls/key_remap.cpp
                          ${HOST}/controls/binding.cpp ${HOST}/controls/overlay_view.cpp
                          ${HOST}/controls/overlay.cpp ${HOST}/controls/raster.cpp
                           ${HOST}/controls/overlay_paint.cpp ${HOST}/controls/pad_art.cpp

@@ -22,6 +22,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include "../platform/os.h"
+#include "../platform/stall.h"
 
 #include <setjmp.h>
 #include <stdio.h>
@@ -811,6 +812,7 @@ static bool file_promote_for_write(HObj *o) {
 }
 
 void k_CreateFileA(X86 *c) {
+    RecompStallScope stall(RECOMP_STALL_FILE);
     create_file_named(c, gm_str(arg(c, 0)));
 }
 
@@ -944,7 +946,11 @@ void k_ReadFile(X86 *c) {
     static const bool paced = RECOMP_DISK_KB_PER_S || RECOMP_DISK_SEEK_US ||
                               recomp_env("DISK_MB_PER_S") || recomp_env("DISK_SEEK_MS");
     int64_t start = paced ? os_fd_seek(o->fd, 0, OS_SEEK_CUR) : -1;
-    int64_t n = file_read(o, g_mem + buf, want);
+    int64_t n;
+    {
+        RecompStallScope stall(RECOMP_STALL_FILE);
+        n = file_read(o, g_mem + buf, want);
+    }
     if (start >= 0)
         disk_pace(o, start, n);
     if (recomp_env("TRACE_FILES"))
