@@ -894,8 +894,10 @@ static int64_t file_read(HObj *o, uint8_t *dst, uint32_t want) {
 // see loading frames as long as they were on that hardware; some scripts
 // time their start-up by those frames (Bully: SE's mission table).  The
 // sleep goes through the scheduler, so other guest threads keep running.
+// Time the host read itself took (a browser fetching the piece) counts toward
+// the disk's time, so a slow network is not paced on top of it.
 // RECOMP_DISK_MB_PER_S and RECOMP_DISK_SEEK_MS override the game's values.
-static void disk_pace(HObj *o, int64_t pos, int64_t n) {
+static void disk_pace(HObj *o, int64_t pos, int64_t n, uint64_t spent_ns) {
     static const double rate = [] {
         const char *e = recomp_env("DISK_MB_PER_S");
         return e ? atof(e) * 1000.0 : (double)RECOMP_DISK_KB_PER_S;
@@ -913,6 +915,7 @@ static void disk_pace(HObj *o, int64_t pos, int64_t n) {
         debt_us += seek_us; // counted again below for the trace
     if (rate > 0 && n > 0)
         debt_us += (double)n * 1000.0 / rate; // KB/s -> us per byte * 1e6 / 1e3
+    debt_us = std::max(0.0, debt_us - (double)spent_ns / 1000.0);
     bool seek = o != last_obj || pos != last_end;
     last_obj = o;
     last_end = pos + (n > 0 ? n : 0);
@@ -961,12 +964,13 @@ void k_ReadFile(X86 *c) {
                               recomp_env("DISK_MB_PER_S") || recomp_env("DISK_SEEK_MS");
     int64_t start = paced ? os_fd_seek(o->fd, 0, OS_SEEK_CUR) : -1;
     int64_t n;
+    const uint64_t read_from = start >= 0 ? os_monotonic_ns() : 0;
     {
         RecompStallScope stall(RECOMP_STALL_FILE);
         n = file_read(o, g_mem + buf, want);
     }
     if (start >= 0)
-        disk_pace(o, start, n);
+        disk_pace(o, start, n, os_monotonic_ns() - read_from);
     if (recomp_env("TRACE_FILES"))
         LOGW("file: read handle=%08x want=%u got=%lld", arg(c, 0), want, (long long)n);
     if (n < 0) {
