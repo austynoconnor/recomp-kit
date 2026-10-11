@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 2026-10-11 15:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: depth bias on triangle strips (WebGPU).
+  - Coplanar surfaces flickered in the browser (Crazy Taxi buildings,
+    shadows, adverts, road markings). `host/gpu/webgpu/d3d9_webgpu.cpp`
+    applied D3DRS_DEPTHBIAS / SLOPESCALEDEPTHBIAS only to non-strip
+    topologies, so triangle strips got none. A frame trace of Crazy Taxi
+    showed 2128 of 2180 draws are strips, 179 of them with a ZBIAS (1-16,
+    from its ZBiasConfig.txt), all drawn unbiased. Bias now applies to
+    triangle lists and strips. Lines and points, where WebGPU requires it to
+    be 0, no longer get it either (previously line and point lists did).
+  - The D3D9 frame trace (`RECOMP_D3D9_TRACE_FRAME`) also prints each draw's
+    `zbias` and `slope`.
+
 - 2026-10-10 17:25 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8` (from `giggity-mgs2` `09c64c1` and `5dda06e`):
   - **Fog measured the wrong distance.** Table fog used the vertex's
