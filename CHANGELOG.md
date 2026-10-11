@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 2026-10-11 15:20 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-mgs2`:
+  - **A modifier can be remapped by `[controls.native] keys`.** `LCtrl = "Z"`
+    now works: the physical Left Ctrl (or Shift, Alt) reaches the game as the
+    named key, and the game no longer sees that modifier held (its side bit
+    is removed from every key's modifier state and from focus changes). The
+    game's key still may not be a modifier, and Escape stays itself.
+    `tools/game_config.py` and its tests follow. For MGS2, whose player
+    wants Ctrl to crouch.
+  - Merged `giggity-d3d8` `32fc22c` (depth bias on WebGPU triangle strips)
+    and `7763db2` (the cherry-picked fog fix and keys option); formatted the
+    D3D9 trace and queue-stats lines.
+
 - 2026-10-10 00:30 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-mgs2`:
   - **Fog measured the wrong distance (the "brown/green wash").** Table fog
@@ -286,6 +299,43 @@
     version-resource checks for an image without one, and names ordinal
     imports "ordN" as the loader does even where pefile knows the name.
   - Merge note: `giggity-d3d8` also adds `wsprintfA`; keep one entry.
+- 2026-10-11 15:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: depth bias on triangle strips (WebGPU).
+  - Coplanar surfaces flickered in the browser (Crazy Taxi buildings,
+    shadows, adverts, road markings). `host/gpu/webgpu/d3d9_webgpu.cpp`
+    applied D3DRS_DEPTHBIAS / SLOPESCALEDEPTHBIAS only to non-strip
+    topologies, so triangle strips got none. A frame trace of Crazy Taxi
+    showed 2128 of 2180 draws are strips, 179 of them with a ZBIAS (1-16,
+    from its ZBiasConfig.txt), all drawn unbiased. Bias now applies to
+    triangle lists and strips. Lines and points, where WebGPU requires it to
+    be 0, no longer get it either (previously line and point lists did).
+  - The D3D9 frame trace (`RECOMP_D3D9_TRACE_FRAME`) also prints each draw's
+    `zbias` and `slope`.
+
+- 2026-10-10 17:25 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8` (from `giggity-mgs2` `09c64c1` and `5dda06e`):
+  - **Fog measured the wrong distance.** Table fog used the vertex's
+    clip-space z, so a game that sets FOGSTART 0 / FOGEND 1 (fog by depth
+    buffer value, as MGS2 does) had every pixel fully fogged: a flat
+    fog-coloured screen. Table fog now uses what Direct3D uses: the depth
+    buffer's z for a game's own vertex shaders or a flat projection, and eye
+    distance (clip w) for perspective fixed-function draws. New
+    `HostD9Draw::fog_depth` and `D9PSParams::fog_depth` (the old padding)
+    carry the choice to the WebGPU, Vulkan and Metal shaders.
+  - **`[controls.native] keys`.** A table such as `keys = { W = "Up",
+    A = "Left" }` changes which key the game sees for each physical key,
+    before the game reads it (host/controls/key_remap.*). Unlike
+    `key_aliases` it replaces the key, for games that already use the
+    physical key for something else. Two physical keys on one game key are
+    reference-counted; held keys are released when the window loses focus.
+    Modifiers and Escape cannot be remapped. Header macro
+    `RECOMP_CONTROLS_NATIVE_KEYS`; tests in controls_tests and
+    test_game_config.
+  - **D3D9 frame trace (debug aid).** `RECOMP_D3D9_TRACE_FRAME`,
+    `RECOMP_D3D9_TRACE_FRAMES` and `RECOMP_D3D9_TRACE_FILE` log every clear,
+    copy, draw and present of chosen frames (targets, shaders, blend, fog and
+    texture-stage states). Off unless set.
+
 - 2026-10-10 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: browser lag and audio. Measured in a visible Chrome window
   (144 Hz display) on Crazy Taxi.

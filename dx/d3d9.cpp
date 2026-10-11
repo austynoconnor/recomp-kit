@@ -1750,7 +1750,8 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
             "d3d9trace f%u draw p%u n%u rt %s z %u vp %d,%d %dx%d | vs %08x ps %08x fvf %x %s | "
             "blend %u %u/%u op %u sep %u %u/%u | atest %u ref %u fn %u | z %u zw %u zfn %u | "
             "cw %x cull %u fog %u | tex %s %s %s | ts0 c%u(%x,%x) a%u(%x,%x) ts1 c%u(%x,%x) "
-            "a%u ts2 c%u tf %x | fog t%u v%u c%08x %g..%g d%g fd%u p34 %g p44 %g\n",
+            "a%u ts2 c%u tf %x | fog t%u v%u c%08x %g..%g d%g fd%u p34 %g p44 %g | zbias %g "
+            "slope %g\n",
             g_presents9, d.primitive, d.primitive_count, tgt, dev->zbuffer_obj, d.viewport[0],
             d.viewport[1], d.viewport[2], d.viewport[3], (uint32_t)pl.vs_key, (uint32_t)pl.ps_key,
             pl.fvf, use == &d9_pipeline(dev->id) ? "shader" : "ffp", pl.rs[27], pl.rs[19],
@@ -1760,7 +1761,7 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
             pl.tss[1][1], pl.tss[1][2], pl.tss[1][3], pl.tss[1][4], pl.tss[2][1], pl.rs[60],
             pl.rs[35], pl.rs[140], pl.rs[34], fbits(pl.rs[36]), fbits(pl.rs[37]), fbits(pl.rs[38]),
             d.fog_depth, d9_pipeline(dev->id).transform[3][11],
-            d9_pipeline(dev->id).transform[3][15]);
+            d9_pipeline(dev->id).transform[3][15], fbits(pl.rs[195]), fbits(pl.rs[175]));
     }
     host_d9_draw(&d);
     bool color_write = !pl.rs_set[168] || (pl.rs[168] & 0xf) != 0;

@@ -1807,9 +1807,15 @@ class WebGpuRenderer final : public D9Backend {
             ds.stencilReadMask = rs[RS_STENCILMASK] & 0xff;
             ds.stencilWriteMask = rs[RS_STENCILWRITEMASK] & 0xff;
         }
+        // WebGPU allows depth bias on triangles only, strips included. Strips
+        // went without it, so a game that lifts coplanar decals, shadows and
+        // road markings off a surface with D3DRS_ZBIAS/DEPTHBIAS (Crazy Taxi
+        // draws much of its city as strips) flickered against it.
+        const bool triangles = p.topology == WGPUPrimitiveTopology_TriangleList ||
+                               p.topology == WGPUPrimitiveTopology_TriangleStrip;
         const bool strip = p.topology == WGPUPrimitiveTopology_TriangleStrip ||
                            p.topology == WGPUPrimitiveTopology_LineStrip;
-        if (!strip) {
+        if (triangles) {
             ds.depthBias = p.bias;
             ds.depthBiasSlopeScale = p.slope;
         }
