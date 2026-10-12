@@ -15,6 +15,7 @@ COOP/COEP headers (the game needs a secure, cross-origin isolated context);
 import argparse
 import functools
 import fnmatch
+import gzip
 import hashlib
 import http.server
 import json
@@ -44,6 +45,8 @@ def game_entry(cfg):
         "installNames": launcher["install_names"],
         "minFreeMb": launcher["min_free_mb"],
         "streamAssets": launcher.get("stream_assets", False),
+        "inputHints": {"bindings": cfg.get("controls", {}).get("mapped", {}),
+                       "actions": launcher.get("input_hints", {})},
     }
 
 
@@ -71,6 +74,15 @@ def copy_web_build(game_id, build, out):
     for f in build.iterdir():
         if f.is_file() and (f.name in ("index.html", "runtime.html") or f.suffix in WEB_BUILD_SUFFIXES):
             shutil.copy2(f, dest / f.name)
+            if f.suffix in (".wasm", ".data"):
+                # Precompress generated engine files using a bounded buffer.
+                # Original game archives remain raw for byte-range access.
+                packed = dest / (f.name + ".gz")
+                temporary = packed.with_suffix(packed.suffix + ".tmp")
+                with f.open("rb") as source, temporary.open("wb") as target:
+                    with gzip.GzipFile(filename="", mode="wb", fileobj=target, mtime=0) as encoder:
+                        shutil.copyfileobj(source, encoder, 1024 * 1024)
+                temporary.replace(packed)
 
 
 def hosted_assets(games, asset_dirs, out):
@@ -130,12 +142,40 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
         route = self.asset_route(path)
         if route in self.asset_files:
             return str(self.asset_files[route])
+        if getattr(self, "precompressed", None):
+            return str(self.precompressed)
         return super().translate_path(path)
+
+    def guess_type(self, path):
+        if getattr(self, "precompressed", None) and path == str(self.precompressed):
+            return self.original_content_type
+        return super().guess_type(path)
 
     def send_head(self):
         route = self.asset_route(self.path)
         self.byte_range = None
+        self.precompressed = None
+        self.vary_encoding = False
         if not route.startswith("/_game-assets/"):
+            original = Path(super().translate_path(self.path))
+            if original.suffix in (".wasm", ".data") and original.is_file():
+                self.vary_encoding = True
+                encodings = {}
+                for item in self.headers.get("Accept-Encoding", "").split(","):
+                    parts = item.strip().split(";")
+                    quality = 1.0
+                    for parameter in parts[1:]:
+                        if parameter.strip().startswith("q="):
+                            try:
+                                quality = float(parameter.strip()[2:])
+                            except ValueError:
+                                quality = 0.0
+                    encodings[parts[0].lower()] = quality
+                packed = Path(str(original) + ".gz")
+                if (encodings.get("gzip", encodings.get("*", 0)) > 0 and not self.headers.get("Range")
+                        and packed.is_file() and packed.stat().st_mtime >= original.stat().st_mtime):
+                    self.precompressed = packed
+                    self.original_content_type = super().guess_type(str(original))
             return super().send_head()
         path = self.asset_files.get(route)
         if path is None:
@@ -190,6 +230,10 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
             remaining -= len(chunk)
 
     def end_headers(self):
+        if getattr(self, "precompressed", None):
+            self.send_header("Content-Encoding", "gzip")
+        if getattr(self, "vary_encoding", False):
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")

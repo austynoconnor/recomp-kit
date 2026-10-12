@@ -103,6 +103,7 @@ async function start() {
   const game = games.find((g) => g.id === id);
   if (!game) throw new Error(`No game "${id}" in the launcher's games.json.`);
   document.title = game.title;
+  window.recompInputHints = game.inputHints;
 
   // Hosted games populate OPFS automatically; existing imported copies work too.
   const streamed = await prepareGame(game);
@@ -163,7 +164,8 @@ start().catch((e) => status(e.message, true));
 </script>
 <script type="module">
 import { startInputHints } from "./input-hints.js";
-startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin));
+startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin),
+  undefined, () => window.recompInputHints);
 </script>
 </body>
 </html>

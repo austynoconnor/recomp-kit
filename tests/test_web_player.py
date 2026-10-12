@@ -6,6 +6,7 @@ from functools import partial
 from http.server import ThreadingHTTPServer
 import importlib.util
 import hashlib
+import gzip
 import json
 import shutil
 from pathlib import Path
@@ -155,6 +156,20 @@ class WebPlayerTests(unittest.TestCase):
         page.wait_for_function("window.result !== undefined")
         self.assertEqual(page.evaluate("window.result"), "ready")
 
+    def test_browser_instantiates_compressed_wasm_stream(self):
+        root = Path(self.temp.name) / "stub"
+        binary = b"\0asm\x01\0\0\0"
+        (root / "Empty.wasm").write_bytes(binary)
+        (root / "Empty.wasm.gz").write_bytes(gzip.compress(binary))
+        page = self.page()
+        result = page.evaluate("""async () => {
+          const response = await fetch('Empty.wasm');
+          const encoding = response.headers.get('Content-Encoding');
+          const {instance} = await WebAssembly.instantiateStreaming(response);
+          return {encoding, exports:Object.keys(instance.exports)};
+        }""")
+        self.assertEqual(result, {"encoding": "gzip", "exports": []})
+
     def test_short_download_fails_and_can_resume(self):
         manifest = self.hosted_fixture(wrong_size=True)
         page = self.context.new_page()
@@ -195,13 +210,38 @@ class WebPlayerTests(unittest.TestCase):
         self.assertEqual(page.evaluate("window.result"), "ready")
         self.assertFalse(any(url.endswith("GAME.EXE") for url in requests))
 
+        # A stopped journal write must recover on the next launch. Profiles
+        # are separate and must survive a fresh executable download.
+        (Path(self.temp.name) / "stub/GAME.EXE").write_bytes(b"test executable")
+        page.evaluate("""async () => {
+            const r = await navigator.storage.getDirectory();
+            const game = await r.getDirectoryHandle('stub');
+            const d = await game.getDirectoryHandle('game');
+            const journal = await (await d.getFileHandle('.manifest.json')).createWritable();
+            await journal.write('{"files":'); await journal.close();
+            const profile = await game.getDirectoryHandle('profile', {create:true});
+            const save = await (await profile.getFileHandle('save.txt', {create:true})).createWritable();
+            await save.write('saved progress'); await save.close();
+        }""")
+        requests.clear()
+        page.reload()
+        page.wait_for_function("window.result !== undefined")
+        self.assertEqual(page.evaluate("window.result"), "ready")
+        self.assertTrue(any(url.endswith("GAME.EXE") for url in requests))
+        self.assertEqual(page.evaluate("""async () => {
+            const r = await navigator.storage.getDirectory();
+            const p = await (await r.getDirectoryHandle('stub')).getDirectoryHandle('profile');
+            return await (await (await p.getFileHandle('save.txt')).getFile()).text();
+        }"""), "saved progress")
+
     def test_hints_follow_active_device_and_controller_disconnect(self):
         root = Path(self.temp.name) / "stub"
         shutil.copy(ROOT / "web/player/input-hints.js", root / "input-hints.js")
         (root / "hints.html").write_text('''<p id="hints"></p><script type="module">
           import { startInputHints } from './input-hints.js';
           window.pads = [];
-          startInputHints(text => document.querySelector('#hints').textContent = text, () => window.pads);
+          startInputHints(text => document.querySelector('#hints').textContent = text,
+            () => window.pads, () => window.config);
         </script>''')
         page = self.context.new_page()
         page.goto(self.url + "hints.html")
@@ -217,8 +257,17 @@ class WebPlayerTests(unittest.TestCase):
         page.evaluate("window.pads[0].buttons[0].pressed=true")
         page.wait_for_function("document.querySelector('#hints').textContent.includes('PlayStation')")
         self.assertIn("✕: confirm", page.locator("#hints").inner_text())
+        page.evaluate("""window.config = {bindings:{triangle:'key:Return',start:'key:Escape',
+          r2:'key:Up',l2:'key:Down',left_stick:'horizontal_arrows',dpad:'arrows'},
+          actions:{confirm:'key:Return',back:'key:Escape',accelerate:'key:Up',brake:'key:Down',steer:'horizontal_arrows'}}""")
+        page.wait_for_function("document.querySelector('#hints').textContent.includes('△: confirm')")
+        text = page.locator("#hints").inner_text()
+        self.assertIn("Options: back/pause", text)
+        self.assertIn("R2: accelerate", text)
+        self.assertIn("Left stick: steer", text)
         page.evaluate("window.pads=[]")
         page.wait_for_function("document.querySelector('#hints').textContent.startsWith('Keyboard')")
+        self.assertIn("↑: accelerate", page.locator("#hints").inner_text())
 
 
 if __name__ == "__main__":

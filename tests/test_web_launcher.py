@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import hashlib
+import gzip
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -129,7 +130,42 @@ class WebLauncherTests(unittest.TestCase):
                 (build / name).write_text(name)
             web_launcher.copy_web_build("stub", build, tmp / "site")
             copied = sorted(f.name for f in (tmp / "site/stub").iterdir())
-            self.assertEqual(copied, ["App.data", "App.js", "App.wasm", "index.html", "runtime.html"])
+            self.assertEqual(copied, ["App.data", "App.data.gz", "App.js", "App.wasm", "App.wasm.gz", "index.html", "runtime.html"])
+            self.assertEqual(gzip.decompress((tmp / "site/stub/App.wasm.gz").read_bytes()), b"App.wasm")
+
+    def test_engine_compression_preserves_wasm_type_and_identity_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = b"wasm fixture" * 1000
+            original = root / "Engine.wasm"
+            original.write_bytes(raw)
+            packed = root / "Engine.wasm.gz"
+            packed.write_bytes(gzip.compress(raw))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), partial(web_launcher.IsolatedHandler, directory=tmp))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f"http://127.0.0.1:{server.server_port}/Engine.wasm"
+            try:
+                with urlopen(Request(url, headers={"Accept-Encoding": "gzip"})) as response:
+                    self.assertEqual(response.headers["Content-Type"], "application/wasm")
+                    self.assertEqual(response.headers["Content-Encoding"], "gzip")
+                    self.assertEqual(response.headers["Vary"], "Accept-Encoding")
+                    self.assertEqual(gzip.decompress(response.read()), raw)
+                for encoding in ("identity", "gzip;q=0, *;q=1"):
+                    with urlopen(Request(url, headers={"Accept-Encoding": encoding})) as response:
+                        self.assertIsNone(response.headers.get("Content-Encoding"))
+                        self.assertEqual(response.read(), raw)
+                # A newer raw build must not use a stale sidecar.
+                import os
+                os.utime(packed, (1, 1))
+                with urlopen(Request(url, headers={"Accept-Encoding": "gzip"})) as response:
+                    self.assertIsNone(response.headers.get("Content-Encoding"))
+                    self.assertEqual(response.read(), raw)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+
     def test_core_suite(self):
         node = shutil.which("node")
         if not node:

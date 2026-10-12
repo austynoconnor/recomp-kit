@@ -192,6 +192,10 @@ def load(game_dir):
     if not isinstance(launcher.setdefault("stream_assets", False), bool):
         raise ValueError("%s: [launcher] stream_assets must be a boolean" % source)
     min_free = launcher.setdefault("min_free_mb", 0)
+    hints = launcher.setdefault("input_hints", {})
+    if not isinstance(hints, dict) or not all(isinstance(k, str) and isinstance(v, str) and v
+                                             for k, v in hints.items()):
+        raise ValueError("%s: [launcher.input_hints] must map actions to binding strings" % source)
     if not isinstance(min_free, int) or min_free < 0:
         raise ValueError("%s: [launcher] min_free_mb must be a non-negative integer" % source)
     setup_dirs = cfg.setdefault("setup", {}).setdefault("required_dirs", [])

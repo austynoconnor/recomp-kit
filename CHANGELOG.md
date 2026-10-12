@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 2026-10-11 23:56 CDT — GPT-6 (Codex): Browser action hints now use each
+  game's configured input bindings instead of assuming bottom-face-button
+  confirmation. Added driving hints, controller-family labels, generic button
+  positions and more room beneath the canvas. Generate bounded-buffer gzip
+  sidecars for engine Wasm/data; serve accepted, fresh variants with the original
+  MIME type and Vary header while preserving raw game-asset byte ranges.
+  Recover truncated/malformed import journals, reuse valid entries and preserve
+  separate saved profiles. Added HTTP compression and real browser streaming
+  instantiation checks plus Node/browser OPFS recovery regressions. The NFS
+  integration pass has 58 relevant passing checks and ten direct Node tests.
+  Its isolated alias save/load succeeds, but memory and full gameplay release
+  validation remain incomplete. No native code changed in this pass.
+
 - 2026-10-08 11:32 CDT — GPT-6 (Codex): Corrected duplicated carriage
   returns introduced while recording the streaming release notes on Windows.
   No runtime behavior changed.

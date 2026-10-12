@@ -22,9 +22,9 @@
   p { color: #aeb7c7; margin: 0 0 24px; }
   #message { margin: 16px 0 0; font-size: 14px; }
   #input-hints { color: #aeb7c7; font-size: 13px; text-align: center; margin: 12px 0 0; max-width: 900px; }
-  iframe { display: block; border: 0; background: #000; width: min(1280px, calc(100vw - 48px), calc((100vh - 112px) * 16 / 9)); aspect-ratio: 16 / 9; }
+  iframe { display: block; border: 0; background: #000; width: min(1280px, calc(100vw - 48px), calc((100vh - 160px) * 16 / 9)); aspect-ratio: 16 / 9; }
   [hidden] { display: none !important; }
-  @media (max-width: 600px) { header { padding: 0 12px; gap: 12px; } main { padding: 12px; } .card { padding: 24px; } iframe { width: min(calc(100vw - 24px), calc((100vh - 88px) * 16 / 9)); } }
+  @media (max-width: 600px) { header { padding: 0 12px; gap: 12px; } main { padding: 12px; } .card { padding: 24px; } iframe { width: min(calc(100vw - 24px), calc((100vh - 184px) * 16 / 9)); } }
 </style>
 </head>
 <body>
@@ -32,8 +32,8 @@
 <main>
   <section class="card" id="welcome">
     <h1>@TITLE@</h1>
-    <p>Click Start to play. Your game files and saves stay in this browser
-       for next time. Use Stop game to close the running game.</p>
+    <p>Click Start to play. Your saves stay in this browser. Game data loads
+       as needed while you play. Use Stop game to close the game.</p>
     <button class="primary" id="start">Start game</button>
     <p id="message" role="status" aria-live="polite"></p>
   </section>
