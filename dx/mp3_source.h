@@ -24,6 +24,21 @@ struct Mp3Source {
         return position_;
     }
     int64_t duration_frames();
+    // Streaming input (a movie's audio, demultiplexed as the file is read):
+    // begin_stream() empties the source, append() adds encoded bytes and
+    // finish() says no more will come. Until then running out of input is a
+    // pause, not the end: drained() stays false and decoding resumes once more
+    // bytes arrive. open() probes the format from what has been appended.
+    void begin_stream();
+    void append(const uint8_t *p, size_t n);
+    void finish();
+    bool streaming() const {
+        return streaming_ && !finished_;
+    }
+    size_t unread_bytes() const {
+        return bytes_.size() - offset_;
+    }
+    bool open_streamed();
 
   private:
     bool decode_frame(std::vector<int16_t> &out);
@@ -35,4 +50,5 @@ struct Mp3Source {
     uint64_t position_ = 0;
     int64_t duration_ = -1;
     bool drained_ = true;
+    bool streaming_ = false, finished_ = true;
 };

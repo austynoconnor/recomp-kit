@@ -90,11 +90,23 @@ if(RECOMP_VIDEO)
     message(FATAL_ERROR "RECOMP_VIDEO is not supported on ${CMAKE_SYSTEM_NAME}")
   endif()
   include(ExternalProject)
-  if(NOT WIN32 OR NOT CMAKE_HOST_WIN32)
+  # RECOMP_FFMPEG_PREBUILT names an FFmpeg already installed with the
+  # configuration below (include/ and lib/ beneath it), for a host that
+  # cannot run FFmpeg's configure: a web build on Windows without MSYS2 can
+  # link the static libraries a Linux or WSL web build installed.
+  set(RECOMP_FFMPEG_PREBUILT "" CACHE PATH "An installed FFmpeg to link instead of building one")
+  if(RECOMP_FFMPEG_PREBUILT)
+    if(NOT EXISTS "${RECOMP_FFMPEG_PREBUILT}/include/libavcodec/avcodec.h")
+      message(FATAL_ERROR "RECOMP_FFMPEG_PREBUILT has no include/libavcodec: ${RECOMP_FFMPEG_PREBUILT}")
+    endif()
+  elseif(NOT WIN32 OR NOT CMAKE_HOST_WIN32)
     set(RECOMP_FFMPEG_SHELL /bin/sh)
     find_program(RECOMP_FFMPEG_MAKE NAMES make REQUIRED)
   endif()
   set(RECOMP_FFMPEG_PREFIX "${CMAKE_BINARY_DIR}/ffmpeg")
+  if(RECOMP_FFMPEG_PREBUILT)
+    set(RECOMP_FFMPEG_PREFIX "${RECOMP_FFMPEG_PREBUILT}")
+  endif()
   # The web build links FFmpeg statically into the wasm module; everywhere
   # else it is a shared library packaged beside the host.
   if(EMSCRIPTEN)
@@ -257,10 +269,13 @@ if(RECOMP_VIDEO)
   # On a Windows host MSYS2 tools run with their own directory first on PATH, so
   # configure and make find sed, awk and sh there and nowhere else.
   set(RECOMP_FFMPEG_ENV ${CMAKE_COMMAND} -E env)
-  if(WIN32 AND CMAKE_HOST_WIN32)
+  if(RECOMP_FFMPEG_PREBUILT)
+    # Nothing to build: the imported libraries above are already installed.
+  elseif(WIN32 AND CMAKE_HOST_WIN32)
     get_filename_component(RECOMP_FFMPEG_MSYS_BIN "${RECOMP_FFMPEG_MAKE}" DIRECTORY)
     list(APPEND RECOMP_FFMPEG_ENV --modify "PATH=path_list_prepend:${RECOMP_FFMPEG_MSYS_BIN}")
   endif()
+  if(NOT RECOMP_FFMPEG_PREBUILT)
   ExternalProject_Add(ffmpeg
     URL https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz
     URL_HASH SHA256=733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1
@@ -282,6 +297,7 @@ if(RECOMP_VIDEO)
   foreach(component avformat avcodec avutil)
     add_dependencies(ffmpeg::${component} ffmpeg)
   endforeach()
+  endif()
 endif()
 
 # Object-library consumers must inherit both the headers and the dynamic link.

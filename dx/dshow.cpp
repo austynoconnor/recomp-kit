@@ -44,11 +44,20 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <chrono>
 #include <deque>
+#include <initializer_list>
+#include <memory>
 #include <iterator>
 #include <map>
 #include <string>
 #include <vector>
+
+#ifdef RECOMP_HAVE_FFMPEG
+extern "C" {
+#include <libavcodec/avcodec.h>
+}
+#endif
 
 #define IID_BYTES(a, b, c, d0, d1, d2, d3, d4, d5, d6, d7)                                         \
     {(uint8_t)((a) & 0xff),                                                                        \
@@ -154,6 +163,7 @@ const uint32_t kMaxRefusals = 120;
 // The state behind a multimedia stream, keyed by the K_MMSTREAM object id:
 // the file and its decoder, and the playback its graph may be driving.
 // ---------------------------------------------------------------------------
+struct Movie;
 struct Source {
     // The file. The whole of it is read once and decoded a frame at a time.
     bool loaded = false;
@@ -178,6 +188,10 @@ struct Source {
     int32_t balance = 0;
     uint32_t event = 0; // the completion event, once asked for
     std::deque<uint32_t> events;
+
+    // A movie (AddSourceFilter): the file's pictures and the game's renderer.
+    std::shared_ptr<Movie> movie;
+    uint32_t filter = 0; // the guest IBaseFilter AddFilter put in the graph
 };
 
 std::map<uint32_t, Source> &sources() {
@@ -261,7 +275,10 @@ bool load_source(Source &s, const std::string &host_path) {
     return true;
 }
 
+uint64_t movie_duration(const Source &s);
 int64_t duration_frames(Source &s) {
+    if (uint64_t d = movie_duration(s))
+        return (int64_t)(d * (uint64_t)s.hz / 10000000ull);
     return s.decoder.duration_frames();
 }
 
@@ -569,6 +586,879 @@ void release_playback(Source &s) {
         s.ring = 0;
     }
 }
+
+// ===========================================================================
+// Movies: an MPEG-1 system stream played through a renderer filter of the
+// game's own.
+//
+// Resident Evil 4 builds the DirectX SDK's Texture3D9 graph: it adds its own
+// renderer (a CBaseVideoRenderer that copies RGB24 pictures into a texture),
+// asks the graph for a source filter over the movie file, finds that filter's
+// "Output" pin and connects it to the renderer, then runs the graph and
+// watches for EC_COMPLETE. Here the source filter, its pin, the allocator and
+// the sample it delivers are one host object (K_DSMOVIE). Connecting hands
+// the renderer's input pin an RGB24 VIDEOINFOHEADER media type; while the
+// graph runs, the frame pump reads the file, sends the sound through the
+// stream's ordinary playback (the movie's MPEG audio is fed to the decoder as
+// it is read) and decodes the pictures with FFmpeg's MPEG-1 decoder, handing
+// each one that is due by the sound's clock to the renderer's
+// IMemInputPin::Receive on the game's thread. The renderer has no reference
+// clock, so it draws each picture as it arrives.
+// ===========================================================================
+const uint32_t VFW_E_NOT_FOUND = 0x80040216u;
+const uint32_t VFW_E_NOT_CONNECTED = 0x80040209u;
+const uint32_t VFW_E_SAMPLE_TIME_NOT_SET = 0x80040249u;
+const uint32_t E_UNEXPECTED_ = 0x8000ffffu;
+const uint32_t PINDIR_OUTPUT = 1;
+
+const uint8_t MEDIATYPE_Video_[16] =
+    IID_BYTES(0x73646976, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71);
+const uint8_t MEDIASUBTYPE_RGB24_[16] =
+    IID_BYTES(0xe436eb7d, 0x524f, 0x11ce, 0x9f, 0x53, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70);
+const uint8_t FORMAT_VideoInfo_[16] =
+    IID_BYTES(0x05589f80, 0xc356, 0x11ce, 0xbf, 0x01, 0x00, 0xaa, 0x00, 0x55, 0x59, 0x5a);
+const uint8_t IID_IPin_[16] =
+    IID_BYTES(0x56a86891, 0x0ad4, 0x11ce, 0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70);
+const uint8_t IID_IBaseFilter_[16] =
+    IID_BYTES(0x56a86895, 0x0ad4, 0x11ce, 0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70);
+const uint8_t IID_IMediaFilter_[16] =
+    IID_BYTES(0x56a86899, 0x0ad4, 0x11ce, 0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70);
+const uint8_t IID_IMediaSample_[16] =
+    IID_BYTES(0x56a8689a, 0x0ad4, 0x11ce, 0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70);
+const uint8_t IID_IMemAllocator_[16] =
+    IID_BYTES(0x56a8689c, 0x0ad4, 0x11ce, 0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70);
+const uint8_t IID_IMemInputPin_[16] =
+    IID_BYTES(0x56a8689d, 0x0ad4, 0x11ce, 0xb0, 0x3a, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70);
+
+// Vtable slots of the guest's objects this module calls.
+enum {
+    SLOT_QueryInterface = 0,
+    SLOT_AddRef = 1,
+    SLOT_Release = 2,
+    // IBaseFilter (IMediaFilter is its prefix)
+    SLOT_Filter_Stop = 4,
+    SLOT_Filter_Pause = 5,
+    SLOT_Filter_Run = 6,
+    SLOT_Filter_EnumPins = 10,
+    SLOT_Filter_JoinFilterGraph = 13,
+    // IPin
+    SLOT_Pin_ReceiveConnection = 4,
+    SLOT_Pin_Disconnect = 5,
+    // IEnumPins
+    SLOT_EnumPins_Next = 3,
+    // IMemInputPin
+    SLOT_MemInput_NotifyAllocator = 4,
+    SLOT_MemInput_Receive = 6,
+};
+
+// The CPU the last graph or pump call ran on: a graph's destructor has no
+// X86 of its own and must still let go of the guest's renderer.
+X86 *g_movie_cpu = nullptr;
+
+uint32_t vcall(X86 *c, uint32_t obj, int slot, std::initializer_list<uint32_t> rest) {
+    if (!c || !obj || !gm_valid(obj, 4))
+        return E_FAIL;
+    uint32_t vtbl = rd32(obj);
+    if (!gm_valid(vtbl + 4 * (uint32_t)slot, 4))
+        return E_FAIL;
+    uint32_t a[8];
+    int n = 0;
+    a[n++] = obj;
+    for (uint32_t v : rest)
+        if (n < 8)
+            a[n++] = v;
+    return guest_call(c, rd32(vtbl + 4 * (uint32_t)slot), a, n);
+}
+
+bool hr_failed(uint32_t hr) {
+    return (hr & 0x80000000u) != 0;
+}
+
+struct Movie {
+    FILE *f = nullptr;
+    uint64_t file_bytes = 0;
+    bool eof = false;
+    std::vector<uint8_t> ps;  // program stream read but not yet sorted
+    std::vector<uint8_t> ves; // video elementary stream not yet decoded
+    size_t ves_pos = 0;
+    int audio_id = -1, video_id = -1;
+    bool has_audio = false;
+    int width = 0, height = 0;
+    double fps = 0;
+    uint64_t duration = 0; // 100 ns units
+
+    uint32_t obj = 0;                  // the K_DSMOVIE object
+    uint32_t pin = 0, mem = 0;         // the renderer's IPin and IMemInputPin
+    uint32_t mt = 0;                   // AM_MEDIA_TYPE, its VIDEOINFOHEADER after it
+    uint32_t buf = 0, buf_bytes = 0;   // the sample's picture
+    uint32_t pitch = 0;
+    uint32_t scratch = 0;              // out-parameters and IIDs for guest calls
+    bool running = false, done = false, video_end = false;
+    std::chrono::steady_clock::time_point started;
+    uint64_t shown = 0; // pictures handed to the renderer
+#ifdef RECOMP_HAVE_FFMPEG
+    AVCodecContext *ctx = nullptr;
+    AVCodecParserContext *parser = nullptr;
+    AVPacket *pkt = nullptr;
+    AVFrame *frame = nullptr;
+    bool flushed = false;
+#endif
+    ~Movie() {
+        if (f)
+            fclose(f);
+#ifdef RECOMP_HAVE_FFMPEG
+        if (parser)
+            av_parser_close(parser);
+        av_packet_free(&pkt);
+        av_frame_free(&frame);
+        avcodec_free_context(&ctx);
+#endif
+    }
+};
+
+// Where the PES payload starts within a packet of `len` bytes, 0 when the
+// header cannot be read. MPEG-1 headers carry stuffing, an optional buffer
+// size and optional time stamps; MPEG-2 headers state their own length.
+size_t pes_payload(const uint8_t *p, size_t len) {
+    if (len > 8 && (p[6] & 0xc0) == 0x80)
+        return 9 + (size_t)p[8];
+    size_t k = 6;
+    while (k < len && p[k] == 0xff)
+        ++k;
+    if (k < len && (p[k] & 0xc0) == 0x40)
+        k += 2;
+    if (k >= len)
+        return 0;
+    if ((p[k] & 0xf0) == 0x20)
+        return k + 5;
+    if ((p[k] & 0xf0) == 0x30)
+        return k + 10;
+    if (p[k] == 0x0f)
+        return k + 1;
+    return 0;
+}
+
+// The system clock reference of a pack header at `p`, in 90 kHz ticks.
+uint64_t pack_scr(const uint8_t *p) {
+    if ((p[4] & 0xc0) == 0x40) // MPEG-2
+        return ((uint64_t)(p[4] & 0x38) >> 3) << 30 | (uint64_t)(p[4] & 3) << 28 |
+               (uint64_t)p[5] << 20 | (uint64_t)(p[6] >> 3) << 15 | (uint64_t)(p[6] & 3) << 13 |
+               (uint64_t)p[7] << 5 | (uint64_t)(p[8] >> 3);
+    return ((uint64_t)(p[4] >> 1) & 7) << 30 | (uint64_t)p[5] << 22 | (uint64_t)(p[6] >> 1) << 15 |
+           (uint64_t)p[7] << 7 | (uint64_t)(p[8] >> 1);
+}
+
+// The movie's length from its first and last pack clocks.
+uint64_t scan_duration(FILE *f, uint64_t size) {
+    auto scr_in = [](const std::vector<uint8_t> &b, bool last, uint64_t *out) {
+        bool found = false;
+        for (size_t i = 0; i + 9 <= b.size(); ++i)
+            if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1 && b[i + 3] == 0xba) {
+                *out = pack_scr(&b[i]);
+                found = true;
+                if (!last)
+                    break;
+            }
+        return found;
+    };
+    std::vector<uint8_t> b(65536);
+    fseek(f, 0, SEEK_SET);
+    b.resize(fread(b.data(), 1, b.size(), f));
+    uint64_t first = 0, last = 0;
+    bool ok = scr_in(b, false, &first);
+    uint64_t tail = size > 262144 ? size - 262144 : 0;
+    fseek(f, (long)tail, SEEK_SET);
+    b.assign(262144, 0);
+    b.resize(fread(b.data(), 1, b.size(), f));
+    ok = scr_in(b, true, &last) && ok;
+    fseek(f, 0, SEEK_SET);
+    return ok && last > first ? (last - first) * 1000 / 9 : 0;
+}
+
+// Sorts what has been read into the sound decoder and the picture bytes.
+void movie_demux(Source &s, Movie &m) {
+    const uint8_t *d = m.ps.data();
+    size_t n = m.ps.size(), i = 0;
+    while (i + 4 <= n) {
+        if (d[i] != 0 || d[i + 1] != 0 || d[i + 2] != 1) {
+            ++i;
+            continue;
+        }
+        uint8_t id = d[i + 3];
+        if (id == 0xba) {
+            if (i + 14 > n)
+                break;
+            size_t len = (d[i + 4] & 0xc0) == 0x40 ? 14 + (size_t)(d[i + 13] & 7) : 12;
+            if (i + len > n)
+                break;
+            i += len;
+            continue;
+        }
+        if (id == 0xb9 || id < 0xbb) {
+            i += id == 0xb9 ? 4 : 1;
+            continue;
+        }
+        if (i + 6 > n)
+            break;
+        size_t len = 6 + ((size_t)d[i + 4] << 8 | d[i + 5]);
+        if (i + len > n)
+            break;
+        bool audio = (id & 0xe0) == 0xc0, video = (id & 0xf0) == 0xe0;
+        if (audio || video) {
+            size_t h = pes_payload(d + i, len);
+            int &want = audio ? m.audio_id : m.video_id;
+            if (want < 0)
+                want = id;
+            if (h && h < len && want == id) {
+                if (audio)
+                    s.decoder.append(d + i + h, len - h);
+                else
+                    m.ves.insert(m.ves.end(), d + i + h, d + i + len);
+            }
+        }
+        i += len;
+    }
+    m.ps.erase(m.ps.begin(), m.ps.begin() + (ptrdiff_t)i);
+}
+
+// Reads up to `budget` more bytes of the file.
+void movie_read(Source &s, Movie &m, size_t budget) {
+    static uint8_t chunk[65536];
+    while (budget && !m.eof) {
+        size_t want = budget < sizeof chunk ? budget : sizeof chunk;
+        size_t got = fread(chunk, 1, want, m.f);
+        if (got == 0) {
+            m.eof = true;
+            break;
+        }
+        budget -= got < budget ? got : budget;
+        m.ps.insert(m.ps.end(), chunk, chunk + got);
+        movie_demux(s, m);
+    }
+    if (m.eof)
+        s.decoder.finish();
+    if (m.ves_pos > (1u << 20)) {
+        m.ves.erase(m.ves.begin(), m.ves.begin() + (ptrdiff_t)m.ves_pos);
+        m.ves_pos = 0;
+    }
+}
+
+// The picture size and rate from the first sequence header.
+bool parse_sequence_header(Movie &m) {
+    static const double rates[16] = {0, 24000.0 / 1001, 24, 25, 30000.0 / 1001, 30, 50,
+                                     60000.0 / 1001, 60};
+    for (size_t i = 0; i + 8 <= m.ves.size(); ++i) {
+        const uint8_t *p = &m.ves[i];
+        if (p[0] == 0 && p[1] == 0 && p[2] == 1 && p[3] == 0xb3) {
+            m.width = (p[4] << 4) | (p[5] >> 4);
+            m.height = ((p[5] & 0xf) << 8) | p[6];
+            m.fps = rates[p[7] & 0xf];
+            if (m.fps <= 0)
+                m.fps = 30000.0 / 1001;
+            return m.width > 0 && m.height > 0;
+        }
+    }
+    return false;
+}
+
+uint64_t movie_duration(const Source &s) {
+    return s.movie ? s.movie->duration : 0;
+}
+
+Movie *movie_of(Source &s) {
+    return s.movie.get();
+}
+
+// The source state behind a K_DSMOVIE view.
+Source *movie_source(X86 *c, ComIface iface) {
+    ComObj *o = com_this_arg(c, iface);
+    if (!o || o->kind != K_DSMOVIE)
+        return nullptr;
+    auto it = sources().find(o->dsh_owner);
+    return it != sources().end() && it->second.movie ? &it->second : nullptr;
+}
+
+#ifdef RECOMP_HAVE_FFMPEG
+// Opens the file at `path` as the stream's movie. The sound, when the file
+// has any, becomes the stream's playback; the pictures wait for a renderer.
+uint32_t movie_open(ComObj *mm, uint32_t path) {
+    std::string guest = read_wide(path);
+    std::string host = win32_host_path(guest, false);
+    FILE *f = host.empty() ? nullptr : fopen(host.c_str(), "rb");
+    if (!f) {
+        LOGW("dshow: AddSourceFilter(%s): no such file", guest.c_str());
+        return VFW_E_NOT_FOUND;
+    }
+    Source &s = source_for(mm);
+    release_playback(s);
+    s.movie.reset();
+    auto m = std::make_shared<Movie>();
+    m->f = f;
+    fseek(f, 0, SEEK_END);
+    m->file_bytes = (uint64_t)ftell(f);
+    m->duration = scan_duration(f, m->file_bytes);
+    s.loaded = false;
+    s.name = guest;
+    s.file_bytes = (size_t)m->file_bytes;
+    s.pos = s.delivered = 0;
+    s.carry.clear();
+    s.carry_pos = 0;
+    s.events.clear();
+    s.decoder.begin_stream();
+    while (!m->eof && (!m->width || (m->audio_id >= 0 && s.decoder.unread_bytes() < 32768 &&
+                                     m->ves.size() < (4u << 20)))) {
+        movie_read(s, *m, 65536);
+        if (!m->width)
+            parse_sequence_header(*m);
+    }
+    if (!m->width) {
+        LOGW("dshow: AddSourceFilter(%s): no MPEG video found", guest.c_str());
+        return VFW_E_NOT_FOUND;
+    }
+    if (m->audio_id >= 0 && s.decoder.open_streamed()) {
+        s.hz = (int)s.decoder.rate();
+        s.channels = (int)s.decoder.channels();
+        m->has_audio = true;
+        s.loaded = true;
+    }
+    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_MPEG1VIDEO);
+    m->ctx = codec ? avcodec_alloc_context3(codec) : nullptr;
+    m->parser = av_parser_init(AV_CODEC_ID_MPEG1VIDEO);
+    m->pkt = av_packet_alloc();
+    m->frame = av_frame_alloc();
+    if (m->ctx)
+        m->ctx->thread_count = 1;
+    if (!m->ctx || !m->parser || !m->pkt || !m->frame || avcodec_open2(m->ctx, codec, nullptr) < 0) {
+        LOGW("dshow: AddSourceFilter(%s): the MPEG-1 video decoder is unavailable", guest.c_str());
+        return E_FAIL;
+    }
+    LOGW("dshow: movie %s: %dx%d at %.2f fps, %.1f s, sound %s", guest.c_str(), m->width,
+         m->height, m->fps, m->duration / 1e7,
+         m->has_audio ? (std::to_string(s.hz) + " Hz").c_str() : "none");
+    s.movie = m;
+    return S_OK;
+}
+
+// Decodes the next picture into m.frame. False when the file has to be read
+// further first, or the pictures have run out (m.video_end).
+bool movie_decode(Source &s, Movie &m) {
+    for (int guard = 0; guard < 4096; ++guard) {
+        int r = avcodec_receive_frame(m.ctx, m.frame);
+        if (r == 0)
+            return true;
+        if (r != AVERROR(EAGAIN)) {
+            m.video_end = true;
+            return false;
+        }
+        if (m.ves_pos >= m.ves.size()) {
+            if (!m.eof) {
+                movie_read(s, m, 262144);
+                if (m.ves_pos < m.ves.size())
+                    continue;
+                if (!m.eof)
+                    return false;
+            }
+            if (m.flushed) {
+                m.video_end = true;
+                return false;
+            }
+            uint8_t *out = nullptr;
+            int out_n = 0;
+            av_parser_parse2(m.parser, m.ctx, &out, &out_n, nullptr, 0, AV_NOPTS_VALUE,
+                             AV_NOPTS_VALUE, 0);
+            if (out_n > 0 && av_new_packet(m.pkt, out_n) == 0) {
+                memcpy(m.pkt->data, out, (size_t)out_n);
+                avcodec_send_packet(m.ctx, m.pkt);
+                av_packet_unref(m.pkt);
+            }
+            avcodec_send_packet(m.ctx, nullptr);
+            m.flushed = true;
+            continue;
+        }
+        uint8_t *out = nullptr;
+        int out_n = 0;
+        int used = av_parser_parse2(m.parser, m.ctx, &out, &out_n, m.ves.data() + m.ves_pos,
+                                    (int)(m.ves.size() - m.ves_pos), AV_NOPTS_VALUE,
+                                    AV_NOPTS_VALUE, 0);
+        if (used < 0) {
+            m.video_end = true;
+            return false;
+        }
+        m.ves_pos += (size_t)used;
+        if (out_n > 0 && av_new_packet(m.pkt, out_n) == 0) {
+            memcpy(m.pkt->data, out, (size_t)out_n);
+            avcodec_send_packet(m.ctx, m.pkt);
+            av_packet_unref(m.pkt);
+        }
+    }
+    return false;
+}
+
+inline uint8_t clamp8(int v) {
+    return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+}
+
+// Converts the decoded picture to the bottom-up RGB24 the media type
+// promised and hands it to the renderer.
+void movie_present(X86 *c, Movie &m) {
+    AVFrame &f = *m.frame;
+    if (f.format != AV_PIX_FMT_YUV420P || f.width != m.width || f.height != m.height) {
+        log_once("dshow.movie.format", "dshow: a movie picture is %dx%d format %d; not shown",
+                 f.width, f.height, f.format);
+        return;
+    }
+    uint8_t *dst = gm_ptr(m.buf);
+    for (int y = 0; y < m.height; ++y) {
+        uint8_t *row = dst + (size_t)(m.height - 1 - y) * m.pitch;
+        const uint8_t *Y = f.data[0] + (size_t)y * (size_t)f.linesize[0];
+        const uint8_t *U = f.data[1] + (size_t)(y / 2) * (size_t)f.linesize[1];
+        const uint8_t *V = f.data[2] + (size_t)(y / 2) * (size_t)f.linesize[2];
+        for (int x = 0; x < m.width; ++x) {
+            int yy = (Y[x] - 16) * 298 + 128;
+            int u = U[x >> 1] - 128, v = V[x >> 1] - 128;
+            row[3 * x + 0] = clamp8((yy + 516 * u) >> 8);
+            row[3 * x + 1] = clamp8((yy - 100 * u - 208 * v) >> 8);
+            row[3 * x + 2] = clamp8((yy + 409 * v) >> 8);
+        }
+    }
+    ComObj *o = com_get(m.obj);
+    uint32_t sample = o && o->alive ? com_view(o, IF_DSSAMPLE) : 0;
+    if (!sample)
+        return;
+    uint32_t hr = vcall(c, m.mem, SLOT_MemInput_Receive, {sample});
+    if (hr_failed(hr))
+        log_once("dshow.movie.receive", "dshow: the renderer refused a movie picture (%08x)", hr);
+}
+#endif
+
+// Where the movie stands, in milliseconds: the sound's position when it has
+// sound, else the time since it started.
+double movie_clock_ms(Source &s, Movie &m) {
+    if (m.has_audio && s.hz > 0)
+        return (double)current_frames(s) * 1000.0 / s.hz;
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m.started)
+        .count();
+}
+
+// One tick: keep the file read ahead of the sound and the pictures, and hand
+// the renderer the picture that is due.
+void movie_pump(X86 *c, Source &s) {
+    Movie *m = movie_of(s);
+    if (!m)
+        return;
+    g_movie_cpu = c;
+    if (!m->eof) {
+        size_t want = 0;
+        if (m->has_audio && s.decoder.unread_bytes() < 65536)
+            want = 131072;
+        if (m->ves.size() - m->ves_pos < 524288)
+            want = 262144;
+        if (want)
+            movie_read(s, *m, want);
+    }
+#ifdef RECOMP_HAVE_FFMPEG
+    if (!m->running || !m->mem || m->done)
+        return;
+    uint64_t due = (uint64_t)(movie_clock_ms(s, *m) * m->fps / 1000.0) + 1;
+    bool got = false;
+    for (int i = 0; i < 6 && m->shown < due && !m->video_end; ++i) {
+        if (!movie_decode(s, *m))
+            break;
+        ++m->shown;
+        got = true;
+    }
+    if (got)
+        movie_present(c, *m);
+    if (m->video_end && !m->has_audio && !m->done) {
+        m->done = true;
+        post_event(s, EC_COMPLETE);
+    }
+#endif
+}
+
+// Connects the movie's pin to the renderer's input pin `in`.
+uint32_t movie_connect(X86 *c, Source &s, uint32_t in) {
+    Movie *m = movie_of(s);
+    ComObj *o = m ? com_get(m->obj) : nullptr;
+    if (!m || !o || !o->alive || !in)
+        return E_FAIL;
+    if (m->pin)
+        return S_OK;
+    if (!m->scratch)
+        m->scratch = heap_alloc(64, true, 16);
+    if (!m->mt)
+        m->mt = heap_alloc(72 + 88, true, 16);
+    if (!m->scratch || !m->mt)
+        return E_OUTOFMEMORY;
+    m->pitch = ((uint32_t)m->width * 3 + 3) & ~3u;
+    uint32_t image = m->pitch * (uint32_t)m->height;
+    uint32_t mt = m->mt, vih = m->mt + 72;
+    memset(gm_ptr(mt), 0, 72 + 88);
+    memcpy(gm_ptr(mt), MEDIATYPE_Video_, 16);
+    memcpy(gm_ptr(mt + 16), MEDIASUBTYPE_RGB24_, 16);
+    wr32(mt + 32, 1);     // bFixedSizeSamples
+    wr32(mt + 36, 0);     // bTemporalCompression
+    wr32(mt + 40, image); // lSampleSize
+    memcpy(gm_ptr(mt + 44), FORMAT_VideoInfo_, 16);
+    wr32(mt + 64, 88); // cbFormat
+    wr32(mt + 68, vih);
+    wr32(vih + 8, (uint32_t)m->width); // rcSource.right
+    wr32(vih + 12, (uint32_t)m->height);
+    wr32(vih + 24, (uint32_t)m->width); // rcTarget.right
+    wr32(vih + 28, (uint32_t)m->height);
+    uint64_t per_frame = (uint64_t)(1e7 / m->fps);
+    wr32(vih + 40, (uint32_t)per_frame);
+    wr32(vih + 44, (uint32_t)(per_frame >> 32));
+    uint32_t bmi = vih + 48;
+    wr32(bmi + 0, 40);
+    wr32(bmi + 4, (uint32_t)m->width);
+    wr32(bmi + 8, (uint32_t)m->height); // positive: bottom-up rows
+    wr16(bmi + 12, 1);
+    wr16(bmi + 14, 24);
+    wr32(bmi + 20, image);
+    uint32_t pin_view = com_view(o, IF_DSPIN);
+    uint32_t hr = vcall(c, in, SLOT_Pin_ReceiveConnection, {pin_view, mt});
+    if (hr_failed(hr)) {
+        LOGW("dshow: the renderer would not take the movie's RGB24 pictures (%08x)", hr);
+        return hr;
+    }
+    vcall(c, in, SLOT_AddRef, {});
+    m->pin = in;
+    memcpy(gm_ptr(m->scratch + 16), IID_IMemInputPin_, 16);
+    wr32(m->scratch, 0);
+    hr = vcall(c, in, SLOT_QueryInterface, {m->scratch + 16, m->scratch});
+    m->mem = hr_failed(hr) ? 0 : rd32(m->scratch);
+    if (!m->mem) {
+        LOGW("dshow: the renderer's pin has no IMemInputPin (%08x)", hr);
+        return E_FAIL;
+    }
+    vcall(c, m->mem, SLOT_MemInput_NotifyAllocator, {com_view(o, IF_DSALLOCATOR), 0});
+    if (!m->buf) {
+        m->buf_bytes = image;
+        m->buf = heap_alloc(image, true, 16);
+        if (!m->buf)
+            return E_OUTOFMEMORY;
+    }
+    LOGV("dshow: movie pin connected to renderer pin %08x", in);
+    return S_OK;
+}
+
+// The renderer's first input pin, from its pin enumerator.
+uint32_t renderer_input_pin(X86 *c, Source &s) {
+    Movie *m = movie_of(s);
+    if (!s.filter || !m)
+        return 0;
+    if (!m->scratch)
+        m->scratch = heap_alloc(64, true, 16);
+    if (!m->scratch)
+        return 0;
+    wr32(m->scratch, 0);
+    if (hr_failed(vcall(c, s.filter, SLOT_Filter_EnumPins, {m->scratch})))
+        return 0;
+    uint32_t e = rd32(m->scratch);
+    if (!e)
+        return 0;
+    wr32(m->scratch + 4, 0);
+    wr32(m->scratch + 8, 0);
+    vcall(c, e, SLOT_EnumPins_Next, {1, m->scratch + 4, m->scratch + 8});
+    vcall(c, e, SLOT_Release, {});
+    uint32_t pin = rd32(m->scratch + 4);
+    // movie_connect takes its own reference.
+    if (pin)
+        vcall(c, pin, SLOT_Release, {});
+    return pin;
+}
+
+uint32_t movie_run(X86 *c, Source &s) {
+    Movie *m = movie_of(s);
+    if (!m)
+        return E_FAIL;
+    if (s.filter) {
+        vcall(c, s.filter, SLOT_Filter_Pause, {});
+        vcall(c, s.filter, SLOT_Filter_Run, {0, 0});
+    }
+    if (!m->running)
+        m->started = std::chrono::steady_clock::now();
+    m->running = true;
+    if (m->has_audio && !s.running) {
+        while (!m->eof && s.decoder.unread_bytes() < 32768)
+            movie_read(s, *m, 65536);
+        start_playback(s);
+    }
+    return S_OK;
+}
+
+void movie_halt(X86 *c, Source &s, bool pause) {
+    Movie *m = movie_of(s);
+    if (!m)
+        return;
+    if (s.filter)
+        vcall(c, s.filter, pause ? SLOT_Filter_Pause : SLOT_Filter_Stop, {});
+    m->running = false;
+    stop_playback(s);
+}
+
+// Lets go of the renderer and everything the movie holds in the guest.
+void movie_teardown(X86 *c, Source &s) {
+    Movie *m = movie_of(s);
+    if (s.filter && c) {
+        vcall(c, s.filter, SLOT_Filter_Stop, {});
+        if (m && m->pin)
+            vcall(c, m->pin, SLOT_Pin_Disconnect, {});
+        if (m && m->mem)
+            vcall(c, m->mem, SLOT_Release, {});
+        if (m && m->pin)
+            vcall(c, m->pin, SLOT_Release, {});
+        vcall(c, s.filter, SLOT_Filter_JoinFilterGraph, {0, 0});
+        vcall(c, s.filter, SLOT_Release, {});
+    }
+    s.filter = 0;
+    if (m) {
+        m->pin = m->mem = 0;
+        for (uint32_t *a : {&m->mt, &m->buf, &m->scratch})
+            if (*a) {
+                heap_free(*a);
+                *a = 0;
+            }
+        ComObj *o = com_get(m->obj);
+        if (o && o->alive)
+            o->dsh_owner = 0;
+    }
+    s.movie.reset();
+}
+
+// --- The source filter (IBaseFilter) -----------------------------------------
+void SF_GetState(X86 *c) {
+    Source *s = movie_source(c, IF_DSFILTER);
+    uint32_t out = arg(c, 2);
+    if (out && gm_valid(out, 4))
+        wr32(out, s && s->movie && s->movie->running ? State_Running : State_Stopped);
+    com_ret(c, S_OK);
+}
+void SF_GetSyncSource(X86 *c) {
+    uint32_t out = arg(c, 1);
+    if (out && gm_valid(out, 4))
+        wr32(out, 0);
+    com_ret(c, S_OK);
+}
+// FindPin(Id, ppPin): the one pin is "Output".
+void SF_FindPin(X86 *c) {
+    ComObj *o = com_this_arg(c, IF_DSFILTER);
+    uint32_t out = arg(c, 2);
+    if (out && gm_valid(out, 4))
+        wr32(out, 0);
+    if (!o) {
+        com_ret(c, E_FAIL);
+        return;
+    }
+    if (read_wide(arg(c, 1)) != "Output") {
+        com_ret(c, VFW_E_NOT_FOUND);
+        return;
+    }
+    out_view(c, out, o, IF_DSPIN);
+}
+void SF_QueryFilterInfo(X86 *c) {
+    uint32_t out = arg(c, 1);
+    if (!out || !gm_valid(out, 260)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+    memset(gm_ptr(out), 0, 260);
+    com_ret(c, S_OK);
+}
+DX_STUB(SF_GetClassID, E_NOTIMPL)
+DX_STUB(SF_EnumPins, E_NOTIMPL)
+DX_STUB(SF_QueryVendorInfo, E_NOTIMPL)
+
+const ComMethod g_dsfilter[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"GetClassID", 2, SF_GetClassID},
+    {"Stop", 1, com_stub_ok},
+    {"Pause", 1, com_stub_ok},
+    {"Run", 3, com_stub_ok},
+    {"GetState", 3, SF_GetState},
+    {"SetSyncSource", 2, com_stub_ok},
+    {"GetSyncSource", 2, SF_GetSyncSource},
+    {"EnumPins", 2, SF_EnumPins},
+    {"FindPin", 3, SF_FindPin},
+    {"QueryFilterInfo", 2, SF_QueryFilterInfo},
+    {"JoinFilterGraph", 3, com_stub_ok},
+    {"QueryVendorInfo", 2, SF_QueryVendorInfo},
+};
+
+// --- Its output pin (IPin) ---------------------------------------------------
+void OP_Connect(X86 *c) {
+    Source *s = movie_source(c, IF_DSPIN);
+    if (s)
+        g_movie_cpu = c;
+    com_ret(c, s ? movie_connect(c, *s, arg(c, 1)) : E_FAIL);
+}
+void OP_ConnectedTo(X86 *c) {
+    Source *s = movie_source(c, IF_DSPIN);
+    uint32_t out = arg(c, 1);
+    if (!out || !gm_valid(out, 4)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+    uint32_t pin = s && s->movie ? s->movie->pin : 0;
+    wr32(out, pin);
+    if (!pin) {
+        com_ret(c, VFW_E_NOT_CONNECTED);
+        return;
+    }
+    vcall(c, pin, SLOT_AddRef, {});
+    com_ret(c, S_OK);
+}
+// QueryPinInfo(PIN_INFO*): { IBaseFilter *pFilter; PIN_DIRECTION dir; WCHAR achName[128] }.
+void OP_QueryPinInfo(X86 *c) {
+    ComObj *o = com_this_arg(c, IF_DSPIN);
+    uint32_t out = arg(c, 1);
+    if (!o || !out || !gm_valid(out, 8 + 256)) {
+        com_ret(c, o ? E_POINTER : E_FAIL);
+        return;
+    }
+    memset(gm_ptr(out), 0, 8 + 256);
+    uint32_t filter = com_view(o, IF_DSFILTER);
+    if (filter)
+        com_addref(o);
+    wr32(out, filter);
+    wr32(out + 4, PINDIR_OUTPUT);
+    const char *name = "Output";
+    for (int i = 0; name[i]; ++i)
+        wr16(out + 8 + 2 * (uint32_t)i, (uint16_t)name[i]);
+    com_ret(c, S_OK);
+}
+void OP_QueryDirection(X86 *c) {
+    uint32_t out = arg(c, 1);
+    if (!out || !gm_valid(out, 4)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+    wr32(out, PINDIR_OUTPUT);
+    com_ret(c, S_OK);
+}
+DX_STUB(OP_ReceiveConnection, E_UNEXPECTED_)
+DX_STUB(OP_ConnectionMediaType, E_NOTIMPL)
+DX_STUB(OP_QueryId, E_NOTIMPL)
+DX_STUB(OP_EnumMediaTypes, E_NOTIMPL)
+DX_STUB(OP_QueryInternalConnections, E_NOTIMPL)
+
+const ComMethod g_dspin[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"Connect", 3, OP_Connect},
+    {"ReceiveConnection", 3, OP_ReceiveConnection},
+    {"Disconnect", 1, com_stub_ok},
+    {"ConnectedTo", 2, OP_ConnectedTo},
+    {"ConnectionMediaType", 2, OP_ConnectionMediaType},
+    {"QueryPinInfo", 2, OP_QueryPinInfo},
+    {"QueryDirection", 2, OP_QueryDirection},
+    {"QueryId", 2, OP_QueryId},
+    {"QueryAccept", 2, com_stub_ok},
+    {"EnumMediaTypes", 2, OP_EnumMediaTypes},
+    {"QueryInternalConnections", 3, OP_QueryInternalConnections},
+    {"EndOfStream", 1, com_stub_ok},
+    {"BeginFlush", 1, com_stub_ok},
+    {"EndFlush", 1, com_stub_ok},
+    {"NewSegment", 7, com_stub_ok},
+};
+
+// --- The allocator it hands the renderer (IMemAllocator) --------------------
+void AL_Properties(X86 *c, uint32_t out) {
+    Source *s = movie_source(c, IF_DSALLOCATOR);
+    if (!out || !gm_valid(out, 16)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+    wr32(out, 1);
+    wr32(out + 4, s && s->movie ? s->movie->buf_bytes : 0);
+    wr32(out + 8, 1);
+    wr32(out + 12, 0);
+    com_ret(c, S_OK);
+}
+void AL_SetProperties(X86 *c) {
+    AL_Properties(c, arg(c, 2));
+}
+void AL_GetProperties(X86 *c) {
+    AL_Properties(c, arg(c, 1));
+}
+void AL_GetBuffer(X86 *c) {
+    ComObj *o = com_this_arg(c, IF_DSALLOCATOR);
+    if (!o) {
+        com_ret(c, E_FAIL);
+        return;
+    }
+    out_view(c, arg(c, 1), o, IF_DSSAMPLE);
+}
+
+const ComMethod g_dsallocator[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"SetProperties", 3, AL_SetProperties},
+    {"GetProperties", 2, AL_GetProperties},
+    {"Commit", 1, com_stub_ok},
+    {"Decommit", 1, com_stub_ok},
+    {"GetBuffer", 5, AL_GetBuffer},
+    {"ReleaseBuffer", 2, com_stub_ok},
+};
+
+// --- The picture it delivers (IMediaSample) ---------------------------------
+// It carries no time stamps, so the renderer draws it on arrival.
+void MSMP_GetPointer(X86 *c) {
+    Source *s = movie_source(c, IF_DSSAMPLE);
+    uint32_t out = arg(c, 1);
+    if (!out || !gm_valid(out, 4)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+    wr32(out, s && s->movie ? s->movie->buf : 0);
+    com_ret(c, s ? S_OK : E_FAIL);
+}
+void MSMP_GetSize(X86 *c) {
+    Source *s = movie_source(c, IF_DSSAMPLE);
+    com_ret(c, s && s->movie ? s->movie->buf_bytes : 0);
+}
+void MSMP_GetMediaType(X86 *c) {
+    uint32_t out = arg(c, 1);
+    if (out && gm_valid(out, 4))
+        wr32(out, 0);
+    com_ret(c, S_FALSE);
+}
+void MSMP_GetTime(X86 *c) {
+    com_ret(c, VFW_E_SAMPLE_TIME_NOT_SET);
+}
+void MSMP_IsSyncPoint(X86 *c) {
+    com_ret(c, S_OK);
+}
+void MSMP_No(X86 *c) {
+    com_ret(c, S_FALSE);
+}
+
+const ComMethod g_dssample[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"GetPointer", 2, MSMP_GetPointer},
+    {"GetSize", 1, MSMP_GetSize},
+    {"GetTime", 3, MSMP_GetTime},
+    {"SetTime", 3, com_stub_ok},
+    {"IsSyncPoint", 1, MSMP_IsSyncPoint},
+    {"SetSyncPoint", 2, com_stub_ok},
+    {"IsPreroll", 1, MSMP_No},
+    {"SetPreroll", 2, com_stub_ok},
+    {"GetActualDataLength", 1, MSMP_GetSize},
+    {"SetActualDataLength", 2, com_stub_ok},
+    {"GetMediaType", 2, MSMP_GetMediaType},
+    {"SetMediaType", 2, com_stub_ok},
+    {"IsDiscontinuity", 1, MSMP_No},
+    {"SetDiscontinuity", 2, com_stub_ok},
+    {"GetMediaTime", 3, MSMP_GetTime},
+    {"SetMediaTime", 3, com_stub_ok},
+};
 
 // ===========================================================================
 // IAMMultiMediaStream
@@ -1270,9 +2160,42 @@ const ComMethod g_enumfilters[] = {
     {"Clone", 2, EF_Clone},
 };
 
-// --- IGraphBuilder: there are no filters to build with.
-DX_STUB(GB_AddFilter, E_NOTIMPL)
-DX_STUB(GB_RemoveFilter, E_NOTIMPL)
+// --- IGraphBuilder. The one filter it holds is a game's renderer for a
+// movie; AddSourceFilter makes the movie's source (see Movies above).
+void GB_AddFilter(X86 *c) {
+    GraphThis t = graph_this(c);
+    uint32_t filter = arg(c, 1), name = arg(c, 2);
+    if (!t.g || !t.s) {
+        com_ret(c, E_FAIL);
+        return;
+    }
+    if (!filter || !gm_valid(filter, 4)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+    g_movie_cpu = c;
+    if (t.s->filter) {
+        log_once("dshow.filters", "dshow: a graph is given a second filter; it is not used");
+        com_ret(c, S_OK);
+        return;
+    }
+    vcall(c, filter, SLOT_AddRef, {});
+    t.s->filter = filter;
+    vcall(c, filter, SLOT_Filter_JoinFilterGraph, {com_view(t.g, IF_GRAPH), name});
+    LOGV("dshow: AddFilter(%s)", read_wide(name).c_str());
+    com_ret(c, S_OK);
+}
+
+void GB_RemoveFilter(X86 *c) {
+    GraphThis t = graph_this(c);
+    uint32_t filter = arg(c, 1);
+    if (!t.s || !filter || filter != t.s->filter) {
+        com_ret(c, E_FAIL);
+        return;
+    }
+    movie_teardown(c, *t.s);
+    com_ret(c, S_OK);
+}
 
 void GB_EnumFilters(X86 *c) {
     GraphThis t = graph_this(c);
@@ -1299,12 +2222,36 @@ void GB_EnumFilters(X86 *c) {
     com_ret(c, S_OK);
 }
 DX_STUB(GB_FindFilterByName, E_NOTIMPL)
-DX_STUB(GB_ConnectDirect, E_NOTIMPL)
+// Connect(ppinOut, ppinIn) and ConnectDirect(ppinOut, ppinIn, pmt): the
+// movie's output pin to the renderer's input pin.
+void GB_Connect(X86 *c) {
+    GraphThis t = graph_this(c);
+    ComObj *out = com_this(arg(c, 1));
+    if (!t.s || !out || out->kind != K_DSMOVIE || !t.s->movie) {
+        com_ret(c, E_NOTIMPL);
+        return;
+    }
+    g_movie_cpu = c;
+    com_ret(c, movie_connect(c, *t.s, arg(c, 2)));
+}
+void GB_ConnectDirect(X86 *c) {
+    GB_Connect(c);
+}
+// Render(ppinOut): the movie's pin to the renderer the game added.
+void GB_Render(X86 *c) {
+    GraphThis t = graph_this(c);
+    ComObj *out = com_this(arg(c, 1));
+    if (!t.s || !out || out->kind != K_DSMOVIE || !t.s->movie) {
+        com_ret(c, E_NOTIMPL);
+        return;
+    }
+    g_movie_cpu = c;
+    uint32_t in = renderer_input_pin(c, *t.s);
+    com_ret(c, in ? movie_connect(c, *t.s, in) : VFW_E_NOT_FOUND);
+}
 DX_STUB(GB_Reconnect, E_NOTIMPL)
 DX_STUB(GB_Disconnect, E_NOTIMPL)
 DX_STUB(GB_SetDefaultSyncSource, S_OK)
-DX_STUB(GB_Connect, E_NOTIMPL)
-DX_STUB(GB_Render, E_NOTIMPL)
 // IGraphBuilder::RenderFile(lpcwstrFile, lpcwstrPlayList) and
 // IMediaControl::RenderFile(BSTR): the "graph" a CLSID_FilterGraph object
 // builds for an MPEG audio file is this module's decoder and host channel, so
@@ -1320,7 +2267,57 @@ void graph_render_file(X86 *c) {
 void GB_RenderFile(X86 *c) {
     graph_render_file(c);
 }
-DX_STUB(GB_AddSourceFilter, E_NOTIMPL)
+// AddSourceFilter(lpcwstrFileName, lpcwstrFilterName, ppFilter): a movie.
+void GB_AddSourceFilter(X86 *c) {
+    GraphThis t = graph_this(c);
+    uint32_t path = arg(c, 1), out = arg(c, 3);
+    if (out && gm_valid(out, 4))
+        wr32(out, 0);
+    if (!t.g || !t.mm) {
+        com_ret(c, E_FAIL);
+        return;
+    }
+    if (!path || !gm_valid(path, 2) || !out || !gm_valid(out, 4)) {
+        com_ret(c, E_POINTER);
+        return;
+    }
+#ifdef RECOMP_HAVE_FFMPEG
+    g_movie_cpu = c;
+    uint32_t filter = t.s->filter;
+    if (t.s->movie) {
+        t.s->filter = 0; // the renderer stays in the graph across the reopen
+        movie_teardown(c, *t.s);
+        t.s->filter = filter;
+    }
+    uint32_t hr = movie_open(t.mm, path);
+    if (hr != S_OK) {
+        com_ret(c, hr);
+        return;
+    }
+    ComObj *o = com_new(K_DSMOVIE);
+    if (!o) {
+        t.s->movie.reset();
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    o->dsh_owner = t.mm->id;
+    t.s->movie->obj = o->id;
+    uint32_t v = com_view(o, IF_DSFILTER);
+    if (!v) {
+        com_release(o);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    // The new object's one reference is the caller's.
+    wr32(out, v);
+    com_ret(c, S_OK);
+#else
+    log_once("dshow.movie",
+             "dshow: AddSourceFilter(%s): this build has no video decoder ([launcher] web_video)",
+             read_wide(path).c_str());
+    com_ret(c, E_NOTIMPL);
+#endif
+}
 DX_STUB(GB_SetLogFile, S_OK)
 DX_STUB(GB_Abort, S_OK)
 DX_STUB(GB_ShouldOperationContinue, S_OK)
@@ -1353,6 +2350,11 @@ void MC_Run(X86 *c) {
         com_ret(c, E_FAIL);
         return;
     }
+    if (t.s->movie) {
+        g_movie_cpu = c;
+        com_ret(c, movie_run(c, *t.s));
+        return;
+    }
     if (!t.s->loaded) {
         com_ret(c, MS_E_NOSTREAM);
         return;
@@ -1372,6 +2374,8 @@ void MC_Pause(X86 *c) {
         com_ret(c, E_FAIL);
         return;
     }
+    if (t.s->movie)
+        movie_halt(c, *t.s, true);
     stop_playback(*t.s);
     t.s->paused = true;
     com_ret(c, S_OK);
@@ -1383,6 +2387,8 @@ void MC_Stop(X86 *c) {
         com_ret(c, E_FAIL);
         return;
     }
+    if (t.s->movie)
+        movie_halt(c, *t.s, false);
     stop_playback(*t.s);
     t.s->paused = false;
     com_ret(c, S_OK);
@@ -1400,7 +2406,10 @@ void MC_GetState(X86 *c) {
         com_ret(c, E_POINTER);
         return;
     }
-    wr32(out, t.s->running ? State_Running : t.s->paused ? State_Paused : State_Stopped);
+    bool movie_running = t.s->movie && t.s->movie->running;
+    wr32(out, t.s->running || movie_running ? State_Running
+              : t.s->paused                 ? State_Paused
+                                            : State_Stopped);
     com_ret(c, S_OK);
 }
 
@@ -1976,6 +2985,11 @@ void graph_destroy(ComObj *g) {
     if (!g->dsh_initialised)
         return;
     ComObj *mm = owner_of(g);
+    if (mm) {
+        auto it = sources().find(mm->id);
+        if (it != sources().end())
+            movie_teardown(g_movie_cpu, it->second);
+    }
     g->dsh_owner = 0;
     if (mm) {
         mm->dsh_graph = 0;
@@ -1985,9 +2999,11 @@ void graph_destroy(ComObj *g) {
 
 } // namespace
 
-void dshow_frame_pump(X86 *) {
-    for (auto &entry : sources())
+void dshow_frame_pump(X86 *c) {
+    for (auto &entry : sources()) {
+        movie_pump(c, entry.second);
         pump(entry.second);
+    }
 }
 
 void dshow_register() {
@@ -2016,6 +3032,11 @@ void dshow_register() {
                std::size(g_mediaposition));
     com_define(IF_ENUMFILTERS, "QUARTZ.dll", "IEnumFilters", g_enumfilters,
                std::size(g_enumfilters));
+    com_define(IF_DSFILTER, "QUARTZ.dll", "IBaseFilter", g_dsfilter, std::size(g_dsfilter));
+    com_define(IF_DSPIN, "QUARTZ.dll", "IPin", g_dspin, std::size(g_dspin));
+    com_define(IF_DSALLOCATOR, "QUARTZ.dll", "IMemAllocator", g_dsallocator,
+               std::size(g_dsallocator));
+    com_define(IF_DSSAMPLE, "QUARTZ.dll", "IMediaSample", g_dssample, std::size(g_dssample));
 
     com_bind(IF_MMSTREAM, K_MMSTREAM);
     com_bind(IF_MEDIASTREAM, K_MEDIASTREAM);
@@ -2029,6 +3050,10 @@ void dshow_register() {
     com_bind(IF_BASICAUDIO, K_GRAPH);
     com_bind(IF_MEDIAPOSITION, K_GRAPH);
     com_bind(IF_ENUMFILTERS, K_ENUMFILTERS);
+    com_bind(IF_DSFILTER, K_DSMOVIE);
+    com_bind(IF_DSPIN, K_DSMOVIE);
+    com_bind(IF_DSALLOCATOR, K_DSMOVIE);
+    com_bind(IF_DSSAMPLE, K_DSMOVIE);
 
     com_register_iid(IF_MMSTREAM, IID_IAMMultiMediaStream_);
     com_register_iid(IF_MMSTREAM, IID_IMultiMediaStream_);
@@ -2047,6 +3072,11 @@ void dshow_register() {
     com_register_iid(IF_BASICAUDIO, IID_IBasicAudio_);
     com_register_iid(IF_MEDIAPOSITION, IID_IMediaPosition_);
     com_register_iid(IF_ENUMFILTERS, IID_IEnumFilters_);
+    com_register_iid(IF_DSFILTER, IID_IBaseFilter_);
+    com_register_iid(IF_DSFILTER, IID_IMediaFilter_);
+    com_register_iid(IF_DSPIN, IID_IPin_);
+    com_register_iid(IF_DSALLOCATOR, IID_IMemAllocator_);
+    com_register_iid(IF_DSSAMPLE, IID_IMediaSample_);
 
     com_set_destructor(K_MMSTREAM, mmstream_destroy);
     com_set_destructor(K_STREAMSAMPLE, sample_destroy);
