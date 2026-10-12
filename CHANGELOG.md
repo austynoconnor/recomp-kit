@@ -3,16 +3,26 @@
 ## Unreleased
 
 - 2026-10-12 — Claude Opus 5.5: Skinned characters on the GPU renderers.
+  Bully's player and students were invisible in the browser; two bugs.
   A relative constant read in a vs_2_0+ shader carries a token naming the
   address register component it adds (`c[a0.y + n]`); the parser skipped
-  it, so every such read used `a0.x`. Four-bone skinning (Bully's
-  `BullyDef_skin` effect, 65 bones) then took all four bones from the first
-  index. The parser records the component, or the loop counter `aL`, and
-  the WGSL/GLSL/MSL generator and the CPU rasterizer use it. In the
-  browser the scheduler reads its clock every 64th import instead of every
-  16th (Bully makes about half a million imports a second; the clock read
-  is a call out to JavaScript and cost 3% of the game thread), and
-  `dx_report_failure` skips its string work when the same call fails again.
+  it, so every such read used `a0.x` and four-bone skinning took all four
+  bones from the first index. The parser now records the component, or the
+  loop counter `aL`, and the WGSL/GLSL/MSL generator and the CPU
+  rasterizer use it. And the effect stores Bully's bones as a 3x4
+  parameter while the shader reads a 4x3 constant: SetMatrixTransposeArray
+  kept only the top three rows of each matrix, dropping the translation,
+  so every skinned mesh collapsed to the world origin. A matrix set with
+  SetMatrix* is now kept whole and cut to the shader table's shape when
+  bound; raw values whose dimensions are the shader's swapped are read
+  transposed. In the browser the scheduler's clock reads adapt to the
+  import rate (every 50 to 200 microseconds; Bully makes about half a
+  million imports a second and the clock read is a call out to
+  JavaScript: 3% of its game thread before), and `dx_report_failure`
+  skips its string work when the same call fails again. Debugging aids:
+  `RECOMP_D3D9_TRACE_FRAME` also prints each draw's vertex layout, c0-c3
+  and first vertex; `RECOMP_D3DX_TRACE` prints each effect matrix
+  parameter's shape and first matrix once.
 
 - 2026-10-11 — Claude Opus 5.5: Faster streamed games in the browser.
   A callback's own RET now returns straight to `guest_call` instead of
