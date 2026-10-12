@@ -29,8 +29,9 @@ export function inputHintText(id, config) {
   });
   const named = value => ({"key:Return":"Enter", "key:Escape":"Esc", "key:Up":"↑", "key:Down":"↓",
     "key:Space":"Space", "key:LShift":"Shift", "key:RShift":"Shift", "horizontal_arrows":"←/→"})[value] || value.replace(/^key:/, "");
-  // [controls] key_aliases ({Up: "W"}) name extra keys that press the same key.
-  const aliases = config.aliases || {};
+  // [controls] key_aliases ({W: "Up"}): holding the key also holds its target.
+  const aliases = {};
+  for (const [key, target] of Object.entries(config.aliases || {})) aliases[target] ??= key;
   const keyboard = value => {
     if (value === "horizontal_arrows" && aliases.Left && aliases.Right)
       return `${aliases.Left}/${aliases.Right} or ←/→`;

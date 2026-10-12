@@ -301,7 +301,7 @@ class WebPlayerTests(unittest.TestCase):
         page.wait_for_function("document.querySelector('#hints').textContent.startsWith('Keyboard')")
         self.assertIn("↑: accelerate", page.locator("#hints").inner_text())
         self.assertIn("Shift: shift up", page.locator("#hints").inner_text())
-        page.evaluate("window.config.aliases = {Up:'W', Down:'S', Left:'A', Right:'D'}")
+        page.evaluate("window.config.aliases = {W:'Up', S:'Down', A:'Left', D:'Right'}")
         page.wait_for_function("document.querySelector('#hints').textContent.includes('W/↑: accelerate')")
         self.assertIn("A/D or ←/→: steer", page.locator("#hints").inner_text())
         self.assertIn("S/↓: brake", page.locator("#hints").inner_text())

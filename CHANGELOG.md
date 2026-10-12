@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 2026-10-12 15:05 CDT — Claude Opus 5.5: Direct3D 9 vertex and index buffers
+  keep their guest-heap copy for life only when created D3DUSAGE_DYNAMIC; other
+  buffers free it at their last Unlock, as before the giggity-d3d8 merge.
+  Keeping every static buffer twice ran Need for Speed: Most Wanted out of
+  guest heap while loading a race ("out of guest heap", then a Wasm
+  out-of-bounds crash); with this change Quick Race loads and drives in
+  Chrome. Browser hints now read key_aliases the way the host applies them
+  ({W = "Up"}: holding W also holds Up). Player suite passes.
+
 - 2026-10-12 09:52 CDT — Claude Opus 5.5: Browser input hints name
   [controls] key_aliases next to the key they press ("W/↑: accelerate",
   "A/D or ←/→: steer"); the web launcher passes the aliases with the action

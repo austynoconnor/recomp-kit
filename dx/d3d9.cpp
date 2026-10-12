@@ -1022,6 +1022,7 @@ void Dev_CreateVertexBuffer(X86 *c) {
     }
     vb->dev_d3d = dev->id;
     vb->buf_bytes = bytes;
+    vb->dynamic_buffer = (arg(c, 2) & 0x200u) != 0; // D3DUSAGE_DYNAMIC
     uint32_t view_ = com_view(vb, IF_D3DVERTEXBUFFER9);
     if (!view_) {
         com_release(vb);
@@ -1049,6 +1050,7 @@ void Dev_CreateIndexBuffer(X86 *c) {
     }
     ib->dev_d3d = dev->id;
     ib->buf_bytes = bytes;
+    ib->dynamic_buffer = (arg(c, 2) & 0x200u) != 0; // D3DUSAGE_DYNAMIC
     ib->rmask = arg(c, 3) == 102 ? 4 : 2; // D3DFMT_INDEX32 or D3DFMT_INDEX16
     uint32_t view_ = com_view(ib, IF_D3DINDEXBUFFER9);
     if (!view_) {
@@ -2086,10 +2088,13 @@ void Res_GetDevice(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
-// A buffer keeps its guest copy for life: Lock returns a pointer into it at
-// once, and Unlock copies back and uploads only the bytes locked. Staging the
-// whole buffer on every lock (allocate, copy in, copy out, free, upload all of
-// it) cost Crazy Taxi several full copies of a 32 KB buffer per draw.
+// A dynamic buffer keeps its guest copy for life: Lock returns a pointer into
+// it at once, and Unlock copies back and uploads only the bytes locked. Staging
+// the whole buffer on every lock (allocate, copy in, copy out, free, upload all
+// of it) cost Crazy Taxi several full copies of a 32 KB buffer per draw.
+// Other buffers drop the copy at their last Unlock: a game that fills hundreds
+// of megabytes of static geometry (Need for Speed: Most Wanted's tracks) would
+// otherwise hold it twice and run out of guest heap.
 static void buffer_lock(X86 *c) {
     ComObj *o = com_this_arg(c);
     uint32_t offset = arg(c, 1), size = arg(c, 2), out = arg(c, 3);
@@ -2138,6 +2143,10 @@ void Buf_Unlock(X86 *c) {
             memcpy(o->blob.data() + o->lock_lo, gm_ptr(o->pixels) + o->lock_lo, hi - o->lock_lo);
             d9_raster_invalidate(o->id);
             gpu_after_unlock(o, o->lock_lo, hi);
+        }
+        if (!o->dynamic_buffer && !o->retained_pointer) {
+            heap_free(o->pixels);
+            o->pixels = 0;
         }
     }
     com_ret(c, D3D_OK9);
