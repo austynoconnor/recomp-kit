@@ -9735,6 +9735,13 @@ static void test_d3d9_gpu_renderer() {
     CHECK(p[1] >= 190 && p[1] <= 192);
     const d9sh::Program &prog3 = d9sh::program_for(ps3);
     CHECK(prog3.ok && prog3.major == 3 && prog3.idefs.count(0) == 1);
+    // A relative source names the component of a0 it adds: skinning reads
+    // c[a0.x], c[a0.y], c[a0.z] and c[a0.w] for its four bones.
+    const d9sh::Program &rel = d9sh::program_for(
+        d9_words({0xFFFE0200u, 0x03000001u, 0xC00F0000u, 0xA0E42002u, 0xB0550000u, 0x0000FFFFu}));
+    CHECK(rel.ok && rel.relative && rel.code.size() == 1);
+    CHECK(rel.code.size() == 1 && rel.code[0].src[0].rel && rel.code[0].src[0].rel_comp == 1 &&
+          !rel.code[0].src[0].rel_loop);
 
     // Multisampling: a diagonal edge over black leaves partly covered pixels
     // in a 4x target, and none in a single-sampled one.
