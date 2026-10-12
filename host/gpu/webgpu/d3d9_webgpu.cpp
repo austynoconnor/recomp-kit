@@ -1103,6 +1103,13 @@ class WebGpuRenderer final : public D9Backend {
     }
 
     void retire(Tex &t) {
+        // A completion callback only covers submitted work. Flush any encoder
+        // that still names this texture before scheduling its destruction.
+        if (encoder_ && t.used == serial_) {
+            end_pass();
+            submit();
+        }
+        retire_fitted(t.desc.id);
         if (t.imported) {
             dev_->destroy(t.imported);
             t.imported = {};
@@ -1376,7 +1383,7 @@ class WebGpuRenderer final : public D9Backend {
         uint64_t key = mix(mix(mix((uint64_t)dt->desc.id, pass_width_), pass_height_), samples);
         auto it = fitted_.find(key);
         if (it != fitted_.end())
-            return it->second;
+            return it->second.view;
         WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
         td.size = {pass_width_, pass_height_, 1};
         td.format = depth_format_;
@@ -1384,8 +1391,28 @@ class WebGpuRenderer final : public D9Backend {
         td.usage = WGPUTextureUsage_RenderAttachment;
         WGPUTexture tex = wgpuDeviceCreateTexture(device_, &td);
         WGPUTextureView v = tex ? wgpuTextureCreateView(tex, nullptr) : nullptr;
-        fitted_[key] = v;
+        fitted_[key] = {tex, v, dt->desc.id};
         return v;
+    }
+    // Fitted attachments belong to the guest depth texture that requested
+    // them. Keep both handles so replacement/drop and resizing release them.
+    void retire_fitted(uint32_t owner, bool all = false) {
+        for (auto it = fitted_.begin(); it != fitted_.end();) {
+            if (!all && it->second.owner != owner) {
+                ++it;
+                continue;
+            }
+            const FittedDepth attachment = it->second;
+            it = fitted_.erase(it);
+            dev_->after_submitted([attachment]() {
+                if (attachment.view)
+                    wgpuTextureViewRelease(attachment.view);
+                if (attachment.texture) {
+                    wgpuTextureDestroy(attachment.texture);
+                    wgpuTextureRelease(attachment.texture);
+                }
+            });
+        }
     }
     void set_scissor(bool on, const int32_t sc[4]) {
         uint32_t r[4] = {0, 0, pass_width_, pass_height_};
@@ -2106,7 +2133,7 @@ class WebGpuRenderer final : public D9Backend {
         end_pass();
         submit();
         scale_ = want;
-        fitted_.clear();
+        retire_fitted(0, true);
         std::vector<HostD9TextureDesc> again;
         for (auto &kv : textures_)
             if (kv.second.scale != 1.0f ||
@@ -2196,7 +2223,12 @@ class WebGpuRenderer final : public D9Backend {
     std::unordered_map<uint64_t, WGPUBindGroup> groups_;
     std::unordered_map<uint64_t, WGPUSampler> samplers_;
     WGPUSampler shadow_sampler_ = nullptr;
-    std::unordered_map<uint64_t, WGPUTextureView> fitted_;
+    struct FittedDepth {
+        WGPUTexture texture = nullptr;
+        WGPUTextureView view = nullptr;
+        uint32_t owner = 0;
+    };
+    std::unordered_map<uint64_t, FittedDepth> fitted_;
     WGPUTextureView black_ = nullptr, black_cube_ = nullptr, far_depth_view_ = nullptr;
     std::vector<uint8_t> scratch_, packed_, pad_, uniform_bytes_;
     std::vector<uint32_t> fan_;

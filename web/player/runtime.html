@@ -133,7 +133,9 @@ async function start() {
     noInitialRun: true,
     print: record,
     printErr: record,
-    setStatus: (t) => status(t ? t : ""),
+    // SDK counters compare decoded data with compressed Content-Length.
+    // Keep loading copy accurate instead of displaying an impossible ratio.
+    setStatus: (t) => status(t ? "Loading game…" : ""),
     onAbort: (what) => status(`The game stopped: ${what}`, true),
     preRun: [() => {
       const m = Module;

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 2026-10-12 02:48 CDT — GPT-6 (Codex): Verified the WebGPU depth ownership and texture
+  retirement changes in a complete Windows Wasm build. Fitted depth attachments
+  now retain texture/view handles and retire with their guest owner or resize;
+  outstanding texture users are submitted before queue-completion disposal.
+  Replaced gzip SDK progress counters, whose decoded bytes can exceed encoded
+  Content-Length, with accurate startup loading copy. The NFS integration has
+  58 passing Python/browser checks and reached live career driving in an
+  eight-minute isolated headless NVIDIA probe. Its memory guard did not trip;
+  race completion, audio quality and default desktop stability remain pending.
+
 - 2026-10-11 23:56 CDT — GPT-6 (Codex): Browser action hints now use each
   game's configured input bindings instead of assuming bottom-face-button
   confirmation. Added driving hints, controller-family labels, generic button
