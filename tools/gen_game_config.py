@@ -71,6 +71,9 @@ def render_header(cfg):
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (%d)" % native["axis_range"][0])
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXIS_MAX (%d)" % native["axis_range"][1])
     lines.append("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK %d" % int(native["dpad"] == "stick"))
+    aim = native["mouse_aim"]
+    lines.append("#define RECOMP_CONTROLS_MOUSE_AIM %s" % c_string(
+        "" if aim["stick"] == "none" else ";".join("%s=%s" % (k, aim[k]) for k in sorted(aim))))
     lines.append("#define RECOMP_CONTROLS_KEY_ALIASES %s" % c_string(
         ",".join("%s=%s" % (k, v) for k, v in sorted(controls["key_aliases"].items()))))
     lines.append("#define RECOMP_GUEST_SIZE %s" % c_hex(game["guest_size"]))

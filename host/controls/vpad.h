@@ -74,7 +74,7 @@ struct PadEdge {
     int32_t value;
 };
 
-enum { kPadSourceTouch = 0, kPadSourceController = 1, kPadSourceCount = 2 };
+enum { kPadSourceTouch = 0, kPadSourceController = 1, kPadSourceMouse = 2, kPadSourceCount = 3 };
 
 // Thread-safe (one mutex): the host (input thread) writes through
 // set_source/request_rumble/set_controller_connected, and the guest (game

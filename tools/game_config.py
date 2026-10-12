@@ -138,10 +138,11 @@ def load_controls(controls, touch, source):
     native = dict(controls.get("native", {}))
     unknown_native = sorted(k for k in native
                             if k not in ("xinput", "dinput", "axes", "buttons", "axis_range",
-                                         "keys", "dpad"))
+                                         "keys", "dpad", "mouse_aim"))
     if unknown_native:
         raise ValueError("%s: [controls.native] may name only xinput, dinput, axes, buttons, "
-                         "axis_range, keys, dpad, not %s" % (source, ", ".join(unknown_native)))
+                         "axis_range, keys, dpad, mouse_aim, not %s"
+                         % (source, ", ".join(unknown_native)))
     native.setdefault("xinput", True)
     native.setdefault("dinput", True)
     if not isinstance(native["xinput"], bool) or not isinstance(native["dinput"], bool):
@@ -187,6 +188,25 @@ def load_controls(controls, touch, source):
     if native.setdefault("dpad", "hat") not in ("hat", "stick"):
         raise ValueError('%s: [controls.native] dpad must be "hat" or "stick", not %r'
                          % (source, native["dpad"]))
+    # mouse_aim = { stick = "left", hold = "r2", fire = "cross", speed = 1200 }:
+    # with the pointer captured, the right mouse button holds `hold` and mouse
+    # motion deflects `stick`; the left button presses `fire`
+    # (host/controls/mouse_pad.h). For games that aim only with a stick.
+    aim = dict(native.get("mouse_aim", {}))
+    if not isinstance(native.get("mouse_aim", {}), dict) or sorted(
+            set(aim) - {"stick", "hold", "fire", "speed"}):
+        raise ValueError("%s: [controls.native] mouse_aim may set only stick, hold, fire and speed"
+                         % source)
+    aim.setdefault("stick", "none")
+    aim.setdefault("hold", "r2")
+    aim.setdefault("fire", "cross")
+    aim.setdefault("speed", 1200)
+    if (aim["stick"] not in ("left", "right", "none") or aim["hold"] not in PAD_BUTTONS
+            or aim["fire"] not in PAD_BUTTONS or isinstance(aim["speed"], bool)
+            or not isinstance(aim["speed"], (int, float)) or aim["speed"] <= 0):
+        raise ValueError("%s: [controls.native] mouse_aim %r: stick is left/right/none, hold and "
+                         "fire name pad buttons, speed is positive" % (source, aim))
+    native["mouse_aim"] = aim
     controls["native"] = native
     return controls
 

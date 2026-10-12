@@ -34,6 +34,7 @@
 #include "../input_touch.h"
 #include "../controls/controls_host.h"
 #include "../controls/key_remap.h"
+#include "../controls/mouse_pad.h"
 #include "../../mods/controls_settings.h"
 #include "../controls/gamepad_sdl.h"
 #include "../../mods/mods_internal.h"
@@ -576,6 +577,8 @@ void system_strip_insets(double *top, double *bottom) {
     *bottom = below > 0 ? below : 0;
 }
 
+controls::MousePad &mouse_aim();
+
 void handle_mouse_move(const SDL_MouseMotionEvent &motion) {
     // A real pointer move (not one the touch path or the binding itself
     // synthesized, which both arrive as SDL_TOUCH_MOUSEID): feed the mapped
@@ -592,6 +595,7 @@ void handle_mouse_move(const SDL_MouseMotionEvent &motion) {
         int bw, bh, dw, dh;
         window_sizes(&bw, &bh, &dw, &dh);
         e.flags = kRelativeMotion;
+        mouse_aim().motion(motion.xrel, motion.yrel);
         e.dx = motion.xrel * (bw > 0 ? double(dw) / bw : 1.0);
         e.dy = motion.yrel * (bh > 0 ? double(dh) / bh : 1.0);
         queue_or_apply(e);
@@ -722,6 +726,22 @@ bool is_modifier_scancode(SDL_Scancode sc) {
     return sc == SDL_SCANCODE_LSHIFT || sc == SDL_SCANCODE_RSHIFT || sc == SDL_SCANCODE_LCTRL ||
            sc == SDL_SCANCODE_RCTRL || sc == SDL_SCANCODE_LALT || sc == SDL_SCANCODE_RALT ||
            sc == SDL_SCANCODE_LGUI || sc == SDL_SCANCODE_RGUI || sc == SDL_SCANCODE_CAPSLOCK;
+}
+
+#ifndef RECOMP_CONTROLS_MOUSE_AIM
+#define RECOMP_CONTROLS_MOUSE_AIM ""
+#endif
+// [controls.native] mouse_aim: the mouse as one more virtual pad source.
+controls::MousePad &mouse_aim() {
+    static const bool parsed = [] {
+        controls::MousePadConfig config;
+        if (!controls::parse_mouse_pad(RECOMP_CONTROLS_MOUSE_AIM, &config))
+            fprintf(stderr, "[controls] mouse aim ignored: \"%s\"\n", RECOMP_CONTROLS_MOUSE_AIM);
+        controls::mouse_pad().configure(config);
+        return true;
+    }();
+    (void)parsed;
+    return controls::mouse_pad();
 }
 
 // [controls.native] keys: the key the game sees for each physical key.
@@ -1138,8 +1158,12 @@ void handle_event(const SDL_Event &event) {
                                : event.button.button == SDL_BUTTON_RIGHT  ? 1
                                : event.button.button == SDL_BUTTON_MIDDLE ? 2
                                                                           : -1;
-            if (button >= 0)
+            if (button >= 0) {
+                if (event.button.which != SDL_TOUCH_MOUSEID)
+                    mouse_aim().button(button, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN,
+                                       host_pointer_captured());
                 handle_button(event.button, button, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+            }
         }
         break;
     case SDL_EVENT_MOUSE_WHEEL:
@@ -1372,6 +1396,9 @@ void after_events() {
         controls::host_set_screen(screen, controls::Rect{game.x, game.y, game.w, game.h},
                                   screen.dh - (screen.safe.y + screen.safe.h));
         controls::gamepad_poll();
+        if (mouse_aim().enabled() &&
+            mouse_aim().tick(SDL_GetTicksNS(), host_pointer_captured()))
+            controls::vpad().set_source(controls::kPadSourceMouse, mouse_aim().state());
         controls::host_set_wanted(absent, controls::gamepad_connected());
         controls::host_pump(SDL_GetTicksNS());
         update_editor_text_input();
