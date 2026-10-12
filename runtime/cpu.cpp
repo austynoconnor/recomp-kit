@@ -326,7 +326,7 @@ void recomp_null_access(uint32_t addr, int write) {
     abort();
 }
 
-// An SSE/SSE2 instruction the translator left as a trap (MMX is translated).
+// A SIMD instruction outside the translator's implemented subset remains a trap.
 // The CPUID below advertises neither extension, so only a guest that skips the
 // CPUID check gets here; continuing would compute garbage, so this is fatal.
 void recomp_unmodelled(X86 *c, uint32_t addr) {

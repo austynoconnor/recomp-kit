@@ -7,6 +7,7 @@ outputs (the translation, the texture pack, the apps, the logs) go under
 build/. The kit's own default is games/stub, a game that does not exist."""
 
 import argparse
+import filecmp
 import json
 import os
 from pathlib import Path
@@ -320,6 +321,14 @@ def publish_generated(build_root, translate):
         translate(stage)
         # x86.h sits beside the generated sources so #include "x86.h" resolves.
         shutil.copy(ROOT / "runtime/x86.h", stage / "x86.h")
+        # Publishing a complete tree must not make every unchanged C chunk
+        # look new to Ninja. Compare bytes (not timestamps) and preserve only
+        # timestamps for identical inputs; changed files retain fresh times.
+        for source in stage.rglob("*"):
+            previous = gen / source.relative_to(stage)
+            if source.is_file() and previous.is_file() and filecmp.cmp(source, previous, shallow=False):
+                stamp = previous.stat()
+                os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
@@ -408,6 +417,8 @@ def parse_args(argv, system=None):
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 2, 8))
     parser.add_argument("--preset", default=default_preset(system), help="CMake configure preset")
     parser.add_argument("--config", choices=("Release", "Debug"), default="Release")
+    parser.add_argument("--web-link-opt-level", type=int, choices=(0, 1, 2), default=2,
+                        help="Final web optimization level; 0 reuses optimized objects for startup diagnostics")
     parser.add_argument("--game-dir", type=Path, default=ROOT / "games/stub",
                         help="Absolute directory holding the game.toml this build is for (default: the kit's stub game)")
     parser.add_argument("--stub", action="store_true",
@@ -452,6 +463,8 @@ def main():
     preset = preset_name(args.preset, args.config, stub=args.stub, target=args.target)
     build_dir = build_dir_for(args.build_root, preset)
     defines = game_defines(args.game_dir, args.build_root)
+    if args.target == "web":
+        defines.append("-DRECOMP_WEB_LINK_OPT_LEVEL=%s" % args.web_link_opt_level)
     try:
         # The lock lives at <build root>/recomp/.lock: BuildLock joins build/recomp/.lock onto its argument.
         with buildlock.BuildLock(args.build_root.parent, "tools/build.py"):

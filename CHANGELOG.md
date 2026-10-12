@@ -2,6 +2,210 @@
 
 ## Unreleased
 
+- 2026-10-12 04:25:32 CDT — GPT-6 (Codex): Expanded-guest-bounds graphics
+  regression selections pass 289 D3DX and 66 D3D9 shader checks under Node.
+  Audio passes 446; allocator layouts pass 34 expanded / 21 default checks.
+  Real-game rendering and startup verification remain pending.
+
+- 2026-10-12 04:20:34 CDT — GPT-6 (Codex): Independent default-layout native
+  suite passes 21 checks under Node, preserving original capacity, failure
+  behavior and the fixed reserved map. Expanded-layout suite passes 34 checks;
+  audio passes 446 and configuration passes 23 cases. Both layouts are
+  verified; the real game's capacity rebuild/startup probe remain pending.
+
+- 2026-10-12 04:18:17 CDT — GPT-6 (Codex): High heap integration now includes
+  VirtualQuery's committed/private classification, GetSystemInfo's maximum
+  address, and thunk decoding bounded to the new region. Region ABI/allocator
+  suite passes 34 checks under Node; audio regression selection passes 446.
+  The test binary's bounded Wasm memory settings match the existing ABI suite.
+  Default-layout native verification is running in a separate build tree.
+
+- 2026-10-12 04:10:48 CDT — GPT-6 (Codex): Added optional extra_heap_base /
+  extra_heap_size configuration for a disjoint high heap, bounded by guest_size
+  and checked against fixed memory and auxiliary modules. Defaults preserve
+  the original layout. Allocation/refusal sizing and heap consistency checks
+  account for separate regions; existing adjacency checks preserve the gap.
+  Added a game-independent native region suite and config rejection/rendering
+  tests. All 23 configuration tests pass; native compilation is pending. RE4
+  measured 133,732,176 used bytes in its 128 MiB heap before startup failed.
+
+- 2026-10-12 03:57:21 CDT — GPT-6 (Codex): Actual RE4 full-input startup now
+  passes its configured callback, then reports an invalid DuplicateSoundBuffer
+  call and a failed 940,064-byte allocation. Failed heap allocations now report
+  used/free/largest blocks, live/allocation/free counts and bounded guest return
+  candidates; rejected duplicates report device/source kind/output arguments.
+  These diagnostics preserve existing allocation and HRESULT behavior. Native
+  compilation and another bounded startup probe are pending.
+
+- 2026-10-12 03:07:47 CDT — GPT-6 (Codex): Final audio regression selection
+  passed 446 guest checks with GetCaps/VerifyCertification agreement. Actual
+  full-input browser startup passed the stack-cleanup fix, then exposed a
+  callback passed from a function recovered after the one-time pointer scan.
+  Immediate discovery now closes over newly recovered/extended bodies, with
+  body-version caching and the existing target/table/string filters. Two new
+  PUSH/MOV-register callback-chain regressions and all 201 relevant translator
+  checks passed. Strict game regeneration/browser rebuilding in progress;
+  no gameplay claim.
+
+- 2026-10-12 02:37:49 CDT — GPT-6 (Codex): All 440 selected audio regression
+  checks passed under Node. DirectSound8 GetCaps now clears DSCAPS_CERTIFIED
+  to agree with VerifyCertification; legacy device responses are preserved.
+  Added consistency checks, pending execution on the final runtime build.
+
+- 2026-10-12 02:22:33 CDT — GPT-6 (Codex): Compiled the new quaternion and
+  DirectSound8 paths through the prescribed test runner. Three focused CTest
+  entries passed under Node. Standalone quaternion selection passed 209 guest
+  checks; DirectSound8 selection passed 75 guest checks. Real browser game
+  startup and audible gameplay on this runtime remain pending.
+
+- 2026-10-12 02:15:06 CDT — GPT-6 (Codex): Added D3DXMatrixRotationQuaternion
+  and D3DXQuaternionRotationMatrix for d3dx9_26/_30 with row-vector semantics,
+  stable half-turn extraction, guest-span validation and alias-safe writes.
+  Added DirectSoundCreate8 (also ordinal 11), separate DirectSound8 object
+  kind and twelve-slot interface using the existing PCM buffer bridge;
+  VerifyCertification reports DS_UNCERTIFIED. Legacy objects refuse the
+  version-8 IID. Added quaternion fixtures for identity, quarter/half-turns,
+  overlaps and stdcall cleanup, plus audio factory/interface/buffer/refcount
+  fixtures. New native checks await compilation; this does not establish
+  audible gameplay or complete version-8 buffer/effect support.
+
+- 2026-10-12 00:12:00 CDT — GPT-6 (Codex): Generated-source publication keeps
+  previous timestamps only for byte-identical files, including auxiliary
+  modules, reducing unnecessary compilation after small translator changes.
+  Changed/new/deleted files still publish as a complete generation; failed
+  translation retains prior sources and symbol metadata. Two new publication
+  regressions and 44 build/launcher checks passed. Optional stack-cleanup-gap
+  shape probes now discard their expected recovery-budget diagnostics while
+  retaining earlier required-recovery errors; 199 relevant translator tests
+  passed. Actual full regeneration adopted 2,556 cleanup gaps with zero
+  translation failures, unmodelled instructions or jump-table gaps. The game
+  rebuild stopped at its memory guard after 45 compiled chunks; startup on
+  this generation remains unverified.
+
+- 2026-10-11 23:55:58 CDT — GPT-6 (Codex): Executed 31 DX9 assembly/decoder
+  checks and 146 guest buffer/math/blob/shader-object ABI checks under Node.
+  Added --shader-assembly test mode, focused CTest entries, test-name filters
+  that fail when unmatched, and a bounded web guest-test heap. Diagnostic link
+  level 0 emits a private symbol sidecar without embedding DWARF. A real game
+  startup trace exposed repeated host re-entry across one-instruction cdecl
+  stack-cleanup gaps; added conservative adoption of a single bounded
+  ADD ESP,imm that immediately rejoins the same original listing, excluding
+  other owners, other gap shapes and known nonreturning calls. Five new
+  regression cases and 199 relevant translator/SEH/nonreturn checks passed.
+  Full strict regeneration/browser rebuilding is in progress. No game-frame
+  or playable-performance claim.
+
+- 2026-10-11 23:38:53 CDT — GPT-6 (Codex): Implemented bounded D3DXAssembleShader
+  vertex 1.1/2.0 and pixel 2.0 bytecode assembly and guest-owned ID3DXBuffer
+  shader/error objects, with seven-argument cleanup and failure diagnostics.
+  Its shared IID is resolved on the object to preserve D3DBlob's separate
+  payload mapping. Added portable Emscripten/Node assembly fixtures, with
+  21 passing checks, and guest COM/ABI cases pending execution. Actual private
+  startup revealed additional syntax and missing direct device shader APIs;
+  implemented constant sums, swizzles, rgba components, pixel declarations,
+  texture reads, shader COM objects and Create/Set/Get shader/GetFunction
+  paths. Bytecode copying recognizes END only at instruction boundaries and
+  bindings retain immutable shader data. Builds and further startup checks
+  remain in progress; no rendered-frame or playable-performance claim.
+
+- 2026-10-10 17:15:46 CDT — GPT-6 (Codex): Added MoveWindow's six-argument
+  handler using shared geometry and synchronous notification/paint machinery,
+  preserving z-order/activation and rejecting invalid window handles. Added
+  native size/ABI/error cases and formatted both files; native cases remain
+  unexecuted. Actual browser compilation/linking and headless startup verify
+  passage beyond the earlier corrupt-stack/CRT failures to creation of an
+  800x600 Direct3D device on WebGPU. Startup now fails at the missing D3DX
+  shader assembly/COM-buffer path; no rendered game frame or gameplay claim.
+
+- 2026-10-10 17:12:28 CDT — GPT-6 (Codex): Real browser startup verified
+  that corrected shell failure/ABI handling removes the prior invalid
+  allocation and exception path. Implemented LoadStringA through the shared
+  PE RT_STRING reader, with byte bounds/truncation/termination and separate
+  handling of zero capacity from LoadStringW's pointer-return contract.
+  Negative capacities fail safely. ANSI narrowing follows the existing
+  WideCharToMultiByte policy; full ACP conversion remains unsupported.
+  LoadMenuA reports unavailable native menus with error 120 and two-argument
+  stack cleanup. Added native bounds/ABI cases, formatted three files, and
+  compiled/linked the browser diagnostic successfully. Native tests remain
+  unexecuted; 30 project/build CLI checks passed. Runtime retesting is running.
+
+- 2026-10-10 17:03:56 CDT — GPT-6 (Codex): Added --web-link-opt-level
+  (0/1/2, default 2), passed explicitly into the validated CMake cache setting.
+  Large translated games can reuse their optimized object files with level 0
+  for bounded startup diagnostics after whole-module optimization runs out
+  of memory. The default release behavior remains level 2. Build-CLI checks
+  cover defaults, diagnostic selection and invalid levels; 30 combined
+  project/launcher/build checks passed. Runtime shell handlers compiled;
+  browser linking/retesting remains pending available RAM.
+
+- 2026-10-10 16:44:02 CDT — GPT-6 (Codex): Browser retesting verified that
+  the returning-thunk fix gets past the former missing continuation. Added
+  one-argument SHGetDesktopFolder/SHGetMalloc handlers: unavailable shell
+  interfaces clear valid outputs and return E_NOTIMPL; invalid output
+  addresses return E_POINTER. This replaces false success and unknown stack
+  cleanup, without claiming shell COM support. Added native cases covering
+  errors, bounded output writes and argument counts; formatted both files.
+  The cases are not executed on this host; guarded browser compilation and
+  linking are running. The observed invalid allocation and exception path
+  are still unresolved.
+
+- 2026-10-10 15:46:18 CDT — GPT-6 (Codex): Verified the returning-thunk
+  inference correction against the real RE4 listings and strict whole-image
+  regeneration. The translation now emits 32,961 functions and 45,379
+  entries, including the observed missing 0x0041bb16 continuation, with zero
+  translation failures/unmodelled instructions/table gaps/undecoded table
+  sites. The browser rebuild is running; runtime verification is pending.
+
+- 2026-10-10 15:39:35 CDT — GPT-6 (Codex): Fixed nonreturning-callee
+  inference for JMP-only forwarding thunk chains. A returning target now
+  supplies return evidence to its thunk before truncated caller listings
+  are judged; a thunk forwarding to ExitProcess remains nonreturning.
+  The real RE4 browser startup exposed omitted continuation 0x0041bb16
+  after the returning free thunk 0x009649f6, followed by stack corruption
+  and a Wasm bounds trap. Added two regression cases; 194 translator driver,
+  nonreturn and SEH checks passed. A complete browser prototype and bounded
+  headless startup were achieved before this fix; regeneration/rebuild and
+  runtime verification of the correction remain pending.
+
+- 2026-10-10 15:24:13 CDT — GPT-6 (Codex): The real RE4 Emscripten build
+  successfully compiled the updated kernel32_wide.cpp, along with the
+  runtime, graphics, input, audio and browser host. This confirms browser
+  compilation of the new ANSI INI handler; the added native regression
+  cases and runtime behavior remain unverified. Final linking reached
+  optimization but its first attempt stopped under the game's memory
+  supervisor. The game wrapper now bounds the optimizer separately and
+  has resumed that step; no browser startup/gameplay success is claimed.
+
+- 2026-10-10 14:36:08 CDT — GPT-6 (Codex): Added the ANSI
+  GetPrivateProfileStringA export with the correct six-argument stdcall
+  registration. Shares the existing INI/file-routing implementation with W,
+  using byte counts/terminators for A and UTF-16 counts/terminators for W.
+  Preserves leading default blanks while removing trailing blanks, matching
+  the documented profile-string contract. Added native regression cases for
+  case-insensitive value reads, key enumeration, truncated double-NUL output,
+  default strings and a one-byte destination. Formatted only edited native
+  files with tools/format.py. Native regression execution remains pending:
+  this host has no native Windows SDK/compiler, and the real browser build
+  has not yet reached linking/startup. No Git work or game launch.
+
+- 2026-10-08 11:23:00 CDT — GPT-6 (Codex): Fixed whole-image bring-up for a new game.
+  Treat statically identified ExitProcess/ExitThread/FatalAppExitA/FatalExit
+  import calls as path ends during recovery and emission; retain an explicit
+  unexpected-return trap. Register-indirect and returning import calls keep
+  their continuation. Reject speculative pointer candidates containing literal
+  calls outside the image/shim range before they can claim surrounding code.
+  Existing strict listed-code gates remain enabled. Added regression checks:
+  194 driver/nonreturn/SEH/instruction checks passed, 72 differential checks
+  skipped because clang was absent. The private full-game translation passed
+  with zero failures/unmodelled instructions/jump-table gaps; this does not
+  establish playable behavior. Added an explicit Start/Stop player shell using
+  a disposable runtime iframe and per-game Web Lock; reload stays idle and
+  duplicate tabs cannot start the same game. Runtime log retains 512 entries.
+  CMake and launcher packaging include runtime.html. Reduced Emscripten startup
+  pool from 24 to 8 workers and initial heap from 1 GiB to 512 MiB, retaining
+  growth. A headless Chrome fixture verified start/stop/reload/session release,
+  and launcher packaging tests passed. No heavy interactive launch or Git work.
+
 - 2026-10-08 03:13 CDT — GPT-6 (Codex): pass `-O2` and `-g0` during
   non-Debug Emscripten application linking. This runs release optimization and
   removes translated-function DWARF from shipped downloads while preserving

@@ -15,6 +15,57 @@ from test_translate_insns import NoImage, Opts  # noqa: E402
 HALT, FN = 0x00401000, 0x00401100
 
 
+def test_returning_thunk_chain_keeps_call_continuations():
+    listings = [
+        "00401000  JMP 0x00401200\n",
+        "00401200  JMP 0x00401300\n",
+        "00401300  RET\n",
+        "00401100  CALL 0x00401000\n",
+    ]
+    functions = []
+    for listing in listings:
+        insns = T.parse_listing_text(listing)
+        fn = T.Function(insns[0].addr, "synthetic", 0, insns)
+        fn.measure(NoImage())
+        functions.append(fn)
+    inferred = T.noreturn_callees_from(functions, {})
+    assert HALT not in inferred
+    tr = T.Translator(NoImage(), {fn.addr for fn in functions}, Opts())
+    tr.noreturn_callees = inferred
+    assert not tr.never_returns(functions[-1].insns[0])
+
+
+def test_exit_forwarding_thunk_stays_nonreturning():
+    listings = [
+        "00401000  JMP 0x00401200\n",
+        "00401200  CALL dword ptr [0x405000]\n00401206  RET\n",
+        "00401100  CALL 0x00401000\n",
+    ]
+    functions = []
+    for listing in listings:
+        insns = T.parse_listing_text(listing)
+        fn = T.Function(insns[0].addr, "synthetic", 0, insns)
+        fn.measure(NoImage())
+        functions.append(fn)
+    assert HALT in T.noreturn_callees_from(functions, {0x405000: "ExitProcess"})
+
+
+def test_imported_exit_has_no_fallthrough_dispatch():
+    image = NoImage()
+    image.iat_names = {0x405000: "ExitProcess", 0x405004: "GetLastError"}
+    tr = T.Translator(image, {FN}, Opts())
+    fn = T.Function(FN, "exit", 0, T.parse_listing_text(
+        "00401100  PUSH 0x3\n00401102  CALL dword ptr [0x405000]\n"))
+    fn.measure(image)
+    tr.prepare(fn)
+    text = "\n".join(tr.translate(fn))
+    assert "recomp_unknown_call(c," in text
+    assert "recomp_jump" not in text
+    assert not tr.never_returns(T.parse_listing_text(
+        "00401102  CALL dword ptr [0x405004]\n")[0])
+    assert not tr.never_returns(T.parse_listing_text("00401102  CALL EAX\n")[0])
+
+
 def translate(listing, entries=()):
     tr = T.Translator(NoImage(), {FN, HALT}, Opts())
     tr.noreturn_callees = {HALT}

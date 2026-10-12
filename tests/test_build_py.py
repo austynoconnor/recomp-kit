@@ -50,6 +50,16 @@ class BuildPyTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             build_py.parse_args(["--jobs", "0"], system="Darwin")
 
+    def test_web_link_optimization_defaults_to_release_and_can_bound_diagnostics(self):
+        with patch.dict(os.environ, {"EMSDK": "/emsdk"}):
+            args, _ = build_py.parse_args(["--target", "web"], system="Linux")
+            self.assertEqual(args.web_link_opt_level, 2)
+            args, _ = build_py.parse_args(["--target", "web", "--web-link-opt-level", "0"],
+                                         system="Linux")
+            self.assertEqual(args.web_link_opt_level, 0)
+            with self.assertRaises(SystemExit):
+                build_py.parse_args(["--target", "web", "--web-link-opt-level", "3"], system="Linux")
+
     def test_build_passes_targets_and_parallelism_to_cmake(self):
         with patch.object(build_py.subprocess, "run") as run:
             build_py.build("macos", ["pop_smoke"], 6)

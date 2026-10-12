@@ -3,6 +3,7 @@
 #include "memory.h"
 #include "win32.h"
 #include "loader.h"
+#include "game_config.h"
 
 #include "../platform/os.h"
 #if defined(__APPLE__) || (defined(__linux__) && !defined(__ANDROID__))
@@ -305,10 +306,11 @@ inline uint32_t align_up(uint32_t v, uint32_t a) {
     return (v + a - 1) & ~(a - 1);
 }
 
-// Largest request the arena could ever satisfy. Anything at or above this
-// would overflow the rounding in align_up (0xffffffff rounds to 0), so it is
-// rejected before any arithmetic on it.
-const uint32_t HEAP_ARENA_BYTES = HEAP_LIMIT - HEAP_BASE;
+// Largest contiguous request any region could satisfy. Requests cannot span
+// the reserved gap, and overflow-sized values must be rejected before rounding.
+const uint32_t EXTRA_HEAP_BASE = RECOMP_EXTRA_HEAP_BASE;
+const uint32_t EXTRA_HEAP_END = EXTRA_HEAP_BASE + RECOMP_EXTRA_HEAP_SIZE;
+const uint32_t HEAP_ARENA_BYTES = std::max(HEAP_LIMIT - HEAP_BASE, RECOMP_EXTRA_HEAP_SIZE);
 inline bool size_is_sane(uint32_t size) {
     return size <= HEAP_ARENA_BYTES;
 }
@@ -335,6 +337,10 @@ void heap_reset() {
     g_blocks->clear();
     g_free->clear();
     put_block(HEAP_BASE, HEAP_LIMIT - HEAP_BASE, 0, false);
+    // A separate region leaves mods, stacks, TEB and import trampolines intact.
+    // Existing coalescing requires physical adjacency, so it cannot cross this gap.
+    if (RECOMP_EXTRA_HEAP_SIZE)
+        put_block(EXTRA_HEAP_BASE, RECOMP_EXTRA_HEAP_SIZE, 0, false);
     g_total_allocs = g_total_frees = 0;
 }
 
@@ -430,7 +436,21 @@ uint32_t heap_alloc(uint32_t size, bool zero, uint32_t align) {
         ++g_total_allocs;
         return user;
     }
-    LOGW("heap_alloc: out of guest heap (%u bytes requested)", size);
+    // Distinguish a full arena from fragmentation, and identify the guest
+    // allocation site without logging every successful allocation.
+    const HeapStats stats = heap_stats();
+    LOGW("heap_alloc: out of guest heap (%u bytes requested; used=%llu free=%llu largest=%u "
+         "live=%u allocations=%llu frees=%llu)",
+         size, (unsigned long long)stats.used_bytes, (unsigned long long)stats.free_bytes,
+         stats.largest_free, stats.used_blocks, (unsigned long long)stats.total_allocs,
+         (unsigned long long)stats.total_frees);
+    if (const X86 *c = guest_current_context()) {
+        LOGW("heap_alloc: EIP=%08x ESP=%08x EBP=%08x", c->eip, c->r[R_ESP], c->r[R_EBP]);
+        auto returns = win32_stack_return_candidates(c->r[R_ESP], 0x400, loader_image_base(),
+                                                     loader_image_limit(), 12);
+        for (uint32_t ret : returns)
+            LOGW("  allocation return candidate %08x", ret);
+    }
     return 0;
 }
 
@@ -580,7 +600,7 @@ HeapStats heap_stats() {
     return s;
 }
 
-// Check that the heap block map covers the arena without gaps, overlap or adjacent free blocks.
+// Check complete coverage of each region, permitting only the configured gap.
 // Return the first invariant failure, or an empty string when the allocation structure is consistent.
 std::string heap_check() {
     if (!g_blocks)
@@ -589,12 +609,22 @@ std::string heap_check() {
     bool prev_free = false;
     char buf[160];
     for (auto &kv : *g_blocks) {
+        if (cursor == HEAP_LIMIT && RECOMP_EXTRA_HEAP_SIZE) {
+            cursor = EXTRA_HEAP_BASE;
+            prev_free = false;
+        }
         if (kv.first != cursor) {
             snprintf(buf, sizeof buf, "gap or overlap at %08x (expected %08x)", kv.first, cursor);
             return buf;
         }
         if (kv.second.size == 0 || (kv.second.size & 15)) {
             snprintf(buf, sizeof buf, "block %08x has bad size %u", kv.first, kv.second.size);
+            return buf;
+        }
+        uint32_t region_end = cursor < HEAP_LIMIT ? HEAP_LIMIT : EXTRA_HEAP_END;
+        if (uint64_t(cursor) + kv.second.size > region_end) {
+            snprintf(buf, sizeof buf, "block %08x crosses heap region end %08x", cursor,
+                     region_end);
             return buf;
         }
         if (!kv.second.used && prev_free) {
@@ -604,8 +634,9 @@ std::string heap_check() {
         prev_free = !kv.second.used;
         cursor += kv.second.size;
     }
-    if (cursor != HEAP_LIMIT) {
-        snprintf(buf, sizeof buf, "heap ends at %08x, expected %08x", cursor, HEAP_LIMIT);
+    uint32_t expected_end = RECOMP_EXTRA_HEAP_SIZE ? EXTRA_HEAP_END : HEAP_LIMIT;
+    if (cursor != expected_end) {
+        snprintf(buf, sizeof buf, "heap ends at %08x, expected %08x", cursor, expected_end);
         return buf;
     }
     for (uint32_t a : *g_free) {

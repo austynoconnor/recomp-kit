@@ -234,8 +234,12 @@ void find_ex_w(X86 *c) {
     find_named(c, true);
 }
 // RT_STRING blocks contain sixteen WORD-length-prefixed UTF-16 strings.
-void load_string(X86 *c) {
+void load_string(X86 *c, bool wide) {
     uint32_t id = arg(c, 1) & 0xffff, out = arg(c, 2), cap = arg(c, 3), bytes = 0;
+    if ((!wide && !cap) || int32_t(cap) < 0) {
+        set_eax(c, 0);
+        return;
+    }
     uint32_t p = resource_data(resource_find(6, (id >> 4) + 1), &bytes), end = p + bytes;
     for (uint32_t i = 0; p && i < 16; ++i) {
         if (end - p < 2)
@@ -255,16 +259,32 @@ void load_string(X86 *c) {
                 return;
             }
             n = std::min(n, cap - 1);
-            if (!gm_valid(out, (n + 1) * 2))
+            if (!gm_valid(out, (n + 1) * (wide ? 2 : 1)))
                 break;
-            memmove(g_mem + out, g_mem + p, n * 2);
-            wr16(out + n * 2, 0);
+            if (wide) {
+                memmove(g_mem + out, g_mem + p, n * 2);
+                wr16(out + n * 2, 0);
+            } else {
+                // Match the runtime's WideCharToMultiByte narrowing policy.
+                // Full ANSI code-page/best-fit conversion remains unsupported.
+                for (uint32_t j = 0; j < n; ++j) {
+                    uint16_t unit = rd16(p + j * 2);
+                    wr8(out + j, unit < 256 ? uint8_t(unit) : uint8_t('?'));
+                }
+                wr8(out + n, 0);
+            }
             set_eax(c, n);
             return;
         }
         p += n * 2;
     }
     set_eax(c, 0);
+}
+void load_string_a(X86 *c) {
+    load_string(c, false);
+}
+void load_string_w(X86 *c) {
+    load_string(c, true);
 }
 void load_bitmap(X86 *c) {
     uint32_t bytes = 0, p = resource_data(resource_find(2, arg(c, 1)), &bytes);
@@ -524,7 +544,8 @@ const ImportShim shims[] = {
     W("FindWindowExW", 4, find_ex_w),
     W("LoadBitmapW", 2, load_bitmap),
     W("LoadIconW", 2, load_icon),
-    W("LoadStringW", 4, load_string),
+    W("LoadStringW", 4, load_string_w),
+    W("LoadStringA", 4, load_string_a),
     W("DrawTextW", 5, draw_text),
     W("DrawTextExW", 6, draw_text_ex),
     W("CharUpperW", 1, upper),

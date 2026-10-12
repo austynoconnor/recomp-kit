@@ -2,13 +2,14 @@
 #pragma once
 #include "guest.h"
 
-// Maps (or re-maps) the 256 MB guest arena at g_mem, zero filled, and resets
+// Maps (or re-maps) the configured guest arena at g_mem, zero filled, and resets
 // the heap free list. Safe to call repeatedly; each call discards all guest
 // state. Aborts on failure.
 void mem_init();
 void mem_shutdown();
 
-// First-fit free-list allocator over HEAP_BASE..HEAP_LIMIT.
+// First-fit free-list allocator over HEAP_BASE..HEAP_LIMIT and an optional
+// disjoint high region configured by extra_heap_base/extra_heap_size.
 // Returns a guest address, or 0 on failure. Sizes are rounded up to a multiple
 // of 16 and every block is at least 16-byte aligned; `align` may request more
 // (VirtualAlloc uses 4096). `zero` clears the usable bytes.

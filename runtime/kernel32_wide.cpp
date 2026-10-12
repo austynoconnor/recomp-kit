@@ -1,5 +1,6 @@
 // UTF-16 kernel32 entry points. File operations share the ANSI shim's path seam.
 #include "kernel32_internal.h"
+#include "game_config.h"
 #include "windows_version.h"
 #include "loader.h"
 #include "resources.h"
@@ -195,17 +196,34 @@ bool profile_key(const std::string &line, std::string &key, std::string &value) 
         value = value.substr(1, value.size() - 2);
     return !key.empty();
 }
-void k_GetPrivateProfileStringW(X86 *c) {
-    std::string section = gm_wstr(arg(c, 0)), key = gm_wstr(arg(c, 1));
+// Both exports share INI parsing/path routing; only guest character width and
+// output counts differ. ANSI INI bytes follow the runtime's byte-string seam.
+void get_private_profile_string(X86 *c, bool wide) {
+    auto read = [wide](uint32_t address) { return wide ? gm_wstr(address) : gm_str(address); };
+    auto put = [wide](uint32_t address, const std::string &text, uint32_t capacity) {
+        return wide ? gm_put_wstr(address, text, capacity)
+                    : gm_put_str(address, text.c_str(), capacity);
+    };
+    auto terminate = [wide](uint32_t address) {
+        if (wide)
+            wr16(address, 0);
+        else
+            wr8(address, 0);
+    };
+    uint32_t stride = wide ? 2 : 1;
+    std::string section = read(arg(c, 0)), key = read(arg(c, 1));
     uint32_t out = arg(c, 3), cap = arg(c, 4);
     ProfileFile ini;
-    if (!profile_read(gm_wstr(arg(c, 5)), ini)) {
+    if (!profile_read(read(arg(c, 5)), ini)) {
         set_last_error(5);
         set_eax(c, 0);
         return;
     }
     bool multi = !arg(c, 0) || !arg(c, 1);
-    std::string result = trim(gm_wstr(arg(c, 2))), current, k, value;
+    std::string result = read(arg(c, 2)), current, k, value;
+    // Windows strips trailing blanks from a default, preserving leading ones.
+    size_t last = result.find_last_not_of(" \t");
+    result = last == std::string::npos ? "" : result.substr(0, last + 1);
     std::vector<std::string> names;
     for (const std::string &line : ini.lines) {
         if (profile_section(line, current)) {
@@ -225,31 +243,37 @@ void k_GetPrivateProfileStringW(X86 *c) {
         return;
     }
     if (!multi) {
-        set_eax(c, gm_put_wstr(out, result, cap));
+        set_eax(c, put(out, result, cap));
         return;
     }
     // MULTI_SZ sizes include each name's terminator, excluding the final one.
     uint32_t used = 0;
-    wr16(out, 0);
+    terminate(out);
     if (cap == 1) {
         set_eax(c, 0);
         return;
     }
     for (const auto &name : names) {
-        uint32_t need = wide_units(name) + 1;
+        uint32_t need = (wide ? wide_units(name) : (uint32_t)name.size()) + 1;
         if (need >= cap - used) {
-            gm_put_wstr(out + used * 2, name, cap - used - 1);
-            wr16(out + (cap - 2) * 2, 0);
-            wr16(out + (cap - 1) * 2, 0);
+            put(out + used * stride, name, cap - used - 1);
+            terminate(out + (cap - 2) * stride);
+            terminate(out + (cap - 1) * stride);
             set_eax(c, cap - 2);
             return;
         }
-        used += gm_put_wstr(out + used * 2, name, cap - used) + 1;
+        used += put(out + used * stride, name, cap - used) + 1;
     }
-    wr16(out + used * 2, 0);
+    terminate(out + used * stride);
     if (used == 0)
-        wr16(out + 2, 0);
+        terminate(out + stride);
     set_eax(c, used);
+}
+void k_GetPrivateProfileStringW(X86 *c) {
+    get_private_profile_string(c, true);
+}
+void k_GetPrivateProfileStringA(X86 *c) {
+    get_private_profile_string(c, false);
 }
 void k_WritePrivateProfileStringW(X86 *c) {
     if (!arg(c, 0)) {
@@ -740,6 +764,9 @@ uint32_t virtual_query(uint32_t address, uint32_t out, uint32_t len) {
     std::vector<Region> regions = {{loader_image_base(), loader_image_limit(), 0x1000000, 0x40},
                                    {HEAP_BASE, HEAP_LIMIT, 0x20000, 4},
                                    {STACK_LIMIT, STACK_TOP, 0x20000, 4}};
+    if (RECOMP_EXTRA_HEAP_SIZE)
+        regions.push_back(
+            {RECOMP_EXTRA_HEAP_BASE, RECOMP_EXTRA_HEAP_BASE + RECOMP_EXTRA_HEAP_SIZE, 0x20000, 4});
     for (uint32_t i = 0; const LoaderModule *m = loader_module(i); ++i)
         regions.push_back({m->base, m->base + m->size, 0x1000000, 0x40});
     uint32_t page = address & ~0xfffu, end = GUEST_SIZE, allocation = 0, type = 0, protection = 0;
@@ -954,6 +981,7 @@ static const ImportShim g_kernel32_wide[] = {
     {"KERNEL32.dll", "CreateFileMappingW", 6, k_CreateFileMappingW},
 
     {"KERNEL32.dll", "GetPrivateProfileStringW", 6, k_GetPrivateProfileStringW},
+    {"KERNEL32.dll", "GetPrivateProfileStringA", 6, k_GetPrivateProfileStringA},
     {"KERNEL32.dll", "WritePrivateProfileStringW", 4, k_WritePrivateProfileStringW},
 
     {"KERNEL32.dll", "CreateFileW", 7, k_CreateFileW},

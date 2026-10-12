@@ -16,6 +16,7 @@
 // itself once, which turns a crash into the list of what this game's
 // rendering actually asks for.
 #include "com.h"
+#include "d3d9_assemble.h"
 #include "dx.h"
 #include "../runtime/guest.h"
 #include "../runtime/memory.h"
@@ -136,6 +137,70 @@ void X_D3DXMatrixTranslation(X86 *c) {
     memcpy(&m[13], &yb, 4);
     memcpy(&m[14], &zb, 4);
     write_matrix(out, m);
+    set_eax(c, out);
+}
+
+// D3DX uses row vectors and x/y/z/w quaternions. Read all inputs before
+// writing so overlapping guest buffers have the SDK's in-place behavior.
+void X_D3DXMatrixRotationQuaternion(X86 *c) {
+    uint32_t out = arg(c, 0), in = arg(c, 1);
+    if (!out || !in || !gm_valid(out, 64) || !gm_valid(in, 16)) {
+        set_eax(c, 0);
+        return;
+    }
+    float x = rf(in), y = rf(in + 4), z = rf(in + 8), w = rf(in + 12);
+    float m[16] = {1 - 2 * (y * y + z * z),
+                   2 * (x * y + z * w),
+                   2 * (x * z - y * w),
+                   0,
+                   2 * (x * y - z * w),
+                   1 - 2 * (x * x + z * z),
+                   2 * (y * z + x * w),
+                   0,
+                   2 * (x * z + y * w),
+                   2 * (y * z - x * w),
+                   1 - 2 * (x * x + y * y),
+                   0,
+                   0,
+                   0,
+                   0,
+                   1};
+    write_matrix(out, m);
+    set_eax(c, out);
+}
+
+void X_D3DXQuaternionRotationMatrix(X86 *c) {
+    uint32_t out = arg(c, 0), in = arg(c, 1);
+    if (!out || !in || !gm_valid(out, 16) || !gm_valid(in, 64)) {
+        set_eax(c, 0);
+        return;
+    }
+    float m[16], q[4];
+    read_matrix(in, m);
+    float trace = m[0] + m[5] + m[10];
+    if (trace > 0) {
+        float s = sqrtf(trace + 1);
+        q[3] = 0.5f * s;
+        s = 0.5f / s;
+        q[0] = (m[6] - m[9]) * s;
+        q[1] = (m[8] - m[2]) * s;
+        q[2] = (m[1] - m[4]) * s;
+    } else {
+        // Choosing the largest diagonal avoids division by a near-zero w
+        // for half-turns, which occur in ordinary camera/object rotations.
+        unsigned i = m[5] > m[0] ? 1 : 0;
+        if (m[10] > m[i * 5])
+            i = 2;
+        unsigned j = (i + 1) % 3, k = (i + 2) % 3;
+        float s = sqrtf(1 + m[i * 5] - m[j * 5] - m[k * 5]);
+        q[i] = 0.5f * s;
+        s = 0.5f / s;
+        q[j] = (m[i * 4 + j] + m[j * 4 + i]) * s;
+        q[k] = (m[i * 4 + k] + m[k * 4 + i]) * s;
+        q[3] = (m[j * 4 + k] - m[k * 4 + j]) * s;
+    }
+    for (unsigned i = 0; i < 4; ++i)
+        wf(out + 4 * i, q[i]);
     set_eax(c, out);
 }
 
@@ -2125,6 +2190,10 @@ void X_D3DXCreateEffectFromResourceA(X86 *c) {
 }
 
 static const ImportShim g_d3dx9_exports[] = {
+    {"d3dx9_26.dll", "D3DXMatrixRotationQuaternion", 2, X_D3DXMatrixRotationQuaternion},
+    {"d3dx9_26.dll", "D3DXQuaternionRotationMatrix", 2, X_D3DXQuaternionRotationMatrix},
+    {"d3dx9_30.dll", "D3DXMatrixRotationQuaternion", 2, X_D3DXMatrixRotationQuaternion},
+    {"d3dx9_30.dll", "D3DXQuaternionRotationMatrix", 2, X_D3DXQuaternionRotationMatrix},
     {"d3dx9_26.dll", "D3DXCreateEffectPool", 1, X_D3DXCreateEffectPool},
     {"d3dx9_26.dll", "D3DXCreateEffectFromResourceA", 9, X_D3DXCreateEffectFromResourceA},
     {"d3dx9_26.dll", "D3DXMatrixMultiply", 3, X_D3DXMatrixMultiply},
@@ -2149,6 +2218,7 @@ void d3dx9_register() {
     if (done)
         return;
     done = true;
+    d3dx9_assembler_register();
     com_define(IF_D3DXEFFECTPOOL, "d3dx9_26.dll", "ID3DXEffectPool", g_effect_pool,
                std::size(g_effect_pool));
     com_define(IF_D3DXEFFECT, "d3dx9_26.dll", "ID3DXEffect", g_effect, std::size(g_effect));

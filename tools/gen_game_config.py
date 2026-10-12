@@ -62,6 +62,8 @@ def render_header(cfg):
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXES %s" % c_string(",".join(native["axes"])))
     lines.append("#define RECOMP_CONTROLS_NATIVE_BUTTONS %s" % c_string(",".join(native["buttons"])))
     lines.append("#define RECOMP_GUEST_SIZE %s" % c_hex(game["guest_size"]))
+    lines.append("#define RECOMP_EXTRA_HEAP_BASE %s" % c_hex(game["extra_heap_base"]))
+    lines.append("#define RECOMP_EXTRA_HEAP_SIZE %s" % c_hex(game["extra_heap_size"]))
     lines.append("#define RECOMP_RESUMABLE_STACKS %d" %
                  int(cfg["translate"].get("resumable_stacks", False)))
     lines.append("#define RECOMP_CD_AUDIO_TRACKS %s" % c_string_list(cfg.get("media", {}).get("cd_tracks", [])))
@@ -116,6 +118,8 @@ def render_cmake(cfg):
     lines.append("set(RECOMP_IMAGE_BASE %s)" % c_hex(game["image_base"]))
     lines.append("set(RECOMP_HEAP_BASE %s)" % c_hex(game["heap_base"]))
     lines.append("set(RECOMP_GUEST_SIZE %s)" % c_hex(game["guest_size"]))
+    lines.append("set(RECOMP_EXTRA_HEAP_BASE %s)" % c_hex(game["extra_heap_base"]))
+    lines.append("set(RECOMP_EXTRA_HEAP_SIZE %s)" % c_hex(game["extra_heap_size"]))
     # The generated sources include this header before they define FN_<addr>,
     # which is how a game replaces one translated function with a native one.
     lines.append('set(RECOMP_OVERRIDE_HEADER "%s")'

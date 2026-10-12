@@ -3,7 +3,7 @@ set(POP_DX_SOURCES
   d3dx10.cpp dsound.cpp dshow.cpp mp3_source.cpp dinput.cpp dinput_joystick.cpp xinput.cpp qmixer.cpp
   mss32.cpp redbook.cpp avi.cpp waveout.cpp fmod.cpp soundlib.cpp galaxy_stub.cpp riff.cpp bink.cpp video_frame.cpp mf_media.cpp
   mf.cpp weanetr.cpp d3d9.cpp d3d9_raster.cpp d3d9_shader.cpp d3d9_shadergen.cpp host_d9_default.cpp
-  d3dx9.cpp)
+  d3dx9.cpp d3d9_assemble.cpp d3dx9_assemble.cpp)
 
 add_library(recomp_dx OBJECT ${POP_DX_SOURCES})
 target_link_libraries(recomp_dx PUBLIC recomp_runtime)
@@ -22,6 +22,15 @@ target_compile_options(recomp_dx_null PRIVATE ${POP_WARN_HOST})
 pop_optimize(recomp_dx_null 1)
 
 if(NOT IOS AND NOT ANDROID)
+# Pure assembly fixtures also run under Node with the web toolchain, without
+# initializing the guest arena, graphics backend or a game installation.
+add_executable(d9_assemble_tests tests/d9_assemble_tests.cpp d3d9_assemble.cpp d3d9_shader.cpp)
+target_compile_options(d9_assemble_tests PRIVATE ${POP_WARN_HOST})
+pop_optimize(d9_assemble_tests 1)
+pop_test_binary(d9_assemble_tests)
+add_test(NAME d9_assemble_tests COMMAND d9_assemble_tests)
+set_tests_properties(d9_assemble_tests PROPERTIES LABELS nogame)
+
 # host_api.h is a C header too. The C11 consumer is an object the DX tests
 # link; the header is also parsed as C++17 on its own.
 add_library(host_api_header_test OBJECT tests/host_api_header_test.c)
@@ -38,10 +47,19 @@ add_executable(dx_tests tests/dx_tests.cpp
   $<TARGET_OBJECTS:host_api_header_test>)
 target_link_libraries(dx_tests PRIVATE recomp_platform recomp_dx recomp_runtime)
 target_compile_options(dx_tests PRIVATE ${POP_WARN_HOST})
+if(EMSCRIPTEN)
+  # Guest ABI tests reserve a 256 MiB arena; the toolchain's small default
+  # heap cannot run them. Keep growth bounded independently of the game build.
+  target_link_options(dx_tests PRIVATE -sALLOW_MEMORY_GROWTH=1
+    -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=1073741824 -sSTACK_SIZE=8388608)
+endif()
 pop_optimize(dx_tests 1)
 pop_test_binary(dx_tests)
 add_test(NAME dx_tests COMMAND dx_tests WORKING_DIRECTORY ${POP_ROOT})
 set_tests_properties(dx_tests PROPERTIES LABELS nogame)
+add_test(NAME d3dx_buffer_tests COMMAND dx_tests "D3DX" WORKING_DIRECTORY ${POP_ROOT})
+add_test(NAME d3d9_shader_tests COMMAND dx_tests "D3D9 shader" WORKING_DIRECTORY ${POP_ROOT})
+set_tests_properties(d3dx_buffer_tests d3d9_shader_tests PROPERTIES LABELS nogame)
 
 # The virtual pad through the DirectInput joystick and XInput. Its own binary
 # because it defines the host_pad_* callbacks strongly, which dx_tests must not.

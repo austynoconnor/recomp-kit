@@ -43,6 +43,9 @@
 
 static const uint8_t IID_IDirectSound_[16] =
     IID_BYTES(0x279AFA83, 0x4981, 0x11CE, 0xA5, 0x21, 0x00, 0x20, 0xAF, 0x0B, 0xE5, 0x60);
+static const uint8_t IID_IDirectSound8_[16] =
+    IID_BYTES(0xC50A7E93, 0xF395, 0x4834, 0x9E, 0xF6, 0x7F, 0xA9, 0x9D, 0xE5, 0x09, 0x66);
+static_assert(K_DSOUND8 < 64, "COM kind masks must accommodate DirectSound8");
 static const uint8_t IID_IDirectSoundBuffer_[16] =
     IID_BYTES(0x279AFA85, 0x4981, 0x11CE, 0xA5, 0x21, 0x00, 0x20, 0xAF, 0x0B, 0xE5, 0x60);
 static const uint8_t IID_IDirectSound3DListener_[16] =
@@ -89,7 +92,7 @@ void pcm_release(uint32_t addr) {
 
 ComObj *this_dsound(X86 *c) {
     ComObj *o = com_this_arg(c);
-    return (o && o->kind == K_DSOUND) ? o : nullptr;
+    return (o && (o->kind == K_DSOUND || o->kind == K_DSOUND8)) ? o : nullptr;
 }
 ComObj *this_buffer(X86 *c) {
     ComObj *o = com_this_arg(c);
@@ -1543,9 +1546,12 @@ void DS_GetCaps(X86 *c) {
         return;
     }
     gm_zero(out + 4, size - 4);
-    wr32(out + DSCAPS_OFF_dwFlags, DSCAPS_PRIMARY16BIT | DSCAPS_PRIMARYSTEREO |
-                                       DSCAPS_SECONDARY16BIT | DSCAPS_SECONDARYSTEREO |
-                                       DSCAPS_CONTINUOUSRATE | DSCAPS_CERTIFIED);
+    uint32_t flags = DSCAPS_PRIMARY16BIT | DSCAPS_PRIMARYSTEREO | DSCAPS_SECONDARY16BIT |
+                     DSCAPS_SECONDARYSTEREO | DSCAPS_CONTINUOUSRATE | DSCAPS_CERTIFIED;
+    ComObj *ds = this_dsound(c);
+    if (ds && ds->kind == K_DSOUND8)
+        flags &= ~DSCAPS_CERTIFIED; // agrees with VerifyCertification
+    wr32(out + DSCAPS_OFF_dwFlags, flags);
     com_ret(c, DS_OK);
 }
 
@@ -1554,6 +1560,9 @@ void DS_DuplicateSoundBuffer(X86 *c) {
     uint32_t src_ptr = arg(c, 1), out = arg(c, 2);
     ComObj *src = src_ptr ? com_this(src_ptr) : nullptr;
     if (!ds || !src || src->kind != K_DSBUFFER || !out) {
+        LOGW("dsound: DuplicateSoundBuffer invalid input (device=%08x source=%08x "
+             "source_kind=%d output=%08x)",
+             arg(c, 0), src_ptr, src ? int(src->kind) : -1, out);
         com_ret(c, DSERR_INVALIDPARAM);
         return;
     }
@@ -1635,13 +1644,40 @@ const ComMethod g_dsound[] = {
     {"Initialize", 2, DS_Initialize},
 };
 
+// The browser audio bridge is a software device, not a certified Windows
+// driver. Keep the SDK's additional slot and report that distinction honestly.
+void DS_VerifyCertification(X86 *c) {
+    uint32_t out = arg(c, 1);
+    if (!this_dsound(c) || !out || !gm_valid(out, 4)) {
+        com_ret(c, DSERR_INVALIDPARAM);
+        return;
+    }
+    wr32(out, 1); // DS_UNCERTIFIED
+    com_ret(c, DS_OK);
+}
+
+const ComMethod g_dsound8[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"CreateSoundBuffer", 4, DS_CreateSoundBuffer},
+    {"GetCaps", 2, DS_GetCaps},
+    {"DuplicateSoundBuffer", 3, DS_DuplicateSoundBuffer},
+    {"SetCooperativeLevel", 3, DS_SetCooperativeLevel},
+    {"Compact", 1, DS_Compact},
+    {"GetSpeakerConfig", 2, DS_GetSpeakerConfig},
+    {"SetSpeakerConfig", 2, DS_SetSpeakerConfig},
+    {"Initialize", 2, DS_Initialize},
+    {"VerifyCertification", 2, DS_VerifyCertification},
+};
+
 // ===========================================================================
 // DSOUND.dll exports
 // ===========================================================================
 // DirectSoundCreate(lpGuid, ppDS, pUnkOuter). The EXE imports it by ordinal 1,
 // which the loader names "ord1"; both names are registered so the IAT entry
 // and GetProcAddress agree.
-void DirectSoundCreate(X86 *c) {
+void create_sound_device(X86 *c, bool version8) {
     uint32_t out = arg(c, 1), outer = arg(c, 2);
     if (!out || !gm_valid(out, 4)) {
         com_ret(c, DSERR_INVALIDPARAM);
@@ -1652,16 +1688,23 @@ void DirectSoundCreate(X86 *c) {
         com_ret(c, CLASS_E_NOAGGREGATION);
         return;
     }
-    ComObj *ds = com_new(K_DSOUND);
-    uint32_t view = com_view(ds, IF_DSOUND);
+    ComObj *ds = com_new(version8 ? K_DSOUND8 : K_DSOUND);
+    uint32_t view = com_view(ds, version8 ? IF_DSOUND8 : IF_DSOUND);
     if (!view) {
         com_release(ds);
         com_ret(c, E_OUTOFMEMORY);
         return;
     }
     wr32(out, view);
-    LOGV("dsound: DirectSoundCreate -> %08x", view);
+    LOGV("dsound: DirectSoundCreate%s -> %08x", version8 ? "8" : "", view);
     com_ret(c, DS_OK);
+}
+
+void DirectSoundCreate(X86 *c) {
+    create_sound_device(c, false);
+}
+void DirectSoundCreate8(X86 *c) {
+    create_sound_device(c, true);
 }
 
 // CLSID_DirectSound, for a game built against the DirectX 7 era SDK that
@@ -1677,6 +1720,8 @@ static ComObj *dsound_create() {
 const ImportShim g_dsound_exports[] = {
     {"DSOUND.dll", "ord1", 3, DirectSoundCreate},
     {"DSOUND.dll", "DirectSoundCreate", 3, DirectSoundCreate},
+    {"DSOUND.dll", "ord11", 3, DirectSoundCreate8},
+    {"DSOUND.dll", "DirectSoundCreate8", 3, DirectSoundCreate8},
 };
 
 // A DirectSound object also answers to IDirectSound3DListener, and a buffer to
@@ -1751,6 +1796,7 @@ void dsound_register() {
     done = true;
 
     com_define(IF_DSOUND, "DSOUND.dll", "IDirectSound", g_dsound, std::size(g_dsound));
+    com_define(IF_DSOUND8, "DSOUND.dll", "IDirectSound8", g_dsound8, std::size(g_dsound8));
     com_define(IF_DSBUFFER, "DSOUND.dll", "IDirectSoundBuffer", g_dsbuffer, std::size(g_dsbuffer));
     com_define(IF_DS3DBUFFER, "DSOUND.dll", "IDirectSound3DBuffer", g_ds3dbuffer,
                std::size(g_ds3dbuffer));
@@ -1759,12 +1805,16 @@ void dsound_register() {
     com_define(IF_DSNOTIFY, "DSOUND.dll", "IDirectSoundNotify", g_dsnotify, std::size(g_dsnotify));
 
     com_bind(IF_DSOUND, K_DSOUND);
+    com_bind(IF_DSOUND, K_DSOUND8);
+    com_bind(IF_DSOUND8, K_DSOUND8);
     com_bind(IF_DS3DLISTENER, K_DSOUND);
+    com_bind(IF_DS3DLISTENER, K_DSOUND8);
     com_bind(IF_DSBUFFER, K_DSBUFFER);
     com_bind(IF_DS3DBUFFER, K_DSBUFFER);
     com_bind(IF_DSNOTIFY, K_DSBUFFER);
 
     com_register_iid(IF_DSOUND, IID_IDirectSound_);
+    com_register_iid(IF_DSOUND8, IID_IDirectSound8_);
     com_register_iid(IF_DSBUFFER, IID_IDirectSoundBuffer_);
     com_register_iid(IF_DS3DBUFFER, IID_IDirectSound3DBuffer_);
     com_register_iid(IF_DS3DLISTENER, IID_IDirectSound3DListener_);
@@ -1772,6 +1822,7 @@ void dsound_register() {
 
     com_set_destructor(K_DSBUFFER, dsbuffer_destroy);
     com_set_qi_hook(K_DSOUND, dsound_qi);
+    com_set_qi_hook(K_DSOUND8, dsound_qi);
     com_set_qi_hook(K_DSBUFFER, dsbuffer_qi);
 
     com_register_class(CLSID_DirectSound_, "DirectSound", IF_DSOUND, dsound_create);

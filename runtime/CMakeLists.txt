@@ -75,6 +75,38 @@ target_compile_options(runtime_tests PRIVATE ${POP_WARN_HOST})
 pop_optimize(runtime_tests 1)
 pop_test_binary(runtime_tests)
 add_test(NAME runtime_tests COMMAND runtime_tests WORKING_DIRECTORY ${POP_ROOT})
+add_executable(heap_region_tests tests/heap_region_tests.cpp tests/stub_recomp_call.cpp)
+target_link_libraries(heap_region_tests PRIVATE recomp_platform recomp_runtime recomp_dx)
+target_compile_options(heap_region_tests PRIVATE ${POP_WARN_HOST})
+if(EMSCRIPTEN)
+  target_link_options(heap_region_tests PRIVATE -sALLOW_MEMORY_GROWTH=1
+    -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=1073741824 -sSTACK_SIZE=8388608)
+endif()
+pop_optimize(heap_region_tests 1)
+pop_test_binary(heap_region_tests)
+add_test(NAME heap_region_tests COMMAND heap_region_tests WORKING_DIRECTORY ${POP_ROOT})
+set_tests_properties(heap_region_tests PROPERTIES LABELS nogame TIMEOUT 120)
+set(PACKED_SSE_FIXTURE ${CMAKE_CURRENT_BINARY_DIR}/generated/packed_sse_fixture)
+add_custom_command(
+  OUTPUT ${PACKED_SSE_FIXTURE}.c ${PACKED_SSE_FIXTURE}.h
+  COMMAND ${Python3_EXECUTABLE} -I ${POP_ROOT}/tools/recomp/generate_sse_math_fixture.py
+          --out ${PACKED_SSE_FIXTURE}
+  DEPENDS ${POP_ROOT}/tools/recomp/generate_sse_math_fixture.py ${POP_ROOT}/tools/recomp/translate.py
+  VERBATIM)
+add_executable(sse_packed_tests tests/sse_packed_tests.cpp ${PACKED_SSE_FIXTURE}.c
+  tests/stub_recomp_call.cpp)
+target_include_directories(sse_packed_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(sse_packed_tests PRIVATE recomp_platform recomp_runtime recomp_dx)
+target_compile_options(sse_packed_tests PRIVATE ${POP_WARN_HOST})
+if(EMSCRIPTEN)
+  target_link_options(sse_packed_tests PRIVATE -sALLOW_MEMORY_GROWTH=1
+    -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=1073741824 -sSTACK_SIZE=8388608)
+endif()
+# Exercise contraction/rounding at the production translation's optimization.
+pop_optimize(sse_packed_tests 2)
+pop_test_binary(sse_packed_tests)
+add_test(NAME sse_packed_tests COMMAND sse_packed_tests WORKING_DIRECTORY ${POP_ROOT})
+set_tests_properties(sse_packed_tests PROPERTIES LABELS nogame TIMEOUT 120)
 # TIMEOUT for the reason interp_tests has one: this suite also runs guest
 # code through the interpreter. It takes two seconds when that returns.
 set_tests_properties(runtime_tests PROPERTIES LABELS game TIMEOUT 600

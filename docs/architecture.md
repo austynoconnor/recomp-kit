@@ -24,6 +24,14 @@ remain 32-bit offsets even in a 64-bit process. `loader.cpp` maps PE sections,
 zero-fills data tails and replaces import-table entries with runtime trampolines.
 `imports.cpp` decodes calls and dispatches the original calling conventions.
 
+The original heap ends below the fixed mod/stack/TEB/trampoline map. A port
+that measures exhaustion can opt into a separate high heap with `[game]`
+`extra_heap_base` and `extra_heap_size`, and enlarge `guest_size` to contain it.
+The extra region must be page aligned, above the original 256 MiB arena, and
+disjoint from auxiliary DLLs. First-fit allocation, reallocation and coalescing
+operate within each region; they never allocate across the reserved gap.
+Games without these fields retain the original heap layout.
+
 `runtime/x86.h` defines the register file, flags, x87 state and
 instruction helpers used by generated functions. Functions retain stable guest
 addresses for dispatch, hooks and diagnostics. Those addresses are identifiers,

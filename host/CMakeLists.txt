@@ -277,14 +277,27 @@ if(TARGET recomp_gen)
     set(APP ${RECOMP_APP_NAME})
     set(TITLE ${RECOMP_GAME_NAME})
     configure_file(${POP_ROOT}/web/player/index.html ${POP_OUT}/index.html @ONLY)
+    configure_file(${POP_ROOT}/web/player/runtime.html ${POP_OUT}/runtime.html @ONLY)
+    # Startup diagnostics can reuse optimized objects without the costly
+    # whole-module optimization pass. Release packages keep level 2 by default.
+    set(RECOMP_WEB_LINK_OPT_LEVEL "2" CACHE STRING "Final web optimization level (0, 1, 2)")
+    set_property(CACHE RECOMP_WEB_LINK_OPT_LEVEL PROPERTY STRINGS 0 1 2)
+    if(NOT RECOMP_WEB_LINK_OPT_LEVEL MATCHES "^[012]$")
+      message(FATAL_ERROR "RECOMP_WEB_LINK_OPT_LEVEL must be 0, 1 or 2")
+    endif()
     target_link_options(recomp_app PRIVATE
       # Emscripten also optimizes at link time. Release's per-target compile
       # flags do not reach this step; without -g0 every translated function's
       # DWARF is shipped in the download, greatly inflating large translations.
-      $<$<NOT:$<CONFIG:Debug>>:-O2>
+      $<$<NOT:$<CONFIG:Debug>>:-O${RECOMP_WEB_LINK_OPT_LEVEL}>
       $<$<NOT:$<CONFIG:Debug>>:-g0>
-      -pthread -sPTHREAD_POOL_SIZE=24 -sWASMFS
-      -sINITIAL_MEMORY=1073741824 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296
+      # Keep diagnostic stack traces resolvable without embedding DWARF in
+      # the large Wasm. This sidecar stays in the private build directory.
+      $<$<STREQUAL:${RECOMP_WEB_LINK_OPT_LEVEL},0>:--emit-symbol-map>
+      # Avoid the old 24-worker/1 GiB startup burst on the user's desktop.
+      # The pool and heap can grow after startup when the guest needs them.
+      -pthread -sPTHREAD_POOL_SIZE=8 -sWASMFS
+      -sINITIAL_MEMORY=536870912 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296
       -sSTACK_SIZE=8388608 -sDEFAULT_PTHREAD_STACK_SIZE=16777216
       -sENVIRONMENT=web,worker -sEXIT_RUNTIME=0 -sINVOKE_RUN=0
       -sEXPORTED_RUNTIME_METHODS=ENV,callMain,FS

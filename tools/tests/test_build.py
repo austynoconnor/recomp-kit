@@ -1,6 +1,7 @@
 """Build-tool platform gates and translator arguments, without invoking the translator."""
 
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import xml.etree.ElementTree as ET
@@ -10,6 +11,56 @@ import pytest
 spec = importlib.util.spec_from_file_location("build", Path(__file__).parents[1] / "build.py")
 build = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(build)
+
+
+def test_publication_keeps_unchanged_compile_inputs_but_replaces_changed_bytes(tmp_path):
+    gen = tmp_path / "recomp/gen"
+    gen.mkdir(parents=True)
+    old_time = 1_600_000_000_000_000_000
+    for name, content in [("same.c", b"same"), ("changed.c", b"aaaa"), ("gone.c", b"gone")]:
+        source = gen / name
+        source.write_bytes(content)
+        os.utime(source, ns=(old_time, old_time))
+    nested = gen / "aux-module"
+    nested.mkdir()
+    (nested / "same.c").write_bytes(b"nested")
+    os.utime(nested / "same.c", ns=(old_time, old_time))
+
+    def translate(stage):
+        for name, content in [("same.c", b"same"), ("changed.c", b"bbbb"), ("new.c", b"new")]:
+            (stage / name).write_bytes(content)
+        # Same size and old timestamp still require a byte comparison.
+        os.utime(stage / "changed.c", ns=(old_time + 2_000_000_000, old_time + 2_000_000_000))
+        (stage / "aux-module").mkdir()
+        (stage / "aux-module/same.c").write_bytes(b"nested")
+        (stage / "symbols.json").write_text('{"entry": 1}\n')
+
+    build.publish_generated(tmp_path, translate)
+    assert (gen / "same.c").stat().st_mtime_ns == old_time
+    assert (gen / "aux-module/same.c").stat().st_mtime_ns == old_time
+    assert (gen / "changed.c").read_bytes() == b"bbbb"
+    assert (gen / "changed.c").stat().st_mtime_ns != old_time
+    assert (gen / "new.c").read_bytes() == b"new"
+    assert not (gen / "gone.c").exists()
+    assert (gen / "x86.h").read_bytes() == (build.ROOT / "runtime/x86.h").read_bytes()
+    assert (tmp_path / "recomp/symbols.json").read_text() == '{"entry": 1}\n'
+
+
+def test_failed_generation_preserves_published_sources_and_symbols(tmp_path):
+    gen = tmp_path / "recomp/gen"
+    gen.mkdir(parents=True)
+    (gen / "same.c").write_bytes(b"original")
+    symbols = gen.parent / "symbols.json"
+    symbols.write_text("original symbols")
+
+    def translate(stage):
+        (stage / "same.c").write_bytes(b"partial")
+        raise RuntimeError("translation failed")
+
+    with pytest.raises(RuntimeError, match="translation failed"):
+        build.publish_generated(tmp_path, translate)
+    assert (gen / "same.c").read_bytes() == b"original"
+    assert symbols.read_text() == "original symbols"
 
 
 def test_mods_targets_match_the_game_fixture(tmp_path):

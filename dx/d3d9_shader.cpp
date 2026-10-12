@@ -265,6 +265,10 @@ uint64_t code_key(const uint8_t *code, size_t size) {
     return h ? h : 1;
 }
 
+int instruction_operand_count(uint32_t op, uint32_t major, uint32_t minor, bool pixel) {
+    return operand_count(op, major, minor, pixel);
+}
+
 const Program &program_for_key(uint64_t key, const uint8_t *code, size_t size) {
     static std::mutex mutex;
     static auto *cache = new std::unordered_map<uint64_t, Program>();

@@ -64,6 +64,16 @@ def native(preset, env, jobs, run_tests, game_dir, build_root):
         ctest(build_dir, "nogame|game|gpu|device", env)
 
 
+def shader_assembly(preset, env, jobs, game_dir, build_root):
+    """Run bytecode and guest COM/ABI fixtures, including under Emscripten/Node."""
+    with buildlock.BuildLock(build_root.parent, "shader assembly tests"):
+        build_dir = configure(preset, game_dir, build_root)
+        build_py.build(preset, ["d9_assemble_tests", "dx_tests"], jobs, build_dir=build_dir)
+        run([build_py.cmake_tool("ctest"), "--test-dir", build_dir,
+             "-R", "^(d9_assemble_tests|d3dx_buffer_tests|d3d9_shader_tests)$",
+             "--output-on-failure"], env)
+
+
 def mods_targets(game_dir):
     """Match the mod targets CMake defines for the selected game."""
     targets = ["pop_fixture", "mods_tests"]
@@ -161,6 +171,7 @@ def main():
     group.add_argument("--gameplay", action="store_true", help="Scripted native Options and gameplay run")
     group.add_argument("--integration", action="store_true", help="The host integration script against the game")
     group.add_argument("--compile-only", action="store_true", help="Build the native test binaries only")
+    group.add_argument("--shader-assembly", action="store_true", help="Shader bytecode and guest buffer/device ABI fixtures")
     parser.add_argument("--preset", default=build_py.default_preset())
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 2, 8))
     parser.add_argument("--game-dir", type=Path, default=ROOT / "games/stub",
@@ -189,6 +200,8 @@ def main():
             integration(env, args.game_dir, build_root)
         elif args.native or args.compile_only:
             native(args.preset, env, args.jobs, args.native, args.game_dir, build_root)
+        elif args.shader_assembly:
+            shader_assembly(args.preset, env, args.jobs, args.game_dir, build_root)
         else:
             run([sys.executable, "-m", "pytest", "-q"] + PORTABLE_TESTS, env)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError, TimeoutError) as error:

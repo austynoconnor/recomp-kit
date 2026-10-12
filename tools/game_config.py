@@ -217,7 +217,29 @@ def load(game_dir):
             raise ValueError("%s: [translate] overrides names no file: %s" % (source, path))
         cfg["overrides_header"] = path
     cfg["aux_modules"] = load_aux_modules(cfg, game_dir, source)
+    validate_extra_heap(cfg, source)
     return cfg
+
+
+def validate_extra_heap(cfg, source):
+    """Optional disjoint heap above the fixed stacks/TEB/shim address map."""
+    game = cfg["game"]
+    base = game.setdefault("extra_heap_base", 0)
+    size = game.setdefault("extra_heap_size", 0)
+    if type(base) is not int or type(size) is not int:
+        raise ValueError("%s: extra_heap_base/extra_heap_size must be integers" % source)
+    if base == size == 0:
+        return
+    end = base + size
+    if (base < GUEST_SIZE_DEFAULT or size <= 0 or base % 0x1000 or size % 0x1000
+            or end > game["guest_size"] or end > 0xffffffff):
+        raise ValueError("%s: extra_heap must be page aligned, above the fixed arena, "
+                         "and fit inside guest_size" % source)
+    if base <= game["image_base"] < end or base <= game["entry_point"] < end:
+        raise ValueError("%s: extra_heap overlaps the main image" % source)
+    for module in cfg["aux_modules"]:
+        if base < module["base"] + module["size"] and module["base"] < end:
+            raise ValueError("%s: extra_heap overlaps auxiliary module %s" % (source, module["key"]))
 
 
 def load_aux_modules(cfg, game_dir, source):

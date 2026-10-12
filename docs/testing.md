@@ -3,6 +3,15 @@
 Run checks appropriate to your change. Every suite's output belongs under ignored
 `build/`; requested tests must report failure rather than silently skip prerequisites.
 
+For DX9 assembly, buffer ownership and device shader binding, run
+`tools/test.py --shader-assembly --game-dir /absolute/game/folder --jobs 1`.
+With an activated Emscripten SDK, add `--preset web` to compile and run these
+same fixtures under Node. The web guest-ABI binary reserves its 256 MiB guest
+arena inside a bounded 1 GiB heap. These fixtures exercise stdcall cleanup,
+bytecode decoding, failure diagnostics and retained shader bindings; they do
+not establish browser rendering or gameplay. A DX test binary also accepts a
+test-name substring as its first argument; an unmatched filter fails.
+
 | Command | What it checks | Needs game files? |
 | --- | --- | --- |
 | `tools/test.py` | Setup failures, synthetic texture processing and display-mode tooling | No |
@@ -62,6 +71,17 @@ The differential harness compares translated routines with original instructions
 under Unicorn. Unicorn is a development tool, not part of the playable app.
 
 ## Manual gameplay checks
+
+The browser player session shell can be checked without a game or GPU runtime:
+
+```sh
+node --test web/player/tests/session.test.cjs
+```
+
+Install Playwright on Node's package path. `RECOMP_BROWSER_PATH` can select an
+installed Chrome executable, and `RECOMP_PLAYER_SCREENSHOT` optionally saves
+the idle page. The headless fixture checks Start/Stop, duplicate-tab session
+ownership and reload staying idle. It does not exercise Wasm or gameplay.
 
 - Start a level, select a person, issue a move order and observe the destination.
 - Compare Classic/Enhanced and Wide on/off in a window wider than an 800×600 canvas.

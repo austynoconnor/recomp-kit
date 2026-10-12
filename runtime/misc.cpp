@@ -922,6 +922,19 @@ void g_GetSystemPaletteEntries(X86 *c) {
 // -------------------------------------------------------------------------
 // SHELL32 / ole32
 // -------------------------------------------------------------------------
+// The browser has no desktop shell namespace or shell allocator interface.
+// These HRESULT APIs must fail with a cleared output, never report S_OK with
+// an untouched pointer. Their registered one-argument ABI also preserves ESP.
+void s_ShellInterfaceUnavailable(X86 *c) {
+    uint32_t out = arg(c, 0);
+    if (!out || !gm_valid(out, 4)) {
+        set_eax(c, 0x80004003u); // E_POINTER
+        return;
+    }
+    wr32(out, 0);
+    set_eax(c, 0x80004001u); // E_NOTIMPL
+}
+
 // SHGetSpecialFolderPathA(hwnd, path, csidl, create): the per-user folders a
 // game keeps its settings and saves in.  They live under the guest root, so
 // they resolve like every other game path (and the mod layer's file seam can
@@ -2029,6 +2042,8 @@ const ImportShim g_misc_shims[] = {
     {"GDI32.dll", "GetSystemPaletteEntries", 4, g_GetSystemPaletteEntries},
     // SHELL32
     {"SHELL32.dll", "ShellExecuteA", 6, s_ShellExecuteA},
+    {"SHELL32.dll", "SHGetDesktopFolder", 1, s_ShellInterfaceUnavailable},
+    {"SHELL32.dll", "SHGetMalloc", 1, s_ShellInterfaceUnavailable},
     {"SHELL32.dll", "SHGetSpecialFolderPathA", 4, s_SHGetSpecialFolderPathA},
     {"SHFOLDER.dll", "SHGetFolderPathA", 5, s_SHGetFolderPathA},
     // ole32

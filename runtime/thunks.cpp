@@ -1,6 +1,7 @@
 #include "thunks.h"
 #include "imports.h"
 #include "loader.h"
+#include "game_config.h"
 #include <stdio.h>
 
 extern "C" __attribute__((weak)) int recomp_thunk_target_kind(uint32_t) {
@@ -15,6 +16,9 @@ bool thunk_bytes(uint32_t at, uint32_t size) {
     if (loader_in_image(at) || loader_in_image(at + size - 1))
         return false;
     return (at >= HEAP_BASE && at < HEAP_LIMIT && size <= HEAP_LIMIT - at) ||
+           (RECOMP_EXTRA_HEAP_SIZE && at >= RECOMP_EXTRA_HEAP_BASE &&
+            at < RECOMP_EXTRA_HEAP_BASE + RECOMP_EXTRA_HEAP_SIZE &&
+            size <= RECOMP_EXTRA_HEAP_BASE + RECOMP_EXTRA_HEAP_SIZE - at) ||
            (at >= STACK_LIMIT && at < STACK_TOP && size <= STACK_TOP - at);
 }
 struct StackWrite {

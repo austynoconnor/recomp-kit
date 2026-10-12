@@ -64,7 +64,7 @@ def copy_web_build(game_id, build, out):
         raise ValueError("no web build in %s (index.html is missing)" % build)
     dest.mkdir(parents=True, exist_ok=True)
     for f in build.iterdir():
-        if f.is_file() and (f.name == "index.html" or f.suffix in WEB_BUILD_SUFFIXES):
+        if f.is_file() and (f.name in ("index.html", "runtime.html") or f.suffix in WEB_BUILD_SUFFIXES):
             shutil.copy2(f, dest / f.name)
 
 

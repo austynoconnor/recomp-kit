@@ -50,6 +50,56 @@ def test_retargeting_nothing_is_the_identity():
     assert T.retarget_withdrawn(body, set()) == body
 
 
+@pytest.mark.parametrize("gap,adopt", [(b"\x83\xc4\x04", True),
+                                     (b"\x90\x90\x90", False),
+                                     (b"\x83\xc0\x04", False),
+                                     (b"\x83\xc4\x04\x90", False)])
+def test_an_omitted_cdecl_cleanup_stays_in_its_loop_body(gap, adopt):
+    """A listing gap must not turn a guest loop into recursive host dispatch."""
+    import struct
+    entry, callee = 0x00401000, 0x00401100
+    next_addr = entry + 7 + len(gap)
+    code = (b"\x6a\x01\xe8" + struct.pack("<i", callee - entry - 7) + gap
+            + b"\x49\x75" + struct.pack("b", entry - next_addr - 3) + b"\xc3")
+    image = synthetic_image({entry: code, callee: b"\xc3"})
+    listing = ("00401000  PUSH 0x1\n00401002  CALL 0x401100\n"
+               "%08x  DEC ECX\n%08x  JNZ 0x401000\n%08x  RET\n"
+               % (next_addr, next_addr + 1, next_addr + 3))
+    fn = T.Function(entry, "loop", len(code), T.parse_listing_text(listing))
+    fn.measure(image)
+    image.recover_errors.append("earlier required recovery diagnostic")
+    assert T.adopt_stack_cleanup_gaps([fn], image) == int(adopt)
+    assert image.recover_errors == ["earlier required recovery diagnostic"]
+    assert (entry + 7 in fn.addrs) == adopt
+    if adopt:
+        from types import SimpleNamespace
+        tr = T.Translator(image, {entry, callee}, SimpleNamespace(eager_flags=False))
+        tr.prepare(fn, strict=True)
+        text = "\n".join(tr.translate(fn))
+        assert "00401007 ADD ESP" in text
+        assert "CALL_FN(00401007)" not in text
+        assert "CALL_FN(%08x)" % next_addr not in text
+        assert T.adopt_stack_cleanup_gaps([fn], image) == 0  # idempotent
+
+
+def test_cleanup_adoption_does_not_cross_another_owner_or_nonreturning_call():
+    import struct
+    entry, callee = 0x00401000, 0x00401100
+    image = synthetic_image({entry: b"\xe8" + struct.pack("<i", callee - entry - 5)
+                             + b"\x83\xc4\x04\xc3", callee: b"\xc3"})
+    def body():
+        fn = T.Function(entry, "caller", 9, T.parse_listing_text(
+            "00401000  CALL 0x401100\n00401008  RET\n"))
+        fn.measure(image)
+        return fn
+    other = T.Function(entry + 5, "other", 4, T.parse_listing_text(
+        "00401005  ADD ESP,0x4\n00401008  RET\n"))
+    other.measure(image)
+    assert T.adopt_stack_cleanup_gaps([body(), other], image) == 0
+    image.noreturn_callees = {callee}
+    assert T.adopt_stack_cleanup_gaps([body()], image) == 0
+
+
 def synthetic_image(code_at, base=0x00400000, size=0x2000):
     """An Image over hand-placed bytes: {address: bytes}, one executable section."""
     import capstone
@@ -917,6 +967,44 @@ def translate_entry_fixture(tmp_path, monkeypatch, img, listings_at):
                                       "--out", str(out), "--quiet"])
     assert T.main() == 0
     return "\n".join(p.read_text() for p in out.glob("chunk_*.c"))
+
+
+@pytest.mark.parametrize("via_register", [False, True])
+def test_recovered_callback_wrappers_discover_further_callbacks(tmp_path, monkeypatch, via_register):
+    """A data-named wrapper, omitted callback and second callback form a chain.
+
+    Neither callback is in the listings or pointer scan. Instruction immediate
+    discovery must keep going after that scan recovers the first wrapper.
+    """
+    import struct
+    entry, wrapper, first, second, dispatch = (0x00401000, 0x00401100, 0x00401200,
+                                               0x00401400, 0x00401600)
+    def passes(at, target):
+        head = (b"\xb8" + struct.pack("<I", target) + b"\x50" if via_register else
+                b"\x68" + struct.pack("<I", target))
+        return head + b"\xe8" + struct.pack("<i", dispatch - at - len(head) - 5) + b"\x83\xc4\x04\xc3"
+    blocks = {entry: b"\xc3", wrapper: passes(wrapper, first),
+              first: passes(first, second), second: b"\xb8\x07\0\0\0\xc3",
+              dispatch: b"\x8b\x44\x24\x04\xff\xd0\xc3"}
+    img = synthetic_image(blocks)
+    img.code_pointers = lambda *a, **kw: ({wrapper}, set())
+    img.plausible_immediate_target = lambda addr: addr in {first, second}
+    text = translate_entry_fixture(tmp_path, monkeypatch, img,
+                                   {entry: blocks[entry], dispatch: blocks[dispatch]})
+    for addr in (wrapper, first, second):
+        assert "void fn_%08x(" % addr in text
+
+
+def test_pointer_guess_with_offimage_call_is_rejected(tmp_path, monkeypatch):
+    import struct
+    entry, guess = 0x00601000, 0x00601020
+    blocks = {entry: b"\xc3", guess: b"\xe8" + struct.pack("<i", 0x10000000) + b"\xc3"}
+    img = synthetic_image(blocks, base=0x00600000)
+    img.code_pointers = lambda *a, **kw: ({guess}, set())
+    img.plausible_immediate_target = lambda addr: False
+    text = translate_entry_fixture(tmp_path, monkeypatch, img, {entry: blocks[entry]})
+    assert "void fn_%08x(" % entry in text
+    assert "void fn_%08x(" % guess not in text
 
 
 def test_a_branch_reached_tail_may_fall_into_a_known_entry(tmp_path, monkeypatch):

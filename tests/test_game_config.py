@@ -20,6 +20,43 @@ gen_game_config = load_module("gen_game_config")
 
 
 class LoadTests(unittest.TestCase):
+    def test_extra_heap_is_optional_and_rendered(self):
+        cfg = game_config.load(ROOT / "games/stub")
+        self.assertEqual((cfg["game"]["extra_heap_base"], cfg["game"]["extra_heap_size"]), (0, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            text = (ROOT / "games/stub/game.toml").read_text()
+            text = text.replace('[game]\n', '[game]\nguest_size = 0x18000000\n'
+                                'extra_heap_base = 0x10000000\nextra_heap_size = 0x08000000\n')
+            (game / "game.toml").write_text(text)
+            (game / "globals.toml").write_text("")
+            cfg = game_config.load(game)
+            self.assertIn('#define RECOMP_EXTRA_HEAP_BASE 0x10000000u', gen_game_config.render_header(cfg))
+            self.assertIn('set(RECOMP_EXTRA_HEAP_SIZE 0x08000000u)', gen_game_config.render_cmake(cfg))
+
+    def test_extra_heap_rejects_reserved_ranges_overflow_and_module_overlap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            stub = (ROOT / "games/stub/game.toml").read_text()
+            (game / "globals.toml").write_text("")
+            for base, size in ((0, 4096), (0x0f000000, 4096), (0x10000001, 4096),
+                               (0x10000000, 4097), (0x10000000, 0),
+                               (0x10000000, 0x08001000), (True, 4096),
+                               (0x10000000, -4096), (0xfffff000, 0x2000)):
+                text = stub.replace('[game]\n', '[game]\nguest_size = 0x18000000\n'
+                                    'extra_heap_base = %s\nextra_heap_size = %s\n'
+                                    % (str(base).lower(), size))
+                (game / "game.toml").write_text(text)
+                with self.assertRaisesRegex(ValueError, "extra_heap"):
+                    game_config.load(game)
+            text = stub.replace('[game]\n', '[game]\nguest_size = 0x18000000\n'
+                                'extra_heap_base = 0x10000000\nextra_heap_size = 0x08000000\n')
+            text += ('\n[modules.aux.sample]\nname = "sample.dll"\npath = "original/sample.dll"\n'
+                     'sha256 = "%s"\nbase = 0x10001000\nsize = 0x2000\n' % ('ab' * 32))
+            (game / "game.toml").write_text(text)
+            with self.assertRaisesRegex(ValueError, "extra_heap overlaps auxiliary"):
+                game_config.load(game)
+
     def test_cd_tracks_preserve_disc_order_and_reject_non_strings(self):
         with tempfile.TemporaryDirectory() as tmp:
             game = Path(tmp)

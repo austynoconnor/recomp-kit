@@ -506,6 +506,25 @@ void u_SetWindowPos(X86 *c) {
                        int32_t(arg(c, 5)), arg(c, 6));
     set_eax(c, 1);
 }
+void u_MoveWindow(X86 *c) {
+    uint32_t hwnd = arg(c, 0);
+    Window *w = find_window(hwnd);
+    if (!w) {
+        set_last_error(1400); // ERROR_INVALID_WINDOW_HANDLE
+        set_eax(c, 0);
+        return;
+    }
+    bool repaint = arg(c, 5) != 0;
+    set_window_pos(c, w, 0, int32_t(arg(c, 1)), int32_t(arg(c, 2)), int32_t(arg(c, 3)),
+                   int32_t(arg(c, 4)), 0x14u | (repaint ? 0u : 8u)); // NOZORDER|NOACTIVATE
+    // Geometry callbacks can destroy the window. Reacquire it before painting.
+    if (repaint)
+        if (Window *live = find_window(hwnd)) {
+            live->update_pending = true;
+            host_dispatch_to_wndproc(c, hwnd, 0x000f /* WM_PAINT */, 0, 0);
+        }
+    set_eax(c, 1);
+}
 // The bounds a window had before a display took it over, by handle.
 std::map<uint32_t, std::array<int32_t, 4>> &covered_bounds() {
     static std::map<uint32_t, std::array<int32_t, 4>> m;
@@ -1559,6 +1578,12 @@ void u_SetFocus(X86 *c) {
 void u_GetMenu(X86 *c) {
     set_eax(c, 0);
 }
+void u_LoadMenuA(X86 *c) {
+    // Native menu resources are not represented by this host. Report failure
+    // with the documented two-argument ABI instead of drifting the guest stack.
+    set_last_error(120); // ERROR_CALL_NOT_IMPLEMENTED
+    set_eax(c, 0);
+}
 void u_IsIconic(X86 *c) {
     Window *w = find_window(arg(c, 0));
     set_eax(c, w && (w->style & 0x20000000u) ? 1 : 0);
@@ -1695,6 +1720,7 @@ const ImportShim g_user32_shims[] = {
     {"USER32.dll", "ShowWindow", 2, u_ShowWindow},
     {"USER32.dll", "UpdateWindow", 1, u_UpdateWindow},
     {"USER32.dll", "SetWindowPos", 7, u_SetWindowPos},
+    {"USER32.dll", "MoveWindow", 6, u_MoveWindow},
     {"USER32.dll", "GetWindowRect", 2, u_GetWindowRect},
     {"USER32.dll", "GetClientRect", 2, u_GetClientRect},
     {"USER32.dll", "SystemParametersInfoA", 4, u_SystemParametersInfoA},
@@ -1768,6 +1794,7 @@ const ImportShim g_user32_shims[] = {
     {"USER32.dll", "GetActiveWindow", 0, u_GetActiveWindow},
     {"USER32.dll", "SetFocus", 1, u_SetFocus},
     {"USER32.dll", "GetMenu", 1, u_GetMenu},
+    {"USER32.dll", "LoadMenuA", 2, u_LoadMenuA},
     {"USER32.dll", "IsIconic", 1, u_IsIconic},
     {"USER32.dll", "CloseWindow", 1, u_CloseWindow},
     {"USER32.dll", "SetForegroundWindow", 1, u_SetForegroundWindow},

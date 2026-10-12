@@ -26,7 +26,7 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -1475,6 +1475,8 @@ class Image(object):
                 if (ci.mnemonic == "call" and ci.op_str.startswith("0x")
                         and int(ci.op_str, 16) in self.noreturn_callees):
                     break
+                if noreturn_import(seen[va], getattr(self, "iat_names", {})):
+                    break
                 va = nxt
             else:
                 truncated = True
@@ -1656,6 +1658,17 @@ NORETURN_IMPORTS = frozenset(("RaiseException", "ExitProcess", "TerminateProcess
                               "ExitThread", "FatalAppExitA", "FatalExit"))
 
 
+def noreturn_import(ins, iat_names):
+    """Recognize a statically named import call, never a register target."""
+    if ins.mnem != "CALL" or not ins.ops:
+        return False
+    match = re.fullmatch(r"dword ptr \[(0x[0-9a-fA-F]+)\]", ins.ops[0].strip())
+    # RaiseException and TerminateProcess can return. They are evidence for
+    # the older wrapper inference, but cannot terminate a direct import edge.
+    exits = {"ExitProcess", "ExitThread", "FatalAppExitA", "FatalExit"}
+    return bool(match and iat_names.get(int(match.group(1), 16)) in exits)
+
+
 def noreturn_callees_from(parsed, iat_names, image=None):
     """Callees that never return, as the listings show them.
 
@@ -1679,6 +1692,16 @@ def noreturn_callees_from(parsed, iat_names, image=None):
 
     returns = {fn.addr for fn in parsed
                if any(i.mnem == "RET" for i in fn.insns) and not ends_process(fn)}
+    # A JMP-only forwarding thunk returns through its target. Ghidra may stop
+    # a caller at that thunk without exporting its continuation; absence of a
+    # RET in the thunk is not evidence that the call terminates execution.
+    while True:
+        forwarded = {fn.addr for fn in parsed
+                     if len(fn.insns) == 1 and fn.insns[0].mnem == "JMP"
+                     and Translator.branch_target(fn.insns[0]) in returns}
+        if forwarded <= returns:
+            break
+        returns.update(forwarded)
     out = set()
     for fn in parsed:
         # A loop that cannot fall out of itself never returns either.
@@ -1792,9 +1815,11 @@ class Translator(object):
                 break
 
     def never_returns(self, ins):
-        """Is `ins` a direct CALL to a callee the listings show never returning?"""
+        """Direct nonreturning callees and statically identified import calls."""
         if ins.mnem != "CALL":
             return False
+        if noreturn_import(ins, getattr(self.image, "iat_names", {})):
+            return True
         t = self.branch_target(ins)
         return t is not None and t in self.noreturn_callees
 
@@ -3211,6 +3236,13 @@ class Translator(object):
             L.append("uint32_t t_ = %s;" % read_op(ops[0], 32))
             L.append("c->r[4] -= 4; wr32(c->r[4], %s);" % hexlit(nxt))
             L.append("recomp_call(c, t_);")
+            if self.never_returns(ins):
+                # A process/thread exit cannot fall through into adjacent
+                # padding. Report an unexpected return rather than dispatch
+                # to bytes Ghidra deliberately did not list.
+                self.stats["_noreturn_trap"] += 1
+                L.append("recomp_unknown_call(c, %s); return;" % hexlit(nxt))
+                return L
             if RESUMABLE_STACKS:
                 L.append("if (c->eip != %s) return;" % hexlit(nxt))
             self.stats["_call_indirect"] += 1
@@ -3233,7 +3265,7 @@ class Translator(object):
                     orphan + "recomp_return(c); return;"]
 
         # ------------------------------------------------------------ SSE --
-        # Data movement only, in dword lanes. A Delphi runtime's FillChar and
+        # Data movement and the explicitly modelled arithmetic below. A Delphi runtime's FillChar and
         # Move reach for these unconditionally - SSE2 predates every CPU the
         # compiler supports, so there is no feature test to fail - while the
         # AVX forms beside them are gated on a CPUID bit this kit does not
@@ -3314,6 +3346,45 @@ class Translator(object):
                 lo, hi = 2 * (sel & 1), 2 * ((sel >> 1) & 1)
                 L.extend([put(dst, 0, d(lo)), put(dst, 1, d(lo + 1)),
                           put(dst, 2, sv(hi)), put(dst, 3, sv(hi + 1))])
+            return L
+
+        # Packed arithmetic is used unconditionally by graphics transforms.
+        # Capture every input before writing the destination, including aliases.
+        # Each result is rounded to its lane width before the next instruction;
+        # CPUID remains conservative because this is not complete SSE support.
+        packed_math = {"ADDPS": "+", "SUBPS": "-", "MULPS": "*", "DIVPS": "/",
+                       "ADDPD": "+", "SUBPD": "-", "MULPD": "*", "DIVPD": "/"}
+        if m in packed_math:
+            if (len(ops) != 2 or ops[0].kind != "xmm"
+                    or ops[1].kind not in ("xmm", "mem")
+                    or (ops[1].kind == "mem" and ops[1].size != 128)):
+                raise TranslateError("packed arithmetic needs XMM and XMM/m128 operands")
+            L.append("#pragma STDC FP_CONTRACT OFF")
+            dst, src = ops
+            wide = m.endswith("PD")
+            fp, integer, width = ("double", "uint64_t", 8) if wide else ("float", "uint32_t", 4)
+            count = 2 if wide else 4
+
+            def packed_bits(op, i):
+                lane = i * (2 if wide else 1)
+                def word(j):
+                    return ("c->xmm[%d][%d]" % (op.reg, j) if op.kind == "xmm"
+                            else "rd32(%s + %du)" % (addr_expr(op), 4 * j))
+                return ("(uint64_t)%s | ((uint64_t)%s << 32)" % (word(lane), word(lane + 1))
+                        if wide else word(lane))
+
+            for i in range(count):
+                for name, op in (("d", dst), ("s", src)):
+                    L.extend(["%s %s%d_bits_ = %s;" % (integer, name, i, packed_bits(op, i)),
+                              "%s %s%d_;" % (fp, name, i),
+                              "memcpy(&%s%d_, &%s%d_bits_, %d);" % (name, i, name, i, width)])
+            for i in range(count):
+                L.extend(["%s r%d_ = d%d_ %s s%d_;" % (fp, i, i, packed_math[m], i),
+                          "%s r%d_bits_;" % (integer, i),
+                          "memcpy(&r%d_bits_, &r%d_, %d);" % (i, i, width),
+                          "c->xmm[%d][%d] = (uint32_t)r%d_bits_;" % (dst.reg, i * (2 if wide else 1), i)])
+                if wide:
+                    L.append("c->xmm[%d][%d] = (uint32_t)(r%d_bits_ >> 32);" % (dst.reg, i * 2 + 1, i))
             return L
 
         # Scalar double and single forms. The host's double and float are the
@@ -3995,6 +4066,66 @@ def load_functions(only=None):
     return funcs
 
 
+def adopt_stack_cleanup_gaps(parsed, image):
+    """Keep an omitted cdecl cleanup inside the body it immediately rejoins.
+
+    Ghidra may omit ADD ESP,imm after a callee it misclassified as nonreturning.
+    Recovering that ADD as a separate function, then dispatching back into an
+    alternate entry of the original body, grows the host stack on every loop
+    although the guest made no call. Adopt only one bounded cleanup instruction
+    between two instructions owned by the same listing, with no other owner in
+    its bytes. Real nonreturning calls, padding and other gap shapes stay out.
+    """
+    if getattr(image, "md", None) is None:
+        return 0
+    owners = defaultdict(set)
+    for fn in parsed:
+        for addr in fn.addrs:
+            owners[addr].add(fn)
+    starts = sorted(owners)
+    adopted = 0
+    for fn in parsed:
+        additions = []
+        for i, ins in enumerate(fn.insns[:-1]):
+            start, end = fn.fallthrough[i], fn.insns[i + 1].addr
+            if (start is None or not 0 < end - start <= 6
+                    or ins.mnem in TERMINATORS or ins.mnem == "INT3"
+                    or noreturn_import(ins, getattr(image, "iat_names", {}))
+                    or (ins.mnem == "CALL" and Translator.branch_target(ins)
+                        in image.noreturn_callees)
+                    or owners[end] != {fn}):
+                continue
+            pos = bisect_left(starts, start)
+            if pos < len(starts) and starts[pos] < end:
+                continue
+            # recover needs membership only. Copying the entire instruction
+            # index for every tiny gap makes large listings unnecessarily slow.
+            # This is an optional shape probe, not required code recovery.
+            # Rejected padding/multiple-instruction gaps must not replace real
+            # recovery diagnostics with expected two-instruction budget misses.
+            error_count = len(image.recover_errors)
+            try:
+                got = image.recover(start, owners, limit=2, bounds=(start, end))
+            finally:
+                del image.recover_errors[error_count:]
+            if len(got) != 1 or got[0].mnem != "ADD" or len(got[0].ops) != 2:
+                continue
+            if got[0].ops[0] != "ESP" or parse_operand(got[0].ops[1]).kind != "imm":
+                continue
+            if image.insn_end(start, "ADD") != end:
+                continue
+            additions.extend(got)
+            owners[start].add(fn)
+            starts.insert(bisect_left(starts, start), start)
+        if additions:
+            merged = sorted(fn.insns + additions, key=lambda ins: ins.addr)
+            grown = Function(fn.addr, fn.name, fn.size, merged)
+            grown.measure(image)
+            fn.__dict__.update(grown.__dict__)
+            adopted += len(additions)
+    return adopted
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="where the generated sources go (build/recomp/gen)")
@@ -4115,6 +4246,7 @@ def main():
     image.noreturn_callees = noreturn_callees_from(parsed, getattr(image, "iat_names", {}), image)
     if OPERAND_REDIRECTS:
         apply_operand_redirects(parsed, OPERAND_REDIRECTS)
+    adopted_cleanups = adopt_stack_cleanup_gaps(parsed, image)
 
     # The Ghidra export is not complete: control lands on addresses it never
     # listed, and functions get split at boundaries other code jumps past.
@@ -4185,6 +4317,7 @@ def main():
     initterm_tables = []
     rejected = set()
     tr = Translator(image, all_addrs, args)
+    tr.stats["_adopted_stack_cleanup_gaps"] = adopted_cleanups
     tr.noreturn_callees = image.noreturn_callees
 
     if args.check_flags:
@@ -4232,6 +4365,15 @@ def main():
             # claim - and it should, the cut there is right. What was wrong
             # was calling the edge into it a fall-out.
             for i, ins in enumerate(fn.insns):
+                if ins.mnem == "CALL":
+                    target = tr.branch_target(ins)
+                    if (target is not None and not image.base <= target < image.end
+                            and not GUEST_SHIM_BASE <= target < GUEST_SHIM_END
+                            and target != INTRINSIC_SETJMP):
+                        # A pointer guess into an instruction's displacement
+                        # can decode as CALL <garbage>. It cannot establish a
+                        # function boundary or hide the real surrounding code.
+                        return False
                 if ins.mnem in TERMINATORS or tr.never_returns(ins):
                     continue
                 fall = fn.fallthrough[i]
@@ -4850,6 +4992,35 @@ def main():
                   file=sys.stderr)
 
     scanned_pointers = False
+    immediate_versions = {}
+
+    def new_instruction_immediates():
+        # Data scanning may recover a wrapper which itself passes an omitted
+        # callback. Scan each new/extended body, not just the bodies present
+        # before the one-time data scan. Retain list identity to avoid rescans
+        # and Python id reuse on large images.
+        result = set()
+        for fn in parsed:
+            previous = immediate_versions.get(fn.addr)
+            if previous and previous[0] is fn.insns and previous[1] == len(fn.insns):
+                continue
+            immediate_versions[fn.addr] = (fn.insns, len(fn.insns))
+            for ins in fn.insns:
+                if ins.mnem not in ("PUSH", "MOV") or not ins.ops:
+                    continue
+                try:
+                    src = parse_operand(ins.ops[-1])
+                    if src.kind != "imm" or not image.is_exec(src.imm):
+                        continue
+                    if ins.mnem == "MOV":
+                        dst = parse_operand(ins.ops[0])
+                        if dst.kind != "reg" or dst.size != 32:
+                            continue
+                except TranslateError:
+                    continue
+                result.add(src.imm)
+        return result
+
     seh_stubs = set()
     converged = False
     for _round in range(64):
@@ -4952,25 +5123,7 @@ def main():
             # `atexit(00567570)` pushes its handler and nothing else in the
             # image names it, so neither the data scan nor call following sees
             # it and the handler is skipped at shutdown.
-            immediates = set()
-            for fn in parsed:
-                for ins in fn.insns:
-                    if ins.mnem not in ("PUSH", "MOV") or not ins.ops:
-                        continue
-                    try:
-                        src = parse_operand(ins.ops[-1])
-                    except TranslateError:
-                        continue
-                    if src.kind != "imm" or not image.is_exec(src.imm):
-                        continue
-                    if ins.mnem == "MOV":
-                        try:
-                            dst = parse_operand(ins.ops[0])
-                        except TranslateError:
-                            continue
-                        if dst.kind != "reg" or dst.size != 32:
-                            continue
-                    immediates.add(src.imm)
+            immediates = new_instruction_immediates()
             # Collect all scan candidates against the settled protected code
             # before admitting any of them. Otherwise an earlier guess's
             # interior-byte coverage can suppress a later equal-rank entry.
@@ -5070,8 +5223,25 @@ def main():
                 converged = True
                 break
         elif not changed:
-            converged = True
-            break
+            # Close over callbacks in bodies recovered by the preceding scan
+            # or by later direct-call/SEH recovery. Keep the same admissibility
+            # and table/data exclusions as the original immediate scan.
+            candidates = {t for t in new_instruction_immediates()
+                          if not any(lo <= t < hi for lo, hi in tr.table_ranges)
+                          and (t in owner or image.plausible_immediate_target(t))
+                          and not image.starts_with_utf16_run(t)
+                          and not image.is_utf16_constant(t)
+                          and image.data[t - image.base:t - image.base + 2] != b"\0\0"}
+            for t in sorted(candidates):
+                remember_candidate(t)
+            for t in sorted(candidates):
+                hook_evidence[t].add("immediate")
+                if resolve(t, owner, why="immediate"):
+                    changed = True
+                    immediate_entries[0] += 1
+            if not changed:
+                converged = True
+                break
     if not converged:
         raise TranslateError(
             "entry-point discovery did not converge in 64 rounds; %d entry "

@@ -139,6 +139,10 @@ enum ComIface : uint16_t {
     // version 8 vtables.
     IF_DINPUT8,
     IF_DINPUTDEVICE8,
+    IF_D3DXBUFFER,
+    IF_D3DVERTEXSHADER9,
+    IF_D3DPIXELSHADER9,
+    IF_DSOUND8,
     IF_COUNT
 };
 
@@ -206,6 +210,10 @@ enum ComKind : uint16_t {
     K_D3D9IB,         // an index buffer
     K_D3D9DECL,       // a vertex declaration
     K_D3D9QUERY,      // an occlusion or event query
+    K_D3DXBUFFER,     // assembled shader bytes or a NUL-terminated diagnostic
+    K_D3D9VS,
+    K_D3D9PS,
+    K_DSOUND8,
 };
 
 // A DirectInput joystick axis's DIPROP_RANGE, DIPROP_DEADZONE and
@@ -237,6 +245,9 @@ struct ComObj {
     // to return the same pointer for the lifetime of the object, so this is
     // fixed on first use and never revised when a lower-numbered view appears.
     uint32_t identity = 0;
+
+    // --- K_D3DXBUFFER: owns this guest allocation until final Release.
+    uint32_t buffer_data = 0, buffer_bytes = 0;
 
     // --- K_DDRAW
     uint32_t hwnd = 0;

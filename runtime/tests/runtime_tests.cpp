@@ -2218,6 +2218,16 @@ static void test_synchronous_geometry(X86 *c) {
     call_import(c, "USER32.dll", "SetWindowPos", {hwnd, 0, 30, 40, 600, 420, 4});
     check(g_geometry_messages == std::vector<uint32_t>({0x47}) && g_geometry_width == 560,
           "handling WM_WINDOWPOSCHANGED without DefWindowProc suppresses WM_MOVE and WM_SIZE");
+    g_geometry_suppress = false;
+    check(call_import(c, "USER32.dll", "MoveWindow", {hwnd, 50, 60, 620, 430, 0}) == 1,
+          "MoveWindow succeeds with its six-argument ABI");
+    call_import(c, "USER32.dll", "GetClientRect", {hwnd, rect});
+    check(rd32(rect + 8) == 620 && rd32(rect + 12) == 430 && g_geometry_width == 620 &&
+              g_geometry_height == 430,
+          "MoveWindow updates guest bounds and synchronous size notifications");
+    check(call_import(c, "USER32.dll", "MoveWindow", {0, 0, 0, 1, 1, 0}) == 0 &&
+              get_last_error() == 1400,
+          "MoveWindow rejects an invalid window handle");
     call_import(c, "USER32.dll", "DestroyWindow", {hwnd});
 }
 
@@ -4873,6 +4883,36 @@ static void test_kernel32_wide() {
     check(n == 1 && gm_wstr(s + 0x800) == "1",
           "GetPrivateProfileStringW reads back value from write tier");
 
+    gm_put_str(s + 0x1000, "settings", 64);
+    gm_put_str(s + 0x1080, "windowed", 64);
+    gm_put_str(s + 0x1100, "  fallback  ", 64);
+    gm_put_str(s + 0x1180, "wide-test.ini", 64);
+    uint32_t ansi_out = s + 0x1200;
+    n = call_import(&c, "KERNEL32.dll", "GetPrivateProfileStringA",
+                    {s + 0x1000, s + 0x1080, s + 0x1100, ansi_out, 64, s + 0x1180});
+    check(n == 1 && gm_str(ansi_out) == "1",
+          "ANSI profile reads a case-insensitive key through the shared file seam");
+    n = call_import(&c, "KERNEL32.dll", "GetPrivateProfileStringA",
+                    {s + 0x1000, 0, 0, ansi_out, 64, s + 0x1180});
+    check(n == 9 && gm_str(ansi_out) == "Windowed" && rd8(ansi_out + 9) == 0,
+          "ANSI profile enumerates byte strings with double NUL");
+    memset(g_mem + ansi_out, 0xa5, 8);
+    n = call_import(&c, "KERNEL32.dll", "GetPrivateProfileStringA",
+                    {s + 0x1000, 0, 0, ansi_out, 5, s + 0x1180});
+    check(n == 3 && gm_str(ansi_out) == "Win" && rd8(ansi_out + 4) == 0 &&
+              rd8(ansi_out + 5) == 0xa5,
+          "ANSI profile truncated enumeration reserves two terminators and stays in capacity");
+    gm_put_str(s + 0x1080, "missing", 64);
+    n = call_import(&c, "KERNEL32.dll", "GetPrivateProfileStringA",
+                    {s + 0x1000, s + 0x1080, s + 0x1100, ansi_out, 64, s + 0x1180});
+    check(n == 10 && gm_str(ansi_out) == "  fallback",
+          "ANSI profile missing key keeps leading default blanks and trims trailing blanks");
+    memset(g_mem + ansi_out, 0xa5, 8);
+    n = call_import(&c, "KERNEL32.dll", "GetPrivateProfileStringA",
+                    {s + 0x1000, s + 0x1080, s + 0x1100, ansi_out, 1, s + 0x1180});
+    check(n == 0 && rd8(ansi_out) == 0 && rd8(ansi_out + 1) == 0xa5,
+          "ANSI profile one-byte destination contains only its terminator");
+
     check(std::find(g_wide_file_ops.begin(), g_wide_file_ops.end(), WIN32_FILE_WRITE) !=
               g_wide_file_ops.end(),
           "profile update uses the write seam");
@@ -5501,6 +5541,19 @@ static void test_delphi_misc() {
     X86 c;
     loader_init_context(&c);
     uint32_t s = 0x00330000;
+    for (const char *name : {"SHGetDesktopFolder", "SHGetMalloc"}) {
+        wr32(s, 0xdeadbeef);
+        wr32(s + 4, 0xa5a5a5a5);
+        check(call_import(&c, "SHELL32.dll", name, {s}) == 0x80004001u && rd32(s) == 0 &&
+                  rd32(s + 4) == 0xa5a5a5a5 &&
+                  imports_argc(imports_resolve("SHELL32.dll", name)) == 1,
+              "%s reports unavailable shell interface, clears only output and uses one argument",
+              name);
+        check(call_import(&c, "SHELL32.dll", name, {0}) == 0x80004003u, "%s rejects a null output",
+              name);
+        check(call_import(&c, "SHELL32.dll", name, {0xffffffffu}) == 0x80004003u,
+              "%s rejects an inaccessible output", name);
+    }
     wr32(s, 0xdeadbeef);
     wr32(s + 4, 0xdeadbeef);
     check(call_import(&c, "WINSPOOL.DRV", "EnumPrintersW", {2, 0, 2, 0, 0, s, s + 4}) == 1 &&
@@ -6253,6 +6306,20 @@ static void test_user32_services() {
                                       {IMAGE_BASE, id, s + 0x600, 4}) == std::min(n, 3u) &&
                               rd16(s + 0x600 + std::min(n, 3u) * 2) == 0,
                           "LoadStringW short buffer terminates");
+                    wr8(s + 0x701, 0xa5);
+                    check(call_import(&c, "USER32.dll", "LoadStringA",
+                                      {IMAGE_BASE, id, s + 0x700, 1}) == 0 &&
+                              rd8(s + 0x700) == 0 && rd8(s + 0x701) == 0xa5,
+                          "LoadStringA one-byte buffer terminates without overwriting guard");
+                    wr32(s + 0x700, 0xa5a5a5a5);
+                    check(call_import(&c, "USER32.dll", "LoadStringA",
+                                      {IMAGE_BASE, id, s + 0x700, 0}) == 0 &&
+                              rd32(s + 0x700) == 0xa5a5a5a5,
+                          "LoadStringA zero capacity never writes a resource pointer");
+                    check(call_import(&c, "USER32.dll", "LoadStringA",
+                                      {IMAGE_BASE, id, s + 0x700, 4}) == std::min(n, 3u) &&
+                              rd8(s + 0x700 + std::min(n, 3u)) == 0,
+                          "LoadStringA truncates in bytes and terminates");
                     checked = true;
                     break;
                 }
@@ -6265,6 +6332,10 @@ static void test_user32_services() {
         printf("  [skip] image has no nonempty string resource\n");
         ++g_skips;
     }
+    check(call_import(&c, "USER32.dll", "LoadMenuA", {IMAGE_BASE, 1}) == 0 &&
+              get_last_error() == 120 &&
+              imports_argc(imports_resolve("USER32.dll", "LoadMenuA")) == 2,
+          "LoadMenuA reports unavailable menu resources and preserves its two-argument ABI");
     // Draw a system brush and a constructed icon into an actual guest DIB.
     uint32_t hdr = s + 0x800;
     memset(g_mem + hdr, 0, 40);

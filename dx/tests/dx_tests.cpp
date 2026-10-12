@@ -27,6 +27,8 @@
 #include "fixtures/tone_mp3.h"
 #include "fixtures/quad_shaders.h"
 #include "../d3d11.h"
+#include "../d3d9_assemble.h"
+#include "../d3d9_pipeline.h"
 #include "guest_abi.h"
 #include <cmath>
 
@@ -6216,6 +6218,57 @@ static void test_d3d_pipeline() {
 
 // DirectSound: create a buffer, fill it through Lock, play it, and check the
 // PCM and format reached the host.
+static void test_dsound8_device() {
+    cpu_reset();
+    const uint8_t iid8[16] = {0x93, 0x7e, 0x0a, 0xc5, 0x95, 0xf3, 0x34, 0x48,
+                              0x9e, 0xf6, 0x7f, 0xa9, 0x9d, 0xe5, 0x09, 0x66};
+    memcpy(gm_ptr(sc(0x80)), iid8, 16);
+    uint32_t before = com_live_count();
+    for (const char *name : {"ord11", "DirectSoundCreate8"}) {
+        uint32_t create = tramp("DSOUND.dll", name);
+        CHECK(create != 0);
+        if (!create)
+            continue;
+        CHECK_EQ(call_shim(create, {0, sc(0), 0}), DS_OK);
+        uint32_t ds = rd32(sc(0));
+        CHECK(ds != 0);
+        if (!ds)
+            continue;
+        CHECK_EQ(com_iface_of(ds), IF_DSOUND8);
+        uint32_t sp = g_cpu.r[R_ESP];
+        CHECK_EQ(call_method(ds, 6, {0x20004, 2}), DS_OK);
+        CHECK_EQ(call_method(ds, 11, {sc(4)}), DS_OK);
+        CHECK_EQ(rd32(sc(4)), 1); // software bridge: DS_UNCERTIFIED
+        memset(gm_ptr(sc(0x200)), 0, DSCAPS_SIZE);
+        wr32(sc(0x200), DSCAPS_SIZE);
+        CHECK_EQ(call_method(ds, 4, {sc(0x200)}), DS_OK);
+        CHECK((rd32(sc(0x200) + DSCAPS_OFF_dwFlags) & DSCAPS_CERTIFIED) == 0);
+        CHECK_EQ(call_method(ds, 11, {0}), DSERR_INVALIDPARAM);
+        CHECK_EQ(g_cpu.r[R_ESP], sp);
+        CHECK_EQ(call_method(ds, 0, {sc(0x80), sc(8)}), S_OK);
+        CHECK_EQ(rd32(sc(8)), ds);
+        CHECK_EQ(call_method(rd32(sc(8)), 2), 1);
+        memset(gm_ptr(sc(0x100)), 0, DSBUFFERDESC_SIZE);
+        wr32(sc(0x100), DSBUFFERDESC_SIZE);
+        wr32(sc(0x100) + DSBD_OFF_dwFlags, DSBCAPS_PRIMARYBUFFER);
+        CHECK_EQ(call_method(ds, 3, {sc(0x100), sc(12), 0}), DS_OK);
+        uint32_t buffer = rd32(sc(12));
+        CHECK(buffer != 0);
+        if (buffer)
+            CHECK_EQ(call_method(buffer, 2), 0);
+        CHECK_EQ(call_method(ds, 2), 0);
+        wr32(sc(0), 0xdeadbeef);
+        CHECK_EQ(call_shim(create, {0, sc(0), 1}), CLASS_E_NOAGGREGATION);
+        CHECK_EQ(rd32(sc(0)), 0);
+        CHECK_EQ(call_shim(create, {0, 0, 0}), DSERR_INVALIDPARAM);
+    }
+    CHECK_EQ(call_shim(tramp("DSOUND.dll", "ord1"), {0, sc(0), 0}), DS_OK);
+    uint32_t legacy = rd32(sc(0));
+    CHECK_EQ(call_method(legacy, 0, {sc(0x80), sc(4)}), E_NOINTERFACE);
+    CHECK_EQ(rd32(sc(4)), 0);
+    CHECK_EQ(call_method(legacy, 2), 0);
+    CHECK_EQ(com_live_count(), before);
+}
 static void test_dsound() {
     cpu_reset();
     g_plays.clear();
@@ -7733,6 +7786,7 @@ static void test_vtable_integrity() {
         {IF_D3DLIGHT, 6, "IDirect3DLight"},
         {IF_D3DTEXTURE2, 6, "IDirect3DTexture2"},
         {IF_DSOUND, 11, "IDirectSound"},
+        {IF_DSOUND8, 12, "IDirectSound8"},
         {IF_DSBUFFER, 21, "IDirectSoundBuffer"},
         {IF_DS3DBUFFER, 21, "IDirectSound3DBuffer"},
         {IF_DS3DLISTENER, 18, "IDirectSound3DListener"},
@@ -11340,6 +11394,148 @@ static uint32_t float_word(float v) {
     memcpy(&w, &v, 4);
     return w;
 }
+static void test_d3dx9_quaternion_rotations() {
+    cpu_reset();
+    uint32_t to_matrix = tramp("d3dx9_30.dll", "D3DXMatrixRotationQuaternion");
+    uint32_t to_quaternion = tramp("d3dx9_30.dll", "D3DXQuaternionRotationMatrix");
+    CHECK(to_matrix != 0 && to_quaternion != 0);
+    if (!to_matrix || !to_quaternion)
+        return;
+    const float s = sqrtf(0.5f);
+    const float quaternions[][4] = {
+        {0, 0, 0, 1}, {0, 0, s, s}, {1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}};
+    const float matrices[][9] = {{1, 0, 0, 0, 1, 0, 0, 0, 1},
+                                 {0, 1, 0, -1, 0, 0, 0, 0, 1},
+                                 {1, 0, 0, 0, -1, 0, 0, 0, -1},
+                                 {-1, 0, 0, 0, 1, 0, 0, 0, -1},
+                                 {-1, 0, 0, 0, -1, 0, 0, 0, 1}};
+    for (unsigned f = 0; f < 5; ++f) {
+        for (unsigned i = 0; i < 4; ++i)
+            wrf32(sc(0) + i * 4, quaternions[f][i]);
+        uint32_t sp = g_cpu.r[R_ESP];
+        CHECK_EQ(call_shim(to_matrix, {sc(64), sc(0)}), sc(64));
+        CHECK_EQ(g_cpu.r[R_ESP], sp);
+        for (unsigned r = 0; r < 4; ++r)
+            for (unsigned col = 0; col < 4; ++col) {
+                float expected = r < 3 && col < 3     ? matrices[f][r * 3 + col]
+                                 : r == 3 && col == 3 ? 1.0f
+                                                      : 0.0f;
+                CHECK(fabsf(rdf32(sc(64) + (r * 4 + col) * 4) - expected) < 0.00001f);
+            }
+        CHECK_EQ(call_shim(to_quaternion, {sc(128), sc(64)}), sc(128));
+        CHECK_EQ(g_cpu.r[R_ESP], sp);
+        float dot = 0;
+        for (unsigned i = 0; i < 4; ++i)
+            dot += rdf32(sc(128) + i * 4) * quaternions[f][i];
+        CHECK(fabsf(fabsf(dot) - 1) < 0.00001f); // q and -q encode the same rotation
+        // Both conversions also accept an output overlapping their input.
+        CHECK_EQ(call_shim(to_quaternion, {sc(64), sc(64)}), sc(64));
+        CHECK_EQ(call_shim(to_matrix, {sc(64), sc(64)}), sc(64));
+        for (unsigned r = 0; r < 3; ++r)
+            for (unsigned col = 0; col < 3; ++col)
+                CHECK(fabsf(rdf32(sc(64) + (r * 4 + col) * 4) - matrices[f][r * 3 + col]) <
+                      0.00001f);
+    }
+    CHECK_EQ(call_shim(to_matrix, {sc(64), 0}), 0);
+    CHECK_EQ(call_shim(to_quaternion, {0, sc(64)}), 0);
+    CHECK(tramp("d3dx9_26.dll", "D3DXMatrixRotationQuaternion") != 0);
+    CHECK(tramp("d3dx9_26.dll", "D3DXQuaternionRotationMatrix") != 0);
+}
+static void test_d3dx_assemble_buffers() {
+    cpu_reset();
+    const char *source = "vs_1_1\nmov oPos, v0\n";
+    gm_put_str(sc(256), source, 128);
+    uint32_t assemble = tramp("d3dx9_30.dll", "D3DXAssembleShader");
+    CHECK(assemble != 0);
+    if (!assemble)
+        return;
+    uint32_t before = com_live_count();
+    CHECK_EQ(call_shim(assemble, {sc(256), uint32_t(strlen(source)), 0, 0, 0, sc(0), sc(4)}), S_OK);
+    uint32_t buffer = rd32(sc(0));
+    CHECK(buffer != 0);
+    CHECK_EQ(rd32(sc(4)), 0u);
+    if (buffer) {
+        uint32_t data = call_method(buffer, 3);
+        CHECK_EQ(call_method(buffer, 4), 20u);
+        CHECK_EQ(rd32(data), 0xfffe0101u);
+        CHECK_EQ(rd32(data + 16), 0xffffu);
+        const uint8_t iid[16] = {0x08, 0xfb, 0xa5, 0x8b, 0x95, 0x51, 0xe2, 0x40,
+                                 0xac, 0x58, 0x0d, 0x98, 0x9c, 0x3a, 0x01, 0x02};
+        memcpy(gm_ptr(sc(32)), iid, 16);
+        CHECK_EQ(call_method(buffer, 0, {sc(32), sc(8)}), S_OK);
+        CHECK_EQ(rd32(sc(8)), buffer);
+        CHECK_EQ(call_method(buffer, 2), 1u);
+        CHECK_EQ(call_method(buffer, 2), 0u);
+    }
+    gm_put_str(sc(256), "vs_1_1\ninvalid r0,v0\n", 128);
+    CHECK_EQ(call_shim(assemble, {sc(256), 20, 0, 0, 0, sc(0), sc(4)}), 0x88760b59u);
+    CHECK_EQ(rd32(sc(0)), 0u);
+    uint32_t errors = rd32(sc(4));
+    CHECK(errors != 0);
+    if (errors) {
+        uint32_t data = call_method(errors, 3), size = call_method(errors, 4);
+        CHECK(size > 1);
+        CHECK(gm_str(data).find("line 2") != std::string::npos);
+        CHECK_EQ(rd8(data + size - 1), 0u);
+        CHECK_EQ(call_method(errors, 2), 0u);
+    }
+    CHECK_EQ(com_live_count(), before);
+    CHECK_EQ(call_shim(assemble, {sc(256), 20, 0, 0, 0, 0, sc(4)}), E_POINTER);
+}
+
+static void test_d3d9_shader_objects() {
+    cpu_reset();
+    uint32_t factory = call_shim(tramp("d3d9.dll", "Direct3DCreate9"), {32});
+    CHECK(factory != 0);
+    if (!factory)
+        return;
+    gm_zero(sc(0x100), 64);
+    wr32(sc(0x100), 16);
+    wr32(sc(0x104), 16);
+    wr32(sc(0x108), 21);
+    wr32(sc(0x120), 1);
+    CHECK_EQ(call_method(factory, 16, {0, 1, 0, 0, sc(0x100), sc(4)}), S_OK);
+    uint32_t device = rd32(sc(4));
+    CHECK(device != 0);
+    if (!device) {
+        call_method(factory, 2);
+        return;
+    }
+    for (bool pixel : {false, true}) {
+        std::vector<uint32_t> words;
+        std::string error;
+        CHECK(
+            d9sh::assemble(pixel ? "ps_2_0\nmov oC0,v0\n" : "vs_1_1\nmov oPos,v0\n", words, error));
+        memcpy(gm_ptr(sc(0x200)), words.data(), words.size() * 4);
+        CHECK_EQ(call_method(device, pixel ? 106 : 91, {sc(0x200), sc(8)}), S_OK);
+        uint32_t shader = rd32(sc(8));
+        CHECK(shader != 0);
+        if (!shader)
+            continue;
+        CHECK_EQ(call_method(shader, 4, {0, sc(12)}), S_OK);
+        CHECK_EQ(rd32(sc(12)), words.size() * 4);
+        CHECK_EQ(call_method(shader, 4, {sc(0x300), sc(12)}), S_OK);
+        CHECK(memcmp(gm_ptr(sc(0x300)), words.data(), words.size() * 4) == 0);
+        wr32(sc(12), 1);
+        CHECK_EQ(call_method(shader, 4, {sc(0x300), sc(12)}), 0x8876086cu);
+        CHECK_EQ(call_method(device, pixel ? 107 : 92, {shader}), S_OK);
+        CHECK_EQ(call_method(shader, 2), 1u); // binding survives caller Release
+        CHECK_EQ(call_method(device, pixel ? 108 : 93, {sc(16)}), S_OK);
+        CHECK_EQ(rd32(sc(16)), shader);
+        CHECK_EQ(call_method(shader, 2), 1u); // release GetShader reference
+        const D9Pipeline &pl = d9_pipeline(com_this(device)->id);
+        CHECK(!(pixel ? pl.ps : pl.vs).empty());
+        CHECK_EQ(call_method(device, pixel ? 107 : 92, {0}), S_OK);
+        CHECK(com_this(shader) == nullptr);
+        CHECK((pixel ? pl.ps : pl.vs).empty());
+        // A program of the wrong stage cannot be created by the other method.
+        CHECK_EQ(call_method(device, pixel ? 91 : 106, {sc(0x200), sc(8)}), 0x8876086cu);
+        CHECK_EQ(rd32(sc(8)), 0u);
+    }
+    call_method(device, 2);
+    call_method(factory, 2);
+}
+
 static void test_d3dx_math_and_blob() {
     cpu_reset();
     if (!tramp("d3dx10_41.dll", "D3DXMatrixTranslation")) {
@@ -12623,7 +12819,7 @@ static void test_audio_asset(const char *path) {
            media.audio_channels(), peak);
 }
 
-int main() {
+int main(int argc, char **argv) {
     // Unbuffered, not line buffered: Windows treats _IOLBF as full buffering
     // and a fail-fast abort drops everything queued, including the name of
     // the test that died.
@@ -12660,6 +12856,9 @@ int main() {
         {"overlapping self-blit", test_overlapping_self_blit},
         {"lock write tracking", test_lock_write_tracking},
         {"D3D11 scaffold", test_d3d11_scaffold},
+        {"D3DX assembly buffers", test_d3dx_assemble_buffers},
+        {"D3D9 shader objects", test_d3d9_shader_objects},
+        {"D3DX9 quaternion rotations", test_d3dx9_quaternion_rotations},
         {"D3DX math and blob", test_d3dx_math_and_blob},
         {"vtable integrity", test_vtable_integrity},
         {"resolution depth lifetime", test_resolution_depth_lifetime},
@@ -12733,6 +12932,7 @@ int main() {
         {"Direct3D pipeline", test_d3d_pipeline},
         {"Direct3D3 pipeline", test_d3d3_pipeline},
         {"DirectSound", test_dsound},
+        {"DirectSound8 device", test_dsound8_device},
         {"DirectInput", test_dinput},
         {"QMixer", test_qmixer},
         {"FMOD samples", test_fmod},
@@ -12796,13 +12996,22 @@ int main() {
 #endif
         {"dx_reset", test_reset},
     };
+    const char *filter = argc > 1 ? argv[1] : getenv("RECOMP_TEST_FILTER");
+    unsigned selected = 0;
     for (auto &t : tests) {
+        if (filter && !strstr(t.name, filter))
+            continue;
+        ++selected;
         int before = g_failures;
         t.fn();
         printf("%-26s %s\n", t.name, g_failures == before ? "ok" : "FAILED");
     }
 
     printf("\n%d checks, %d failures\n", g_checks, g_failures);
+    if (!selected) {
+        fprintf(stderr, "no DX tests matched the filter\n");
+        return 1;
+    }
     if (g_failures == 0)
         printf("all dx tests passed\n");
     return g_failures ? 1 : 0;

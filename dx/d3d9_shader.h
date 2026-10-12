@@ -14,6 +14,10 @@
 
 namespace d9sh {
 
+// Operand count for shader-model 1 instructions, which have no length field.
+// Unknown operations return -1; model 2+ callers use the token's length field.
+int instruction_operand_count(uint32_t op, uint32_t major, uint32_t minor, bool pixel);
+
 enum Reg : uint32_t {
     R_TEMP = 0,
     R_INPUT = 1,
