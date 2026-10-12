@@ -834,24 +834,36 @@ static void file_drop_read_ahead(const std::string &path) {
             entry.second.ahead_len = 0;
 }
 
+// One host read, timed as file time in the stall report. Reads served from
+// the read-ahead buffer are not timed; in a browser each clock reading is a
+// call out to JavaScript and a game reading a byte at a time makes hundreds
+// of thousands of them.
+static int64_t host_read(int fd, uint8_t *dst, size_t want, uint64_t *spent_ns) {
+    RecompStallScope stall(RECOMP_STALL_FILE);
+    const uint64_t from = os_monotonic_ns();
+    int64_t got = os_fd_read(fd, dst, want);
+    *spent_ns += os_monotonic_ns() - from;
+    return got;
+}
+
 static int64_t file_read(HObj *o, uint8_t *dst, uint32_t want) {
+    uint64_t spent_ns = 0;
     int64_t pos = want && want < kAheadSmall ? os_fd_seek(o->fd, 0, OS_SEEK_CUR) : -1;
     if (pos < 0) {
         o->ahead_len = 0;
-        return os_fd_read(o->fd, dst, want);
+        return host_read(o->fd, dst, want, &spent_ns);
     }
     if (pos < o->ahead_at || pos + want > o->ahead_at + (int64_t)o->ahead_len) {
         if (o->ahead.size() < kAhead)
             o->ahead.resize(kAhead);
+        int64_t got = host_read(o->fd, o->ahead.data(), kAhead, &spent_ns);
         static const bool trace = recomp_env("TRACE_DISK") != nullptr;
-        const uint64_t t0 = trace ? os_monotonic_ns() : 0;
-        int64_t got = os_fd_read(o->fd, o->ahead.data(), kAhead);
         if (trace) {
             // RECOMP_TRACE_DISK: how often small reads missed the buffer and
             // what refilling it cost (in a browser, a call to another thread).
             static uint64_t misses, miss_ns, logged;
             misses++;
-            miss_ns += os_monotonic_ns() - t0;
+            miss_ns += spent_ns;
             if (misses >= logged + 256) {
                 logged = misses;
                 LOGW("disk: %llu read-ahead refills, %llu ms", (unsigned long long)misses,
@@ -892,12 +904,9 @@ void k_ReadFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
-    int64_t n;
-    {
-        RecompStallScope stall(RECOMP_STALL_FILE);
-        n = file_read(o, g_mem + buf, want);
-    }
-    if (recomp_env("TRACE_FILES"))
+    int64_t n = file_read(o, g_mem + buf, want);
+    static const bool trace_files = recomp_env("TRACE_FILES") != nullptr;
+    if (trace_files)
         LOGW("file: read handle=%08x want=%u got=%lld", arg(c, 0), want, (long long)n);
     if (n < 0) {
         set_last_error(ERROR_ACCESS_DENIED_);
