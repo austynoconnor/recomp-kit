@@ -981,6 +981,13 @@ static uint32_t bind_constants(FxEffect &fx, const std::vector<uint8_t> &code, f
             continue;
         if (c.cls == FXC_MATRIX_ROWS || c.cls == FXC_MATRIX_COLUMNS) {
             uint32_t pr = p->t.rows ? p->t.rows : 1, pc = p->t.cols ? p->t.cols : 1;
+            // The effect can describe a parameter as the transpose of the
+            // shader's view of it: Bully's bones are a 3x4 row-major effect
+            // parameter and a 4x3 column-major shader constant, the same
+            // three registers. Then the shader's [row][col] is the
+            // parameter's [col][row]. (Square matrices keep their layout.)
+            uint32_t cr = c.rows ? c.rows : 4, cc = c.cols ? c.cols : 4;
+            bool flip = pr != pc && pr == cc && pc == cr;
             for (uint32_t r = 0; r < c.count && c.index + r < limit; ++r) {
                 uint32_t el = c.cls == FXC_MATRIX_COLUMNS ? r / (c.cols ? c.cols : 4)
                                                           : r / (c.rows ? c.rows : 4);
@@ -989,6 +996,8 @@ static uint32_t bind_constants(FxEffect &fx, const std::vector<uint8_t> &code, f
                 for (uint32_t k = 0; k < 4; ++k) {
                     uint32_t row = c.cls == FXC_MATRIX_COLUMNS ? k : line;
                     uint32_t col = c.cls == FXC_MATRIX_COLUMNS ? line : k;
+                    if (flip)
+                        std::swap(row, col);
                     reg[c.index + r][k] = (row < pr && col < pc)
                                               ? param_get_float(*p, el * pr * pc + row * pc + col)
                                               : 0.0f;
