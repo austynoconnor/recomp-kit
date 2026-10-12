@@ -44,7 +44,9 @@ def input_hints(cfg, hints):
         return None
     if "keyboard" in hints or "controller" in hints:
         return hints
-    return {"bindings": cfg.get("controls", {}).get("mapped", {}), "actions": hints}
+    controls = cfg.get("controls", {})
+    return {"bindings": controls.get("mapped", {}), "actions": hints,
+            "aliases": controls.get("key_aliases", {})}
 
 
 def game_entry(cfg):

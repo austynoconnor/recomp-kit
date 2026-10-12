@@ -260,18 +260,20 @@ def load(game_dir):
     # only, the DirectShow movie path) or "all" (the desktop decoder list).
     if launcher.setdefault("web_video", "off") not in WEB_VIDEO:
         raise ValueError("%s: [launcher] web_video must be one of %s" % (source, ", ".join(WEB_VIDEO)))
-    # The control lines under the game in the browser: {keyboard = "...",
-    # controller = "..."}, the controller one with {name}/{confirm}/{back}.
+    # The control lines under the game in the browser, either fixed lines
+    # {keyboard = "...", controller = "..."} (the controller one with
+    # {name}/{confirm}/{back}), or actions mapped to binding strings
+    # {accelerate = "key:Up", ...} that the browser resolves against
+    # [controls.mapped].
     hints = launcher.setdefault("input_hints", {})
-    if not isinstance(hints, dict) or not all(
-            k in ("keyboard", "controller") and isinstance(v, str) for k, v in hints.items()):
-        raise ValueError('%s: [launcher] input_hints may set only "keyboard" and "controller" '
-                         "strings, not %r" % (source, hints))
-    min_free = launcher.setdefault("min_free_mb", 0)
-    hints = launcher.setdefault("input_hints", {})
+    fixed = isinstance(hints, dict) and any(k in ("keyboard", "controller") for k in hints)
     if not isinstance(hints, dict) or not all(isinstance(k, str) and isinstance(v, str) and v
                                              for k, v in hints.items()):
         raise ValueError("%s: [launcher.input_hints] must map actions to binding strings" % source)
+    if fixed and not all(k in ("keyboard", "controller") for k in hints):
+        raise ValueError('%s: [launcher] input_hints may set only "keyboard" and "controller" '
+                         "strings, not %r" % (source, hints))
+    min_free = launcher.setdefault("min_free_mb", 0)
     if not isinstance(min_free, int) or min_free < 0:
         raise ValueError("%s: [launcher] min_free_mb must be a non-negative integer" % source)
     setup_dirs = cfg.setdefault("setup", {}).setdefault("required_dirs", [])

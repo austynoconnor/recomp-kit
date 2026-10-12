@@ -27,8 +27,16 @@ export function inputHintText(id, config) {
     cross:"Bottom button",circle:"Right button",square:"Left button",triangle:"Top button",
     r2:"Right trigger",l2:"Left trigger",r1:"Right shoulder",l1:"Left shoulder",
   });
-  const keyboard = value => ({"key:Return":"Enter", "key:Escape":"Esc", "key:Up":"↑", "key:Down":"↓",
+  const named = value => ({"key:Return":"Enter", "key:Escape":"Esc", "key:Up":"↑", "key:Down":"↓",
     "key:Space":"Space", "key:LShift":"Shift", "key:RShift":"Shift", "horizontal_arrows":"←/→"})[value] || value.replace(/^key:/, "");
+  // [controls] key_aliases ({Up: "W"}) name extra keys that press the same key.
+  const aliases = config.aliases || {};
+  const keyboard = value => {
+    if (value === "horizontal_arrows" && aliases.Left && aliases.Right)
+      return `${aliases.Left}/${aliases.Right} or ←/→`;
+    const alias = value.startsWith("key:") && aliases[value.slice(4)];
+    return alias ? `${alias}/${named(value)}` : named(value);
+  };
   const order = ["r2","l2","start","triangle","cross","square","circle","l1","r1","select","l3","r3"];
   const text = [labels ? labels.name : "Keyboard"];
   if (!labels || config.bindings?.dpad === "arrows") text.push(labels ? "D-pad: menus" : "Arrow keys: menus");

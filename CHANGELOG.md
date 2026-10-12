@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 2026-10-12 09:52 CDT — Claude Opus 5.5: Browser input hints name
+  [controls] key_aliases next to the key they press ("W/↑: accelerate",
+  "A/D or ←/→: steer"); the web launcher passes the aliases with the action
+  form. [launcher] input_hints validation accepts both the fixed-line and the
+  action/binding forms. Game config, launcher and player suites pass.
+
 - 2026-10-12 09:37 CDT — Claude Opus 5.5: Merged giggity-d3d8 (ff58fdf) into
   browser-release for NFS Most Wanted: frame-slot no-wait, local scheduler clock,
   AudioWorklet ring sink, two frames ahead, canvas pixel density, stall logger,
