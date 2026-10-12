@@ -640,6 +640,135 @@ CASES += [
 ]
 
 
+
+
+# Packed SSE/SSE2 forms RE4 (MSVC 2005) and its CRT use without a CPUID
+# check. Results land in memory or general registers, where both engines
+# are compared. Inputs repeat values so equal, NaN and range edges occur.
+SSE_FLOATS = [0.0, -0.0, 1.5, -2.25, 1.5, float("nan"), float("inf"), -float("inf"), 3.0e9, 1e-30]
+SSE_DOUBLES = [0.0, -0.0, 1.5, -2.5, 2.5, 0.5, float("nan"), 3.0e9, -2147483648.4, 2147483647.6, -7.5]
+
+def sse_int_setup(rng):
+    return {"regs": dict(rand_regs(rng), ESI=SCRATCH + 0x300, EDI=SCRATCH + 0x100,
+                         ECX=rng.randint(0, 70)),
+            "mem": [(SCRATCH + 0x300, bytes(rng.getrandbits(8) for _ in range(32))),
+                    (SCRATCH + 0x100, b"\x00" * 0x80)]}
+
+def sse_float_setup(rng):
+    vals = [rng.choice(SSE_FLOATS) for _ in range(8)]
+    return {"regs": dict(rand_regs(rng), ESI=SCRATCH + 0x300, EDI=SCRATCH + 0x100),
+            "mem": [(SCRATCH + 0x300, struct.pack("<8f", *vals)),
+                    (SCRATCH + 0x100, b"\x00" * 0x90)]}
+
+def sse_double_setup(rng):
+    vals = [rng.choice(SSE_DOUBLES) for _ in range(4)]
+    ints = [rng.getrandbits(32) for _ in range(4)]
+    return {"regs": dict(rand_regs(rng), ESI=SCRATCH + 0x300, EDI=SCRATCH + 0x100),
+            "mem": [(SCRATCH + 0x300, struct.pack("<4d4I", *(vals + ints))),
+                    (SCRATCH + 0x100, b"\x00" * 0x50)]}
+
+
+CASES += [
+    Case('SSE2 packed integer, shift, word insert/extract and byte mask', 0x0D02E400,
+         [(0, "MOVUPS XMM0,xmmword ptr [ESI]"),
+          (3, "MOVUPS XMM1,xmmword ptr [ESI + 0x10]"),
+          (7, "MOVAPS XMM2,XMM0"),
+          (10, "PSUBD XMM2,XMM1"),
+          (14, "MOVUPS xmmword ptr [EDI],XMM2"),
+          (17, "MOVAPS XMM3,XMM0"),
+          (20, "PSUBQ XMM3,XMM1"),
+          (24, "MOVUPS xmmword ptr [EDI + 0x10],XMM3"),
+          (28, "MOVAPS XMM4,XMM0"),
+          (31, "PMAXSW XMM4,XMM1"),
+          (35, "MOVUPS xmmword ptr [EDI + 0x20],XMM4"),
+          (39, "MOVAPS XMM5,XMM0"),
+          (42, "PSLLQ XMM5,0x2d"),
+          (47, "MOVUPS xmmword ptr [EDI + 0x30],XMM5"),
+          (51, "MOVAPS XMM6,XMM0"),
+          (54, "PSRLQ XMM6,0x20"),
+          (59, "MOVUPS xmmword ptr [EDI + 0x40],XMM6"),
+          (63, "MOVD XMM3,ECX"),
+          (67, "MOVAPS XMM7,XMM0"),
+          (70, "PSRLQ XMM7,XMM3"),
+          (74, "MOVUPS xmmword ptr [EDI + 0x50],XMM7"),
+          (78, "MOVAPS XMM7,XMM1"),
+          (81, "PSLLQ XMM7,XMM3"),
+          (85, "MOVUPS xmmword ptr [EDI + 0x60],XMM7"),
+          (89, "PEXTRW EAX,XMM0,0x3"),
+          (94, "PEXTRW EDX,XMM1,0x0"),
+          (99, "PINSRW XMM0,EBX,0x3"),
+          (104, "MOVUPS xmmword ptr [EDI + 0x70],XMM0"),
+          (108, "PMOVMSKB EBX,XMM1"),
+          (112, "RET")],
+         "0f10060f104e100f28d0660ffad10f11170f28d8660ffbd90f115f100f28e066"
+         "0feee10f1167200f28e8660f73f52d0f116f300f28f0660f73d6200f11774066"
+         "0f6ed90f28f8660fd3fb0f117f500f28f9660ff3fb0f117f60660fc5c003660f"
+         "c5d100660fc4c3030f114770660fd7d9c3",
+         sse_int_setup),
+    Case('SSE packed compare, min/max, unpack and sign mask', 0x0D02E800,
+         [(0, "MOVUPS XMM0,xmmword ptr [ESI]"),
+          (3, "MOVUPS XMM1,xmmword ptr [ESI + 0x10]"),
+          (7, "MOVAPS XMM2,XMM0"),
+          (10, "CMPLTPS XMM2,XMM1"),
+          (14, "MOVUPS xmmword ptr [EDI],XMM2"),
+          (17, "MOVAPS XMM3,XMM0"),
+          (20, "CMPNLEPS XMM3,XMM1"),
+          (24, "MOVUPS xmmword ptr [EDI + 0x10],XMM3"),
+          (28, "MOVAPS XMM4,XMM0"),
+          (31, "CMPUNORDPS XMM4,XMM1"),
+          (35, "MOVUPS xmmword ptr [EDI + 0x20],XMM4"),
+          (39, "MOVAPS XMM5,XMM0"),
+          (42, "MINPS XMM5,XMM1"),
+          (45, "MOVUPS xmmword ptr [EDI + 0x30],XMM5"),
+          (49, "MOVAPS XMM6,XMM0"),
+          (52, "MAXPS XMM6,XMM1"),
+          (55, "MOVUPS xmmword ptr [EDI + 0x40],XMM6"),
+          (59, "MOVAPS XMM7,XMM0"),
+          (62, "UNPCKLPS XMM7,XMM1"),
+          (65, "MOVUPS xmmword ptr [EDI + 0x50],XMM7"),
+          (69, "MOVAPS XMM7,XMM0"),
+          (72, "MOVHLPS XMM7,XMM1"),
+          (75, "MOVUPS xmmword ptr [EDI + 0x60],XMM7"),
+          (79, "MOVMSKPS EAX,XMM0"),
+          (82, "MOVMSKPS EDX,XMM2"),
+          (85, "MOVAPS XMM7,XMM0"),
+          (88, "MINSS XMM7,XMM1"),
+          (92, "MOVUPS xmmword ptr [EDI + 0x70],XMM7"),
+          (96, "MOVAPS XMM7,XMM0"),
+          (99, "MAXSS XMM7,XMM1"),
+          (103, "MOVUPS xmmword ptr [EDI + 0x80],XMM7"),
+          (110, "RET")],
+         "0f10060f104e100f28d00fc2d1010f11170f28d80fc2d9060f115f100f28e00f"
+         "c2e1030f1167200f28e80f5de90f116f300f28f00f5ff10f1177400f28f80f14"
+         "f90f117f500f28f80f12f90f117f600f50c00f50d20f28f8f30f5df90f117f70"
+         "0f28f8f30f5ff90f11bf80000000c3",
+         sse_float_setup),
+    Case('SSE2 packed double compare and conversions', 0x0D02EC00,
+         [(0, "MOVUPS XMM0,xmmword ptr [ESI]"),
+          (3, "MOVUPS XMM1,xmmword ptr [ESI + 0x10]"),
+          (7, "MOVAPS XMM2,XMM0"),
+          (10, "CMPLTPD XMM2,XMM1"),
+          (15, "MOVUPS xmmword ptr [EDI],XMM2"),
+          (18, "MOVAPS XMM3,XMM0"),
+          (21, "CMPNLEPD XMM3,xmmword ptr [ESI + 0x10]"),
+          (27, "MOVUPS xmmword ptr [EDI + 0x10],XMM3"),
+          (31, "CVTSD2SI EAX,XMM0"),
+          (35, "CVTSD2SI EDX,XMM1"),
+          (39, "MOVUPS XMM4,xmmword ptr [ESI + 0x20]"),
+          (43, "CVTDQ2PD XMM5,XMM4"),
+          (47, "MOVUPS xmmword ptr [EDI + 0x20],XMM5"),
+          (51, "CVTDQ2PD XMM4,XMM4"),
+          (55, "MOVUPS xmmword ptr [EDI + 0x30],XMM4"),
+          (59, "CVTPD2PS XMM6,XMM0"),
+          (63, "MOVUPS xmmword ptr [EDI + 0x40],XMM6"),
+          (67, "RET")],
+         "0f10060f104e100f28d0660fc2d1010f11170f28d8660fc25e10060f115f10f2"
+         "0f2dc0f20f2dd10f106620f30fe6ec0f116f20f30fe6e40f116730660f5af00f"
+         "117740c3",
+         sse_double_setup),
+]
+
+
 # -------------------------------------------------------------- translate --
 
 class NoImage(object):

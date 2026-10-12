@@ -3383,6 +3383,14 @@ class Translator(object):
                           put(dst, 2, sv(hi)), put(dst, 3, sv(hi + 1))])
             return L
 
+        # Packed integer, shift, compare, mask and conversion forms that MSVC
+        # 2005-era game code and the CRT's SSE2 math library use without
+        # asking CPUID. As above, every input is captured before the
+        # destination is written.
+        extra = self.emit_sse_extra(ins, m, ops)
+        if extra is not None:
+            return extra
+
         # Packed arithmetic is used unconditionally by graphics transforms.
         # Capture every input before writing the destination, including aliases.
         # Each result is rounded to its lane width before the next instruction;
@@ -3469,7 +3477,7 @@ class Translator(object):
                 keep = "<" if m in ("MINSD", "MINSS") else ">"
                 L.append("{ %s a_ = %s, b_ = %s; %s }"
                          % (t, scalar(dst, single), scalar(src, single),
-                            store_scalar(dst, "b_ %s a_ ? a_ : b_" % keep, single)))
+                            store_scalar(dst, "a_ %s b_ ? a_ : b_" % keep, single)))
             elif m in ("COMISD", "UCOMISD", "COMISS", "UCOMISS"):
                 L.append("recomp_comis(c, %s, %s);" % (scalar(dst, single), scalar(src, single)))
             elif m in ("CVTSI2SD", "CVTSI2SS"):
@@ -3778,6 +3786,224 @@ class Translator(object):
         if op.size in (16, 32, 64):
             return "(int%d_t)rd%d(%s)" % (op.size, op.size, addr_expr(op))
         raise TranslateError("bad x87 integer size %r" % op.size)
+
+    SSE_CMP_PRED = ("EQ", "LT", "LE", "UNORD", "NEQ", "NLT", "NLE", "ORD")
+
+    def emit_sse_extra(self, ins, m, ops):
+        """Packed integer/shift/compare/mask/conversion SSE and SSE2 forms.
+
+        Returns the emitted lines, or None when `m` is not one of them."""
+        cmp_m = re.match(r"^CMP(EQ|LT|LE|UNORD|NEQ|NLT|NLE|ORD)?(PS|PD|SS|SD)$", m)
+        handled = {"PSUBD", "PSUBQ", "PADDD", "PADDQ", "PMAXSW", "PMINSW", "PSLLQ", "PSRLQ",
+                   "PSLLD", "PSRLD", "PSRAD", "PEXTRW", "PINSRW", "PMOVMSKB", "MOVMSKPS",
+                   "MOVMSKPD", "CVTSD2SI", "CVTSS2SI", "CVTDQ2PD", "CVTDQ2PS", "CVTTPS2DQ",
+                   "CVTPS2PD", "CVTPD2PS", "UNPCKLPS", "UNPCKHPS", "MOVHLPS", "MOVLHPS",
+                   "MINPS", "MAXPS", "SQRTPS"}
+        if m not in handled and not cmp_m:
+            return None
+        if cmp_m and m in ("CMPSD", "CMPSS") and not names_an_xmm(ins):
+            return None
+        if any(o.kind not in ("xmm", "mem", "reg", "imm") for o in ops):
+            return None
+        L = []
+
+        def lane(op, i):
+            if op.kind == "xmm":
+                return "c->xmm[%d][%d]" % (op.reg, i)
+            if op.kind == "mem":
+                return "rd32(%s + %du)" % (addr_expr(op), 4 * i)
+            raise TranslateError("%s operand %r" % (m, op.kind))
+
+        def put(i, value):
+            return "c->xmm[%d][%d] = %s;" % (ops[0].reg, i, value)
+
+        def need_xmm_dst():
+            if ops[0].kind != "xmm":
+                raise TranslateError("%s needs an XMM destination" % m)
+
+        def capture(op, name, count=4):
+            L.extend("uint32_t %s%d_ = %s;" % (name, i, lane(op, i)) for i in range(count))
+
+        def q(name, i):
+            return "((uint64_t)%s%d_ | ((uint64_t)%s%d_ << 32))" % (name, 2 * i, name, 2 * i + 1)
+
+        def put_q(i, expr):
+            L.append("{ uint64_t q_ = %s; %s %s }" % (
+                expr, put(2 * i, "(uint32_t)q_"), put(2 * i + 1, "(uint32_t)(q_ >> 32)")))
+
+        if m in ("PSUBD", "PADDD"):
+            need_xmm_dst()
+            capture(ops[0], "d")
+            capture(ops[1], "s")
+            L.extend(put(i, "d%d_ %s s%d_" % (i, "-" if m == "PSUBD" else "+", i))
+                     for i in range(4))
+            return L
+        if m in ("PSUBQ", "PADDQ"):
+            need_xmm_dst()
+            capture(ops[0], "d")
+            capture(ops[1], "s")
+            for i in range(2):
+                put_q(i, "%s %s %s" % (q("d", i), "-" if m == "PSUBQ" else "+", q("s", i)))
+            return L
+        if m in ("PMAXSW", "PMINSW"):
+            need_xmm_dst()
+            capture(ops[0], "d")
+            capture(ops[1], "s")
+            keep = ">" if m == "PMAXSW" else "<"
+            for i in range(4):
+                L.append("{ int16_t a0_ = (int16_t)d%d_, a1_ = (int16_t)(d%d_ >> 16), "
+                         "b0_ = (int16_t)s%d_, b1_ = (int16_t)(s%d_ >> 16); "
+                         "uint16_t r0_ = (uint16_t)(a0_ %s b0_ ? a0_ : b0_), "
+                         "r1_ = (uint16_t)(a1_ %s b1_ ? a1_ : b1_); %s }"
+                         % (i, i, i, i, keep, keep, put(i, "(uint32_t)r0_ | ((uint32_t)r1_ << 16)")))
+            return L
+        if m in ("PSLLQ", "PSRLQ", "PSLLD", "PSRLD", "PSRAD"):
+            need_xmm_dst()
+            capture(ops[0], "d")
+            if ops[1].kind == "imm":
+                L.append("uint64_t n_ = %du;" % (ops[1].imm & 0xff))
+            else:
+                L.append("uint64_t n_ = (uint64_t)%s | ((uint64_t)%s << 32);"
+                         % (lane(ops[1], 0), lane(ops[1], 1)))
+            if m in ("PSLLQ", "PSRLQ"):
+                op = "<<" if m == "PSLLQ" else ">>"
+                for i in range(2):
+                    put_q(i, "n_ > 63 ? 0ull : %s %s n_" % (q("d", i), op))
+            elif m == "PSRAD":
+                L.extend(put(i, "(uint32_t)((int32_t)d%d_ >> (n_ > 31 ? 31 : n_))" % i)
+                         for i in range(4))
+            else:
+                op = "<<" if m == "PSLLD" else ">>"
+                L.extend(put(i, "n_ > 31 ? 0u : d%d_ %s n_" % (i, op)) for i in range(4))
+            return L
+        if m == "PEXTRW":
+            sel = ops[2].imm & 7
+            if ops[1].kind != "xmm" or ops[0].kind != "reg":
+                raise TranslateError("PEXTRW form")
+            return [write_op(ops[0], 32, "(c->xmm[%d][%d] >> %d) & 0xffffu"
+                             % (ops[1].reg, sel >> 1, 16 * (sel & 1)))]
+        if m == "PINSRW":
+            need_xmm_dst()
+            sel = ops[2].imm & 7
+            src = (read_op(ops[1], 16) if ops[1].kind == "mem"
+                   else "(c->r[%d] & 0xffffu)" % ops[1].reg)
+            word, shift = sel >> 1, 16 * (sel & 1)
+            return ["c->xmm[%d][%d] = (c->xmm[%d][%d] & ~(0xffffu << %d)) | ((uint32_t)(%s) << %d);"
+                    % (ops[0].reg, word, ops[0].reg, word, shift, src, shift)]
+        if m in ("PMOVMSKB", "MOVMSKPS", "MOVMSKPD"):
+            if ops[1].kind != "xmm" or ops[0].kind != "reg":
+                raise TranslateError("%s form" % m)
+            r = ops[1].reg
+            if m == "MOVMSKPS":
+                bits = ["((c->xmm[%d][%d] >> 31) << %d)" % (r, i, i) for i in range(4)]
+            elif m == "MOVMSKPD":
+                bits = ["((c->xmm[%d][%d] >> 31) << %d)" % (r, 2 * i + 1, i) for i in range(2)]
+            else:
+                bits = ["(((c->xmm[%d][%d] >> %d) & 1u) << %d)" % (r, b // 4, 8 * (b % 4) + 7, b)
+                        for b in range(16)]
+            return [write_op(ops[0], 32, "(" + " | ".join(bits) + ")")]
+        if cmp_m:
+            need_xmm_dst()
+            pred = cmp_m.group(1)
+            if pred is None:
+                if len(ops) < 3 or ops[2].kind != "imm":
+                    raise TranslateError("%s needs a predicate" % m)
+                pred = self.SSE_CMP_PRED[ops[2].imm & 7]
+            form = cmp_m.group(2)
+            wide = form in ("PD", "SD")
+            count = (1 if form in ("SS", "SD") else (2 if wide else 4))
+            nwords = count * (2 if wide else 1)
+            capture(ops[0], "d", nwords if form in ("SS", "SD") else 4)
+            capture(ops[1], "s", nwords)
+            expr = {"EQ": "a_ == b_", "LT": "a_ < b_", "LE": "a_ <= b_",
+                    "UNORD": "a_ != a_ || b_ != b_", "NEQ": "!(a_ == b_)",
+                    "NLT": "!(a_ < b_)", "NLE": "!(a_ <= b_)",
+                    "ORD": "a_ == a_ && b_ == b_"}[pred]
+            for i in range(count):
+                if wide:
+                    L.append("{ uint64_t x_ = %s, y_ = %s; double a_, b_; memcpy(&a_, &x_, 8); "
+                             "memcpy(&b_, &y_, 8); uint32_t m_ = (%s) ? 0xffffffffu : 0u; %s %s }"
+                             % (q("d", i), q("s", i), expr, put(2 * i, "m_"), put(2 * i + 1, "m_")))
+                else:
+                    L.append("{ float a_, b_; memcpy(&a_, &d%d_, 4); memcpy(&b_, &s%d_, 4); %s }"
+                             % (i, i, put(i, "(%s) ? 0xffffffffu : 0u" % expr)))
+            return L
+        if m in ("CVTSD2SI", "CVTSS2SI"):
+            if ops[0].kind != "reg":
+                raise TranslateError("%s form" % m)
+            src = ops[1]
+            if m == "CVTSD2SI":
+                v = ("xmm_f64(c, %d)" % src.reg if src.kind == "xmm"
+                     else "rdf64(%s)" % addr_expr(src))
+            else:
+                v = ("(double)xmm_f32(c, %d)" % src.reg if src.kind == "xmm"
+                     else "(double)rdf32(%s)" % addr_expr(src))
+            # Round to nearest even, MXCSR's reset mode; the integer
+            # indefinite value for NaN or out of range.
+            return ["{ double v_ = __builtin_rint(%s); %s }" % (
+                v, write_op(ops[0], 32, "(v_ >= -2147483648.0 && v_ < 2147483648.0) "
+                                        "? (uint32_t)(int32_t)v_ : 0x80000000u"))]
+        if m == "CVTDQ2PD":
+            need_xmm_dst()
+            capture(ops[1], "s", 2)
+            for i in range(2):
+                L.append("{ double v_ = (double)(int32_t)s%d_; uint64_t b_; memcpy(&b_, &v_, 8); "
+                         "%s %s }" % (i, put(2 * i, "(uint32_t)b_"), put(2 * i + 1, "(uint32_t)(b_ >> 32)")))
+            return L
+        if m == "CVTDQ2PS":
+            need_xmm_dst()
+            capture(ops[1], "s")
+            for i in range(4):
+                L.append("{ float v_ = (float)(int32_t)s%d_; uint32_t b_; memcpy(&b_, &v_, 4); %s }"
+                         % (i, put(i, "b_")))
+            return L
+        if m == "CVTTPS2DQ":
+            need_xmm_dst()
+            capture(ops[1], "s")
+            for i in range(4):
+                L.append("{ float v_; memcpy(&v_, &s%d_, 4); %s }" % (i, put(
+                    i, "(v_ > -2147483904.0f && v_ < 2147483648.0f) ? (uint32_t)(int32_t)v_ : 0x80000000u")))
+            return L
+        if m == "CVTPS2PD":
+            need_xmm_dst()
+            capture(ops[1], "s", 2)
+            for i in range(2):
+                L.append("{ float f_; memcpy(&f_, &s%d_, 4); double v_ = f_; uint64_t b_; "
+                         "memcpy(&b_, &v_, 8); %s %s }"
+                         % (i, put(2 * i, "(uint32_t)b_"), put(2 * i + 1, "(uint32_t)(b_ >> 32)")))
+            return L
+        if m == "CVTPD2PS":
+            need_xmm_dst()
+            capture(ops[1], "s")
+            for i in range(2):
+                L.append("{ uint64_t x_ = %s; double v_; memcpy(&v_, &x_, 8); float f_ = (float)v_; "
+                         "uint32_t b_; memcpy(&b_, &f_, 4); %s }" % (q("s", i), put(i, "b_")))
+            L.extend([put(2, "0u"), put(3, "0u")])
+            return L
+        if m in ("UNPCKLPS", "UNPCKHPS", "MOVHLPS", "MOVLHPS"):
+            need_xmm_dst()
+            capture(ops[0], "d")
+            capture(ops[1], "s")
+            order = {"UNPCKLPS": ("d0_", "s0_", "d1_", "s1_"),
+                     "UNPCKHPS": ("d2_", "s2_", "d3_", "s3_"),
+                     "MOVHLPS": ("s2_", "s3_", "d2_", "d3_"),
+                     "MOVLHPS": ("d0_", "d1_", "s0_", "s1_")}[m]
+            L.extend(put(i, v) for i, v in enumerate(order))
+            return L
+        if m in ("MINPS", "MAXPS", "SQRTPS"):
+            need_xmm_dst()
+            capture(ops[0], "d")
+            capture(ops[1], "s")
+            for i in range(4):
+                if m == "SQRTPS":
+                    body = "float r_ = recomp_sse_sqrtf(b_);"
+                else:
+                    body = "float r_ = a_ %s b_ ? a_ : b_;" % ("<" if m == "MINPS" else ">")
+                L.append("{ float a_, b_; memcpy(&a_, &d%d_, 4); memcpy(&b_, &s%d_, 4); %s "
+                         "uint32_t r_bits_; memcpy(&r_bits_, &r_, 4); %s }"
+                         % (i, i, body, put(i, "r_bits_")))
+            return L
+        return None
 
     def emit_mmx(self, ins, m):
         """MMX on the eight MMn registers, through runtime/x86.h's helpers."""
