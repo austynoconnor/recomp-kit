@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- 2026-10-12 10:30 CDT — Claude Opus 5.5: `giggity-re4` for Resident Evil 4.
+  Kept Codex's uncommitted RE4 kit work (high guest heap, D3D9 shader
+  objects and assembler, d3dx9 quaternions, recursive callback discovery,
+  stack-cleanup gap recovery) and merged `giggity-d3d8` (ff58fdf). Where
+  both had built the same thing, the shared version won: DirectSound8 is
+  d3d8's; the player pages and launcher are d3d8's. D3D9 keeps RE4's shader
+  objects next to d3d8's SetFVF.
+  Translator: packed SSE/SSE2 forms RE4 and its runtime library use with
+  no CPUID check (PSUBD/PSUBQ/PMAXSW, PSLLQ/PSRLQ, PEXTRW/PINSRW,
+  PMOVMSKB/MOVMSKPS, CMPccPS/PD/SS/SD, CVTSD2SI, CVTDQ2PD and others).
+  Fixed MINSS/MINSD/MAXSS/MAXSD, which returned the other operand.
+  Checked against Unicorn (three new differential cases).
+  comctl32: InitCommonControls by name and ordinal 17 (no arguments).
+  Controls: `[controls.native] mouse_aim` lets the mouse drive a virtual
+  pad stick, for games that aim only with a stick: right button holds a pad
+  button and mouse speed deflects the stick; left button presses another.
+
 - 2026-10-12 — Claude Opus 5.5: Skinned characters on the GPU renderers
   (from `giggity-bully`).
   Bully's player and students were invisible in the browser; two bugs.
