@@ -372,7 +372,6 @@ D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
 D9_STUB(GetFrontBufferData, 3)
 D9_STUB(ColorFill, 4)
-D9_STUB(GetRenderTarget, 3)
 D9_STUB(CreateStateBlock, 3)
 D9_STUB(BeginStateBlock, 1)
 D9_STUB(EndStateBlock, 2)
@@ -1321,6 +1320,36 @@ void Dev_GetDepthStencilSurface(X86 *c) {
     ComObj *s = dev ? device_depthbuffer(dev) : nullptr;
     if (!s || !out) {
         com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    com_addref(s);
+    uint32_t view_ = com_view(s, IF_D3DSURFACE9);
+    if (!view_) {
+        com_release(s);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    com_out_ptr(out, view_);
+    com_ret(c, D3D_OK9);
+}
+
+// (this, RenderTargetIndex, ppRenderTarget): the surface SetRenderTarget
+// bound, or the back buffer for target 0 before any was set. Games save the
+// current target this way before drawing to a texture and restore it after.
+void Dev_GetRenderTarget(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t index = arg(c, 1), out = arg(c, 2);
+    if (!dev || !out || index > 3) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    D9Pipeline &pl = d9_pipeline(dev->id);
+    ComObj *s = com_get(index == 0 ? dev->render_target : pl.color_target[index]);
+    if (index == 0 && !s)
+        s = device_backbuffer(dev);
+    if (!s || s->kind != K_D3D9SURFACE) {
+        com_out_ptr(out, 0);
+        com_ret(c, index == 0 ? D3DERR_INVALIDCALL : 0x88760866u /* D3DERR_NOTFOUND */);
         return;
     }
     com_addref(s);
