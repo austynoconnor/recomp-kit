@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 2026-10-11 — Claude Opus 5.5: Faster streamed games in the browser
+  (from `giggity-bully`). A callback's own RET now returns straight to
+  `guest_call` instead of through a longjmp, unless an exception, unwind,
+  guest longjmp or the interpreter ran since the call began
+  (`recomp_callback_note_unwind`); a guest CALL or JMP to the sentinel
+  still uses the checkpoint. In a browser each longjmp is a JavaScript
+  exception, and Bully's effect state manager callbacks spent two thirds of
+  its game thread on them (5 to about 20 frames a second once fixed).
+  ReadFile reads the clock only around real host reads, not for bytes
+  served from the read-ahead buffer. The streamed file backend asks the
+  server about a missing file once (a game retrying a failed read had sent
+  a HEAD request per retry). `RECOMP_TRACE_DISK` reports read-ahead refills
+  and their cost.
+
 - 2026-10-11 15:30 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: depth bias on triangle strips (WebGPU).
   - Coplanar surfaces flickered in the browser (Crazy Taxi buildings,
