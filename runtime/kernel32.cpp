@@ -2892,10 +2892,11 @@ void sched_checkpoint() {
 #ifdef __EMSCRIPTEN__
     // In the browser the clock is a call out to JavaScript, and the guest
     // passes this point on every import: Star Wars Battlefront II spent 8% of
-    // its game thread reading the clock here. Look at it every 16th pass; a
-    // slice still ends within a few imports of its millisecond.
+    // its game thread reading the clock here, and Bully still 3% at every
+    // 16th pass (it makes about half a million imports a second). Look at it
+    // every 64th pass; a slice still ends well within its millisecond.
     static thread_local uint32_t t_passes;
-    if (++t_passes & 15)
+    if (++t_passes & 63)
         return;
 #endif
     GuestThread *me = threads()[t_self];
