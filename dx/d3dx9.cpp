@@ -19,6 +19,7 @@
 #include "dx.h"
 #include "../runtime/guest.h"
 #include "../runtime/memory.h"
+#include "../platform/os.h"
 
 #include <string.h>
 #include <math.h>
@@ -1896,6 +1897,20 @@ static void put_matrices(X86 *c, bool transpose, bool pointers, bool array) {
         float m[16];
         read_guest_matrix(m_addr, m, transpose);
         param_put_matrix(*p, e, m);
+        // RECOMP_D3DX_TRACE: each matrix parameter's shape and first matrix,
+        // once, to check how a game's matrices reach its constants.
+        static const bool trace = recomp_env("D3DX_TRACE") != nullptr;
+        if (trace && e == 0) {
+            char key[160];
+            snprintf(key, sizeof key, "d3dx.trace.%s.%d%d%d", p->t.name.c_str(), transpose,
+                     pointers, array);
+            log_once(key,
+                     "d3dx9: %s class %u %ux%u x%u (transpose %d pointers %d count %u): "
+                     "%g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g",
+                     p->t.name.c_str(), p->t.cls, p->t.rows, p->t.cols, p->t.count(), transpose,
+                     pointers, count, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9],
+                     m[10], m[11], m[12], m[13], m[14], m[15]);
+        }
     }
     com_ret(c, D3D_OKX);
 }
