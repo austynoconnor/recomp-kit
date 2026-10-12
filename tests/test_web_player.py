@@ -258,16 +258,26 @@ class WebPlayerTests(unittest.TestCase):
         page.wait_for_function("document.querySelector('#hints').textContent.includes('PlayStation')")
         self.assertIn("✕: confirm", page.locator("#hints").inner_text())
         page.evaluate("""window.config = {bindings:{triangle:'key:Return',start:'key:Escape',
-          r2:'key:Up',l2:'key:Down',left_stick:'horizontal_arrows',dpad:'arrows'},
-          actions:{confirm:'key:Return',back:'key:Escape',accelerate:'key:Up',brake:'key:Down',steer:'horizontal_arrows'}}""")
+          r2:'key:Up',l2:'key:Down',r1:'key:LShift',left_stick:'horizontal_arrows',dpad:'arrows'},
+          actions:{confirm:'key:Return',back:'key:Escape',accelerate:'key:Up',brake:'key:Down',steer:'horizontal_arrows','shift up':'key:LShift'}}""")
         page.wait_for_function("document.querySelector('#hints').textContent.includes('△: confirm')")
         text = page.locator("#hints").inner_text()
         self.assertIn("Options: back/pause", text)
         self.assertIn("R2: accelerate", text)
         self.assertIn("Left stick: steer", text)
+        self.assertIn("R1: shift up", text)
+        page.evaluate("window.pads[0].id='Xbox Controller'; window.pads[0].buttons[0].pressed=false")
+        page.wait_for_timeout(200)
+        page.evaluate("window.pads[0].buttons[0].pressed=true")
+        page.wait_for_function("document.querySelector('#hints').textContent.includes('RB: shift up')")
+        page.evaluate("window.pads[0].id='Nintendo Switch Pro Controller'; window.pads[0].buttons[0].pressed=false")
+        page.wait_for_timeout(200)
+        page.evaluate("window.pads[0].buttons[0].pressed=true")
+        page.wait_for_function("document.querySelector('#hints').textContent.includes('R: shift up')")
         page.evaluate("window.pads=[]")
         page.wait_for_function("document.querySelector('#hints').textContent.startsWith('Keyboard')")
         self.assertIn("↑: accelerate", page.locator("#hints").inner_text())
+        self.assertIn("Shift: shift up", page.locator("#hints").inner_text())
 
 
 if __name__ == "__main__":
