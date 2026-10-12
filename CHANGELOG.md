@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- 2026-10-12 — Claude Opus 5.5: Skinned characters on the GPU renderers.
+  A relative constant read in a vs_2_0+ shader carries a token naming the
+  address register component it adds (`c[a0.y + n]`); the parser skipped
+  it, so every such read used `a0.x`. Four-bone skinning (Bully's
+  `BullyDef_skin` effect, 65 bones) then took all four bones from the first
+  index. The parser records the component, or the loop counter `aL`, and
+  the WGSL/GLSL/MSL generator and the CPU rasterizer use it. In the
+  browser the scheduler reads its clock every 64th import instead of every
+  16th (Bully makes about half a million imports a second; the clock read
+  is a call out to JavaScript and cost 3% of the game thread), and
+  `dx_report_failure` skips its string work when the same call fails again.
+
 - 2026-10-11 — Claude Opus 5.5: Faster streamed games in the browser.
   A callback's own RET now returns straight to `guest_call` instead of
   through a longjmp, unless an exception, unwind, guest longjmp or the
