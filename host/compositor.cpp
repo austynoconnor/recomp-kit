@@ -337,7 +337,7 @@ void compositor_compose(gpu::Device *device, const CompositorInput *in, gpu::Tex
             auto transient = std::make_shared<std::vector<gpu::Texture>>(std::move(pass.transient));
             device->on_complete(cb, [device, transient](gpu::CommandStatus, double) {
                 for (gpu::Texture t : *transient)
-                    device->destroy(t);
+                    device->destroy_completed(t);
             });
         }
     };

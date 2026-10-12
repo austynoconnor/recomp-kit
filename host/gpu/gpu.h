@@ -153,6 +153,11 @@ class Device {
     // Waits for every committed command that writes `t`, then copies out.
     virtual bool readback(Texture t, Region region, void *bytes, int pitch) = 0;
     virtual void destroy(Texture t) = 0;
+    // Caller owns the texture exclusively and all recorded uses have completed.
+    // Backends may reclaim its storage now rather than waiting for handle GC.
+    virtual void destroy_completed(Texture t) {
+        destroy(t);
+    }
     virtual TextureDesc describe(Texture t) = 0; // width 0 for an unknown handle
     // Device bytes the texture occupies, for the HD cache budget.
     virtual uint64_t allocated_bytes(Texture t) = 0;

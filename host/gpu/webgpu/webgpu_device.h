@@ -34,6 +34,7 @@ class WebGpuDevice final : public Device {
     bool upload(Texture t, Region region, const void *bytes, int pitch, int level = 0) override;
     bool readback(Texture t, Region region, void *bytes, int pitch) override;
     void destroy(Texture t) override;
+    void destroy_completed(Texture t) override;
     TextureDesc describe(Texture t) override;
     uint64_t allocated_bytes(Texture t) override;
     Buffer create_buffer(uint64_t bytes, const void *contents) override;
@@ -152,6 +153,8 @@ class WebGpuDevice final : public Device {
         uint64_t current = 0; // the acquired texture's handle
     };
 
+    static void release_retired(Tex t);
+    void retire_textures();
     Cmd *cmd(CommandBuffer cb);
     void end_passes(Cmd &c);
     WGPUShaderModule module(const std::string &name);
@@ -180,6 +183,7 @@ class WebGpuDevice final : public Device {
 
     uint64_t next_id_ = 1;
     std::unordered_map<uint64_t, Tex> textures_;
+    std::vector<Tex> retired_textures_; // retained until open encoders are submitted
     std::unordered_map<uint64_t, Buf> buffers_;
     std::unordered_map<uint64_t, std::unique_ptr<Cmd>> recording_;
     std::unordered_map<uint64_t, CommandStatus> status_;
