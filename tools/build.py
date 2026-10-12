@@ -7,6 +7,7 @@ outputs (the translation, the texture pack, the apps, the logs) go under
 build/. The kit's own default is games/stub, a game that does not exist."""
 
 import argparse
+import filecmp
 import json
 import os
 from pathlib import Path
@@ -323,6 +324,14 @@ def publish_generated(build_root, translate):
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
+    # Publishing is still atomic. Preserve timestamps only for byte-identical
+    # sources so a metadata change does not recompile every translated shard.
+    if gen.exists():
+        for source in stage.rglob("*"):
+            previous = gen / source.relative_to(stage)
+            if (source.is_file() and previous.is_file()
+                    and filecmp.cmp(source, previous, shallow=False)):
+                os.utime(source, ns=(source.stat().st_atime_ns, previous.stat().st_mtime_ns))
     shutil.rmtree(old, ignore_errors=True)
     if gen.exists():
         gen.rename(old)

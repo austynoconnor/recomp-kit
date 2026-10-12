@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-12 04:36 CDT — GPT-6 (Codex): Regeneration now preserves timestamps for
+  byte-identical translated sources before atomic publication. Metadata-only
+  changes rebuild the changed table rather than every unchanged shard. Added
+  regressions for same-sized changed content, preserved source timestamps,
+  added/removed files, published symbols and failed-translation preservation.
+  All 45 relevant build and external game-config checks pass. Full game
+  regeneration/rebuild verification continues in the private game workspace.
+
 - 2026-10-12 03:57 CDT — GPT-6 (Codex): Added the verified manual shift-up action to
   NFS browser hints (Shift on keyboard; R1, RB or R on mapped controllers).
   Shoulder labels now follow PlayStation, Xbox, Nintendo and generic controller
