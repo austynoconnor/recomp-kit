@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- 2026-10-12 09:37 CDT — Claude Opus 5.5: Merged giggity-d3d8 (ff58fdf) into
+  browser-release for NFS Most Wanted: frame-slot no-wait, local scheduler clock,
+  AudioWorklet ring sink, two frames ahead, canvas pixel density, stall logger,
+  D3D fog, strip depth bias, [controls.native] keys, a0 component and
+  SetMatrixTranspose fixes, longjmp-free callback returns and the streamed
+  missing-file cache. Conflicts: textures keep browser-release's
+  completed-queue retirement while buffers use giggity-d3d8's doomed list;
+  program compression and serving use giggity-d3d8's twins; input hints accept
+  both fixed {keyboard, controller} lines and NFS's action/binding form.
+  Web launcher and player suites pass (17 tests).
+
 - 2026-10-12 04:36 CDT — GPT-6 (Codex): Regeneration now preserves timestamps for
   byte-identical translated sources before atomic publication. Metadata-only
   changes rebuild the changed table rather than every unchanged shard. Added
@@ -64,6 +75,482 @@
   integration pass has 58 relevant passing checks and ten direct Node tests.
   Its isolated alias save/load succeeds, but memory and full gameplay release
   validation remain incomplete. No native code changed in this pass.
+- 2026-10-12 — Claude Opus 5.5: Skinned characters on the GPU renderers
+  (from `giggity-bully`).
+  Bully's player and students were invisible in the browser; two bugs.
+  A relative constant read in a vs_2_0+ shader carries a token naming the
+  address register component it adds (`c[a0.y + n]`); the parser skipped
+  it, so every such read used `a0.x` and four-bone skinning took all four
+  bones from the first index. The parser now records the component, or the
+  loop counter `aL`, and the WGSL/GLSL/MSL generator and the CPU
+  rasterizer use it. And the effect stores Bully's bones as a 3x4
+  parameter while the shader reads a 4x3 constant: SetMatrixTransposeArray
+  kept only the top three rows of each matrix, dropping the translation,
+  so every skinned mesh collapsed to the world origin. A matrix set with
+  SetMatrix* is now kept whole and cut to the shader table's shape when
+  bound; raw values whose dimensions are the shader's swapped are read
+  transposed. In the browser the scheduler's clock reads adapt to the
+  import rate (every 50 to 200 microseconds; Bully makes about half a
+  million imports a second and the clock read is a call out to
+  JavaScript: 3% of its game thread before), and `dx_report_failure`
+  skips its string work when the same call fails again. Debugging aids:
+  `RECOMP_D3D9_TRACE_FRAME` also prints each draw's vertex layout, c0-c3
+  and first vertex; `RECOMP_D3DX_TRACE` prints each effect matrix
+  parameter's shape and first matrix once.
+
+- 2026-10-11 — Claude Opus 5.5: Faster streamed games in the browser
+  (from `giggity-bully`). A callback's own RET now returns straight to
+  `guest_call` instead of through a longjmp, unless an exception, unwind,
+  guest longjmp or the interpreter ran since the call began
+  (`recomp_callback_note_unwind`); a guest CALL or JMP to the sentinel
+  still uses the checkpoint. In a browser each longjmp is a JavaScript
+  exception, and Bully's effect state manager callbacks spent two thirds of
+  its game thread on them (5 to about 20 frames a second once fixed).
+  ReadFile reads the clock only around real host reads, not for bytes
+  served from the read-ahead buffer. The streamed file backend asks the
+  server about a missing file once (a game retrying a failed read had sent
+  a HEAD request per retry). `RECOMP_TRACE_DISK` reports read-ahead refills
+  and their cost.
+
+- 2026-10-11 15:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: depth bias on triangle strips (WebGPU).
+  - Coplanar surfaces flickered in the browser (Crazy Taxi buildings,
+    shadows, adverts, road markings). `host/gpu/webgpu/d3d9_webgpu.cpp`
+    applied D3DRS_DEPTHBIAS / SLOPESCALEDEPTHBIAS only to non-strip
+    topologies, so triangle strips got none. A frame trace of Crazy Taxi
+    showed 2128 of 2180 draws are strips, 179 of them with a ZBIAS (1-16,
+    from its ZBiasConfig.txt), all drawn unbiased. Bias now applies to
+    triangle lists and strips. Lines and points, where WebGPU requires it to
+    be 0, no longer get it either (previously line and point lists did).
+  - The D3D9 frame trace (`RECOMP_D3D9_TRACE_FRAME`) also prints each draw's
+    `zbias` and `slope`.
+
+- 2026-10-10 17:25 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8` (from `giggity-mgs2` `09c64c1` and `5dda06e`):
+  - **Fog measured the wrong distance.** Table fog used the vertex's
+    clip-space z, so a game that sets FOGSTART 0 / FOGEND 1 (fog by depth
+    buffer value, as MGS2 does) had every pixel fully fogged: a flat
+    fog-coloured screen. Table fog now uses what Direct3D uses: the depth
+    buffer's z for a game's own vertex shaders or a flat projection, and eye
+    distance (clip w) for perspective fixed-function draws. New
+    `HostD9Draw::fog_depth` and `D9PSParams::fog_depth` (the old padding)
+    carry the choice to the WebGPU, Vulkan and Metal shaders.
+  - **`[controls.native] keys`.** A table such as `keys = { W = "Up",
+    A = "Left" }` changes which key the game sees for each physical key,
+    before the game reads it (host/controls/key_remap.*). Unlike
+    `key_aliases` it replaces the key, for games that already use the
+    physical key for something else. Two physical keys on one game key are
+    reference-counted; held keys are released when the window loses focus.
+    Modifiers and Escape cannot be remapped. Header macro
+    `RECOMP_CONTROLS_NATIVE_KEYS`; tests in controls_tests and
+    test_game_config.
+  - **D3D9 frame trace (debug aid).** `RECOMP_D3D9_TRACE_FRAME`,
+    `RECOMP_D3D9_TRACE_FRAMES` and `RECOMP_D3D9_TRACE_FILE` log every clear,
+    copy, draw and present of chosen frames (targets, shaders, blend, fog and
+    texture-stage states). Off unless set.
+
+- 2026-10-10 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: browser lag and audio. Measured in a visible Chrome window
+  (144 Hz display) on Crazy Taxi.
+  - The game stalled whenever the page's main thread was busy:
+    `WebGpuDevice::now_seconds()` proxied to the main thread on every
+    Present just to read the clock. `emscripten_get_now()` is
+    `performance.timeOrigin + performance.now()`, the same timeline on every
+    thread, so it is now read locally. With the page thread 40% busy
+    (60 ms of every 150 ms), the game went from 30 fps to 44-48 fps.
+    Unloaded it stays at 50 fps, the game's own fixed step.
+  - Audio in the browser plays through an AudioWorklet
+    (`host/audio/web_sink.cpp`), not SDL's ScriptProcessorNode. That node
+    rendered the mix on the main thread with no backlog, so every hitch of
+    that thread was a gap. The worklet copies from a ring buffer in wasm
+    memory, and a worker of the sink's own renders 4096 frames ahead
+    (`RECOMP_AUDIO_AHEAD`). Under the same load, SDL's path had 375 of
+    1408 pulls late (gaps up to 113 ms); the worklet had 0 underruns in
+    22493 quanta. `RECOMP_AUDIO_SINK=sdl` brings back the old path. A report
+    line every 30 s: quanta, underruns, render time, queued range.
+  - The pumped Direct3D 9 queue may hold 2 presented frames, not 1
+    (`RECOMP_D3D9_FRAMES_AHEAD`, 1-4), so one late main-thread turn no
+    longer holds the game. With `RECOMP_D3D9_STATS`, a `d3d9 queue:` line
+    every 250 frames gives the game thread's waits for the main thread.
+  - `web/player/runtime.html` revalidates the loader script and loads it as
+    `<app>.js?v=<Last-Modified>`. A browser's HTTP cache could otherwise
+    pair an old loader with a new program after an update, and the game
+    failed to start with "function import requires a callable".
+  - Still inherent: 50 fps content on a 144 Hz display shows each frame for
+    2 or 3 refreshes (the overlay's RPT 65%).
+
+- 2026-10-10 16:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: audio follow-up from `giggity-swbf2` (b164cd9, 36d8de9).
+  The stalled-ring silence from d333bcc kept a running total of unplayed
+  frames, and a write made while the first lap was still counted as fresh
+  was lost against its one-lap cap, so a game writing half a ring every
+  half lap could go quiet for part of each half lap. `host/audio/mixer.cpp`
+  now tracks how far the writes reach by position (at most one lap ahead
+  of the player). `RECOMP_AUDIO_STALE_SILENCE=0` keeps the old repeat, for
+  comparison. New case in `host/tests/host_tests.cpp` "ring and clock":
+  half-ring writes every half lap never go quiet, checked in 20 ms steps.
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
+- 2026-10-10 16:07 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: three more web fixes from `giggity-swbf2` (218f53c,
+  7a9aa21, 033d67a), found in a visible Chrome test of Star Wars
+  Battlefront II. They touch the presenter, the canvas and the mixer's ring
+  path, not the Crazy Taxi agent's WebGPU clock or AudioWorklet sink.
+  - **250 ms page freezes** (`host/present_thread.cpp`): `acquire()` waited
+    up to 250 ms for a free target slot. In a browser the waiting thread is
+    the page thread, which is also what frees the slots (GPU completions and
+    presents arrive only when it returns to the event loop), so the wait
+    always ran out: the page froze, audio callbacks included, then the frame
+    was dropped anyway ("target pool stalled for 250ms"). On the page thread
+    it now drops the frame at once. In Battlefront II this removed every
+    250-310 ms hitch around level load and the late audio callbacks that
+    went with them.
+  - **Sharper picture on scaled displays** (`host/sdl/main.cpp`): the web
+    canvas was always sized in CSS pixels, so at 125% or 150% Windows
+    scaling the browser stretched the finished frame again and blurred it.
+    The canvas now takes the display's pixel density when the result fits
+    in 2560x1440 pixels; bigger high-density displays keep CSS pixels. The
+    log says which (`web canvas: ...`).
+  - **Stalled streaming audio** (`host/audio/mixer.cpp`): a DirectSound
+    ring the game stops feeding now goes quiet as soon as the frames it
+    wrote have played (with a one-block fade), instead of after a whole
+    extra lap. New case in `host/tests/host_tests.cpp` "ring and clock".
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
+- 2026-10-10 14:31 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: from `giggity-swbf2` (2335797, f077fb3), for every
+  game's web build. The Crazy Taxi agent owns the shared lag and audio
+  work on this branch; these are the Battlefront II pieces that help any
+  game, picked so the two do not clash.
+  - **Relative mouse** (`[controls] mouse = "relative"`, default
+    `"absolute"`): while the pointer is captured the guest gets raw motion
+    (SDL relative mode; pointer lock in a browser) for games that aim with
+    the mouse.
+  - **Tracked cursor** (`[controls] cursor = "tracked"`, default `"free"`):
+    for games that draw their own cursor from relative motion, the host
+    keeps a copy and moves it to the real pointer, so the game's cursor sits
+    under the mouse after leaving and re-entering a browser page, and the
+    system cursor stays hidden over the canvas (no second cursor).
+  - **Stall logger** (`platform/stall.*`): any frame over `RECOMP_STALL_MS`
+    (default 100) prints a `[stall]` line splitting the time into file
+    reads, render-queue/WebGPU-proxy waits and the rest; the performance
+    overlay shows `STALL n worst-ms CAUSE`.
+  - **Audio** (`host/audio/mixer.cpp`): a DirectSound streaming buffer the
+    game stops refilling goes quiet after one more lap instead of looping.
+  - Tests: native suites 24 of 24 and Python 420 passed, 5 skipped, on
+    Linux.
+
+- 2026-10-09 15:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: keyboard aliases, the d-pad as the left stick, and
+  per-game control hints in the browser.
+  - `[controls] key_aliases = { Up = "W", ... }` in game.toml: while the
+    first key is held the DirectInput keyboard also reports the second, so a
+    game that takes one key per action plays on WASD and the arrows alike
+    (or Escape as its Start key). Aliases read the keys actually held, so
+    they do not chain. `tools/game_config.py` validates the key names (the
+    `[controls.mapped]` list), `tools/gen_game_config.py` emits
+    `RECOMP_CONTROLS_KEY_ALIASES`, new host call `host_key_aliases`
+    (`dx/host_api.h`, weak default ""), applied in `dx/dinput.cpp`
+    `refresh_host_input` with a DIK_ table for those names.
+  - `[controls.native] dpad = "stick"` (default "hat"): the d-pad also moves
+    the left stick's lX/lY (the further of the two wins), for games that
+    read menus and steering only from axes. `RECOMP_CONTROLS_NATIVE_DPAD_STICK`,
+    `host_pad_native_dpad_stick`, `dx/dinput_joystick.cpp` `fill_state`.
+    The `axes` validation now also rejects malformed half-axis names.
+  - `[launcher] input_hints = { keyboard = "...", controller = "..." }`:
+    the game's own control lines under the browser player; the controller
+    line takes `{name}`, `{confirm}` and `{back}` from the pad in use.
+    `tools/web_launcher.py` puts them in games.json (`inputHints`),
+    `web/player/runtime.html` passes them to `input-hints.js` (`hintText`).
+  - Tests: dx_tests keyboard (aliases, no chaining), pad_tests "joystick
+    d-pad on the stick", test_game_config (aliases, dpad, bad names),
+    test_web_launcher (inputHints), new node suite
+    `web/launcher/tests/input-hints.test.mjs`.
+
+- 2026-10-09 10:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: formatting only. `host/gpu/d3d9_host.cpp`,
+  `host/gpu/webgpu/d3d9_webgpu.cpp` and `runtime/tests/runtime_tests.cpp`
+  were left unformatted on this branch, so `tools/format.py` failed; ran it
+  with `--write`. No code changes.
+
+- 2026-10-09 10:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: generic web fixes from `giggity-mgs2` (d034c3c), for
+  every game's web build. Game pads: `web_main` (`host/sdl/main.cpp`)
+  started SDL without `SDL_INIT_GAMEPAD`, so no pad reached any game in a
+  browser; it now starts the gamepad subsystem as the desktop host does (in
+  MGS2 the log then reports "gamepad connected" and the left stick moves the
+  player). Downloads: `web/player/fetch-backend.js` keeps every one-MiB
+  piece of streamed game data in Cache Storage (`recomp-pieces-v1`), keyed
+  by the file's ETag (else Last-Modified, else size); the store opens in the
+  background, so the backend is registered before the function first yields
+  (awaiting it first left WasmFS allocating files on a missing backend when
+  the disk was slow: "Cannot read properties of undefined (reading
+  'allocFile')"); writes happen in the background, stop past 80% of the
+  quota and never fail a read. `web/player/runtime.html` loads the program
+  through `instantiateWasm` from Cache Storage (`recomp-program-v1`) with an
+  If-Modified-Since check, and uses the stored copy when the server cannot
+  be reached; a program of 100+ MB is larger than Chrome's HTTP cache keeps
+  per entry. Compression: `tools/web_launcher.py --web-build` writes
+  `<name>.gz` (and `.br` with the `brotli` module) beside each
+  `.js`/`.wasm`/`.data` when it saves 10% or more, `--serve` sends it with
+  `Content-Encoding` and answers 304 for unchanged files, and hosted game
+  files carry an ETag. FFmpeg in the web build is off unless a game asks:
+  new `game.toml` `[launcher] web_video` = "off" (default), "mpeg1" (only the
+  MPEG-1 video decoder) or "all" (the desktop list); `tools/build.py`
+  passes `RECOMP_VIDEO` and `RECOMP_WEB_VIDEO_ALL_CODECS` for the web target,
+  and `cmake/Dependencies.cmake` builds FFmpeg with `emcc` as static
+  libraries linked into the `.wasm`. Measured with MGS2 in headless Chrome:
+  a reload fetched 0 game pieces (102 the first time) and got a 304 for the
+  program; its 189 MB program is sent as 22 MB. Tests: fetch-backend (Cache
+  Storage across visits, a full or missing store, the backend existing
+  before the store opens), web launcher (compressed program, 304, ETag),
+  web player (program kept in Cache Storage), game config and build.py
+  (`web_video`).
+
+- 2026-10-09 00:27 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: browser speed fixes cherry-picked from `giggity-swbf2`
+  (9867fc0..02da5a5). With them Star Wars Battlefront II went from 20-25
+  to 44-46 game frames a second in a level in headless Chrome.
+  - `host/gpu/d3d9_host.cpp`: in the browser, occlusion query results come
+    from a cache the main thread fills (`Op::QueryPoll`), one poll queued
+    per query, with a generation per query against stale answers, instead
+    of a blocking main-thread round trip per `GetData`.
+  - `host/gpu/d3d9_host.cpp`: the browser's present is pipelined
+    (`Op::Present`); the game waits only for the previous frame's present.
+  - `host/present_thread.cpp`, `host/present_frame.h`: the presenter keeps
+    the overlay's size instead of asking the device on every acquire.
+  - `runtime/kernel32.cpp`: in the browser `sched_checkpoint` reads the
+    clock every 16th pass; `runtime/imports.cpp`: the import trace entry is
+    a bounded copy instead of `snprintf`.
+  - `tools/recomp/translate.py`, `runtime/intrinsics.h`,
+    `tools/game_config.py`: opt-in `[translate] ftol2 = <address>` runs the
+    MSVC CRT's `_ftol2` natively, in line at direct calls. Nothing changes
+    for a game that does not set it.
+  - `tools/recomp/translate.py`: `recomp_is_call_return` answers from a
+    bitmap built at load instead of a binary search on every guest RET
+    (takes effect at the next `--regenerate`).
+  - Tests: native suites 24 of 24 and Python 418 passed, 5 skipped, on
+    Linux. The `_ftol2` runtime cases skip without a game image and were
+    run standalone on `giggity-swbf2`.
+
+- 2026-10-08 22:35 CDT (branch giggity-d3d8) — Claude Opus 5.5: WebGPU
+  indexed strips (cherry-picked from giggity-swbf2 b4c5bf8).
+  - `host/gpu/webgpu/d3d9_webgpu.cpp`: an indexed triangle or line strip
+    gets a pipeline naming its 16- or 32-bit index format (part of the
+    pipeline key). WebGPU rejected such draws, discarding the frame's whole
+    command buffer (Star Wars Battlefront II's profile screen drew black).
+    Built for the web on giggity-swbf2 with identical WebGPU sources; headless
+    Chrome draws the screen and logs no WebGPU errors.
+
+- 2026-10-08 21:10 CDT (branch giggity-d3d8) — Claude Opus 5.5: the WebGPU
+  renderer no longer leaks browser GPU memory, Direct3D 9 games with dynamic
+  vertex buffers run several times faster in the browser, and pad triggers
+  can share an axis as analog pedals.
+  - Browser memory (`host/gpu/webgpu/webgpu_device.{h,cpp}`,
+    `d3d9_webgpu.cpp`): freed textures and buffers were only released. A
+    browser frees WebGPU memory on `destroy()` or at garbage collection, so
+    the compositor's per-frame UI textures and replaced vertex buffers piled
+    up in Chrome's GPU process (about 210 to 330 MB/s, to 3 to 6 GB; Crazy
+    Taxi and Battlefront II both saw it). `WebGpuDevice::destroy` now
+    destroys them, deferred until no open command buffer can use them
+    (`free_doomed` at the commit that leaves nothing recording); the D3D9
+    backend destroys dropped or resized buffers after the open encoder's
+    submit, and its occlusion-query buffers and query sets when read back.
+    Crazy Taxi's GPU process: about 350 MB, flat; whole browser about 1.5 GB
+    instead of 4.3 to 6 GB.
+  - Streamed vertex/index buffers (`d3d9_webgpu.cpp`): a buffer rewritten
+    while the frame being recorded still drew from it used to force a queue
+    submission (Crazy Taxi: about 2,100 a frame, each with a new bind group
+    and a full re-upload). Such a buffer is now marked streamed: each draw
+    copies just the vertices it reads (worked out from the index range,
+    `vertex_span`) or its index range from the CPU shadow into the frame's
+    ring, and the draw is shifted to match (`encode_primitives(d, shift)`).
+    The frame's uniform and vertex ring bytes are gathered on the CPU and
+    written with one queue write per chunk just before the submit
+    (`flush_ring`).
+  - The device's `set_bytes` staging ring (`webgpu_device.cpp`) counts the
+    open recordings that use each chunk and reuses any chunk none uses,
+    instead of resetting only when nothing at all is recording (which let it
+    grow while the presenter and the game overlapped).
+  - Vertex/index buffer locks (`dx/d3d9.cpp`, `dx/com.h` `lock_lo/lock_hi`):
+    a buffer keeps its guest copy for life; Lock returns a pointer into it
+    at once and Unlock copies back and uploads only the locked bytes (size 0
+    = to the end). Every lock used to allocate a guest copy of the whole
+    buffer, copy it in and out, free it and upload all of it. Crazy Taxi:
+    buffer uploads 67 MB a frame to 0.9 MB; city 6 to 46 to 50 fps in
+    headless Chrome (the game's cap), GPU time 2.5 ms a frame.
+  - Half-axis pad mapping (`dx/dinput_joystick.cpp`, `tools/game_config.py`):
+    a `[controls.native] axes` entry may be `+name` or `-name`; that control
+    then drives one half of the axis (centre released, that end fully
+    pressed; a trigger's whole travel, a stick's positive side). An axis
+    fed by several controls reads the one furthest from centre, and axes may
+    now repeat. Crazy Taxi maps the triggers to `+y`/`-y` because the game
+    reads analog gas and brake as lY's two halves (combined pedals).
+  - `RECOMP_D3D9_STATS` reports also give streamed bytes, buffer and texture
+    write sizes, bind groups and the largest texture.
+  - Tests: pad_tests "joystick half axes (combined pedals)".
+
+- 2026-10-08 20:15 CDT (branch giggity-d3d8) — Claude Opus 5.5: faster
+  loading, natively and above all in the browser.
+  - `runtime/kernel32.cpp` `sched_leave_critsec`: LeaveCriticalSection wakes
+    the parked guest threads only when one of them waits on that section.
+    The C runtime locks a stream around every fread/getc, and the
+    unconditional `notify_all` woke every timed waiter (audio, input
+    workers) each time. Crazy Taxi's 12 MB `Binc1.afs` loaded in 14.6 s
+    natively before and 3.4 s after; in headless Chrome the title screen now
+    appears about 60 s after Start instead of about 200 s. A waiter cannot
+    run before the baton is handed to it, and the handoff already notifies,
+    so nothing depended on the extra wake-ups.
+  - `runtime/kernel32.cpp` `file_read`: ReadFile serves reads under 64 KB
+    from a 256 KB read-ahead buffer per handle. The descriptor's position
+    still ends where the guest's read ended, and a write or truncation
+    through any handle on the same host file drops the buffered bytes.
+  - Tests: runtime_tests "file layer" (small reads in order, the position,
+    a write through another handle is seen, short read at the end, empty
+    read past it).
+
+- 2026-10-08 19:30 CDT (branch giggity-d3d8) — Claude Opus 5.5: a game can
+  set its joystick axis range, and data-only core mods reach the web build.
+  - `[controls.native] axis_range = [min, max]` in game.toml (default
+    `[-32768, 32767]`, the DirectInput default). `tools/game_config.py`
+    validates it (two integers, min below max); `tools/gen_game_config.py`
+    emits `RECOMP_CONTROLS_NATIVE_AXIS_MIN/MAX`; the new host call
+    `host_pad_native_axis_range` (`dx/host_api.h`, weak default in
+    `dx/host_api.cpp`, configured value in `host/controls/vpad_host_api.cpp`)
+    hands it to `dx/dinput.cpp`, which gives every axis of a new joystick
+    device that range. Some games, such as Crazy Taxi, never set
+    DIPROP_RANGE and read the stick as -128..127; with the full default
+    range the stick was pinned to its ends.
+  - `host/CMakeLists.txt`: the web build's copy of `mods/core` also takes
+    `*.cfg` and `*.ini` files, so a core mod that only replaces a settings
+    file (Crazy Taxi's Taxi.cfg controller bindings) ships in the browser.
+  - Tests: pad_tests "joystick configured default range" (-128 / 0 / 127 and
+    GetProperty(DIPROP_RANGE)); tests/test_game_config.py axis_range header
+    output and validation.
+
+- 2026-10-08 17:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: CPU renderer
+  depth and fog, Direct3D 9 pixel centres, CD3DFont text, static asset export.
+  - `dx/d3d9_raster.cpp`: a depth test (D3DRS_ZENABLE, ZFUNC, ZWRITEENABLE,
+    viewport MinZ/MaxZ) against a host-side float buffer per depth surface,
+    cleared by `Clear(D3DCLEAR_ZBUFFER)` (`d9_raster_clear_depth`); the
+    top-left fill rule, so triangles sharing an edge never both draw it;
+    pixel centres on integer coordinates as Direct3D 9 defines them; point
+    sampling when D3DSAMP_MAGFILTER is POINT (the default); clamped
+    addressing repeats edge texels instead of wrapping to the far side; fog
+    applied after the pixel shader towards D3DRS_FOGCOLOR. Together these
+    removed the seams between 2D tiles and the 3D draw-order errors in Crazy
+    Taxi's frames.
+  - `dx/d3d9_ffp.cpp`: table fog (D3DRS_FOGTABLEMODE) is generated, per
+    vertex from the eye depth (1 / RHW for pre-transformed vertices); the GPU
+    backends keep computing table fog per pixel.
+  - `runtime/gdi32_text.cpp`: ExtTextOut ignores ETO_OPAQUE/ETO_CLIPPED when no
+    rectangle is given, as Windows does; the DirectX SDK's CD3DFont builds its
+    glyph texture that way and every call used to fail.
+  - `tools/web_launcher.py --export-assets`: copies the `--asset-dir` files
+    into `<out>/<game id>/assets/` with relative URLs, so a site can be
+    uploaded to a static host that supports HEAD and byte ranges.
+  - Merged `fork/browser-release` (streamed hosted assets, browser session
+    lifecycle, input hints) so the web build carries them.
+  - Spin-wait loops hand over to other guest threads. Guest threads take
+    turns and only switch inside runtime calls, so a loop that just re-reads
+    one byte until another thread sets it (Crazy Taxi 0040861a, a lock between
+    its game thread and audio thread) never ended: pressing Start froze the
+    game. `tools/recomp/translate.py` now finds such loops (at most six loads,
+    compares and tests; no store; address registers unchanged inside the
+    loop) and puts `recomp_spin_wait(c)` on the back edge, as it does for
+    PAUSE. `runtime/cpu.cpp` makes that a scheduler checkpoint. List walks,
+    which move their address register, are untouched.
+  - Unexplained exits name their caller: ExitProcess, PostQuitMessage and a
+    WM_CLOSE sent or posted by the guest log the guest return address.
+    (Crazy Taxi's "exit after about 1000 frames" turned out to be the
+    headless host's own wall-clock cap.)
+  - `host/script.cpp`: scripts can press every letter key, not only P, Y and N.
+  - Tests: gdi_tests "ETO_OPAQUE with no rectangle"; tests/test_web_launcher.py
+    exported assets; tools/recomp/tests/test_translate_spin.py (a byte poll
+    yields, a list walk and a storing loop do not, PAUSE yields); runtime_tests
+    "GetLogicalDriveStringsW double terminates" allows the virtual CD drive.
+
+- 2026-10-08 15:00 CDT (branch giggity-d3d8) — Claude Opus 5.5: Direct3D 8,
+  fixed-function rendering, DirectShow RenderFile and game-named setjmp, the
+  pieces that take Crazy Taxi from the Direct3D 8 wall to its title screen in
+  a headless run. All of it is game-neutral; MGS2 and SWBF2 are expected to use
+  the Direct3D 8 layer and the fixed-function pipeline.
+  - `dx/d3d8.cpp` (new): `d3d8.dll!Direct3DCreate8` and IDirect3D8 (16 slots),
+    IDirect3DDevice8 (97 slots), IDirect3DVertexBuffer8, IndexBuffer8,
+    Surface8 (11 slots), Texture8 and CubeTexture8 as views of the existing
+    Direct3D 9 objects; most methods forward to the D9 shims with rewritten
+    arguments (`shim_forward`). Version 8 differences handled here:
+    D3DPRESENT_PARAMETERS 8 to 9 (MultiSampleQuality inserted), the 8-era
+    caps (first 212 bytes of D3DCAPS9, vs 1.1 / ps 1.4, CANRENDERWINDOWED),
+    an adapter mode list, vertex shader handles (bit 31) against FVFs, D3DVSD
+    declarations converted to D3D9 elements with `dcl` instructions inserted
+    into vs_1_1 code, the sampler states that live in SetTextureStageState in
+    version 8, ZBIAS to DEPTHBIAS, CopyRects and UpdateTexture through locks,
+    and state blocks (Begin/End recorded by difference, Apply, Capture,
+    Create, Delete). static_asserts pin every vtable size.
+  - `dx/d3d9_ffp.{h,cpp}` (new): the fixed-function pipeline as generated
+    vs_2_0/ps_2_0 bytecode, cached by state. Vertex side: world-view-
+    projection, pre-transformed (RHW) positions, normals, up to 8
+    directional/point/spot lights with material and ambient, colour vertex
+    sources, specular, vertex fog (exp, exp2, linear, range-based, or the
+    pre-transformed vertex's own factor; table fog is not done yet), texture
+    coordinate generation and texture transforms. Pixel side: all D3DTOP colour and alpha
+    operations over 8 stages, TFACTOR, per-stage constants, specular add and
+    fog. `d9_fvf_declaration`/`d9_fvf_stride` turn an FVF into elements.
+  - `dx/d3d9.cpp`: a draw without both shaders now goes through the generated
+    pair on the GPU backends and the CPU rasterizer alike (`draw_pipeline`);
+    real Set/Get for transforms (identity by default), MultiplyTransform,
+    material, lights, clip planes, FVF, render/texture-stage/sampler state
+    getters and GetTexture; LockRect honours a sub-rectangle on surfaces,
+    textures and cube faces.
+  - `dx/d3d9_raster.cpp`: the alpha test compares with D3DRS_ALPHAFUNC (it was
+    always "greater or equal").
+  - `dx/dshow.cpp`: CLSID_FilterGraph. A graph a game makes itself plays an MP3
+    given to IGraphBuilder::RenderFile or IMediaControl::RenderFile through
+    the existing minimp3 stream and host channel; the graph owns a hidden
+    stream and frees it with itself.
+  - Translator: `[translate] setjmp` / `longjmp` name the CRT's __setjmp3 and
+    longjmp for the runtime intrinsics (the old constants, Populous's
+    addresses, stay the defaults). Data-pointer entries that land inside a
+    replaced intrinsic body are emitted as `recomp_unmodelled` traps instead
+    of undefined symbols.
+  - Tests: dx_tests "Direct3D 8 fixed-function triangle" (create, clear, FVF
+    draw, read back through the back buffer) and "DirectShow FilterGraph
+    RenderFile"; tests/test_game_config.py covers setjmp/longjmp.
+  - Verified so far only on the CPU rasterizer in a Linux headless run; the
+    GPU backends receive the same generated shaders but were not run.
+
+- 2026-10-08 12:02 CDT (branch giggity-d3d8) — Claude Opus 5.5: Windows shims a
+  DirectX 8 game (Crazy Taxi) needs to start, all reusable by other games.
+  - DirectSound 8: `DirectSoundCreate8` (DSOUND ordinal 11),
+    CLSID_DirectSound8, and IDirectSound8 / IDirectSoundBuffer8 views of the
+    existing objects (`IF_DSOUND8`, `IF_DSBUFFER8`). The version 8 vtables are
+    the version 1 slots plus `VerifyCertification`, `SetFX` (clearing works;
+    asking for effects returns DSERR_CONTROLUNAVAIL), `AcquireResources` and
+    `GetObjectInPath`. QueryInterface reaches them from the version 1 objects.
+  - Virtual CD-ROM drive: new `[media] cd_label` / `cd_drive` keys
+    (`RECOMP_CD_LABEL`, `RECOMP_CD_DRIVE`; env `RECOMP_CD_LABEL` overrides).
+    When a label is set, GetLogicalDrives, GetLogicalDriveStrings,
+    GetDriveType (5) and GetVolumeInformation (label, CDFS) show one CD drive,
+    so a disc-label check sees the player's own disc without patching the
+    executable. Other missing drives now report not-ready.
+  - Resource-only DLLs: LoadLibrary of a game DLL the runtime neither shims nor
+    translated maps its headers and sections into the guest heap (never run)
+    so FindResource/LoadResource/SizeofResource/EnumResourceNames and
+    LoadString read its resources (language DLLs). New `LoadStringA`.
+  - `shim_forward(c, fn, {args})` in imports.h calls another shim with
+    rewritten arguments on a scratch frame below ESP (used by the ANSI
+    wrappers here and the coming Direct3D 8 layer).
+  - GDI ANSI text: CreateFontA, CreateFontIndirectA, ExtTextOutA,
+    GetTextExtentPoint32A, Set/GetTextAlign, Set/GetMapMode.
+  - USER32: wsprintfA (cdecl, forwards to wvsprintfA), Load/Translate/Destroy
+    accelerator tables.
+  - KERNEL32: TerminateThread stops another cooperative guest thread at its
+    next block or yield.
+  - Reserved ComIface slots for the Direct3D 8 interfaces.
+  - Tests: tests/test_game_config.py covers the CD keys.
 
 - 2026-10-08 11:32 CDT — GPT-6 (Codex): Corrected duplicated carriage
   returns introduced while recording the streaming release notes on Windows.

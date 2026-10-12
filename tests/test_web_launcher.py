@@ -1,6 +1,7 @@
 """tools/web_launcher.py writes the hub page and each game's launcher data."""
 
 import importlib.util
+import gzip
 import json
 import hashlib
 import gzip
@@ -60,6 +61,28 @@ class WebLauncherTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 web_launcher.hosted_assets([game], {"stub": root}, out)
 
+    def test_exported_assets_are_copied_with_relative_urls(self):
+        # --export-assets: the site carries the game files itself, for a static
+        # host; URLs are relative to assets.json and nothing is routed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "game"
+            (root / "data").mkdir(parents=True)
+            (root / "data/a b.dat").write_bytes(b"asset data")
+            (root / "STUB.EXE").write_bytes(b"test executable")
+            (root / "secret.txt").write_text("excluded")
+            game = {"id": "stub", "executable": "STUB.EXE",
+                    "sha256": hashlib.sha256(b"test executable").hexdigest(),
+                    "requiredDirs": ["data"], "exclude": ["*.txt"]}
+            out = Path(tmp) / "site"
+            routes = web_launcher.hosted_assets([game], {"stub": root}, out, export=True)
+            self.assertEqual(routes, {})
+            manifest = json.loads((out / "stub/assets.json").read_text())
+            urls = sorted(e["url"] for e in manifest["files"])
+            self.assertEqual(urls, ["assets/STUB.EXE", "assets/data/a%20b.dat"])
+            self.assertEqual((out / "stub/assets/data/a b.dat").read_bytes(), b"asset data")
+            self.assertFalse((out / "stub/assets/secret.txt").exists())
+            self.assertEqual(game["assetBase"], "../stub/assets")
+
     def test_range_reads_head_and_invalid_ranges(self):
         with tempfile.TemporaryDirectory() as tmp:
             asset = Path(tmp) / "archive.bin"
@@ -104,6 +127,7 @@ class WebLauncherTests(unittest.TestCase):
             other.mkdir()
             text = (ROOT / "games/stub/game.toml").read_text().replace('id = "stub"', 'id = "other"')
             (other / "game.toml").write_text(text + '\n[launcher]\ntitle = "Other"\nstore = "https://x.test"\n'
+                                                    'input_hints = { keyboard = "WASD: drive" }\n'
                                                     '\n[setup]\nrequired_dirs = ["data"]\n')
             shutil.copy(ROOT / "games/stub/globals.toml", other / "globals.toml")
             out = tmp / "site"
@@ -116,6 +140,8 @@ class WebLauncherTests(unittest.TestCase):
             self.assertEqual(data[1]["requiredDirs"], ["data"])
             self.assertEqual(data[0]["executable"], "STUB.EXE")
             self.assertEqual(data[0]["sha256"], "0" * 64)
+            self.assertEqual(data[1]["inputHints"], {"keyboard": "WASD: drive"})
+            self.assertIsNone(data[0]["inputHints"])
             with self.assertRaises(ValueError):
                 web_launcher.build([ROOT / "games/stub", ROOT / "games/stub"], tmp / "dup")
 
@@ -130,37 +156,46 @@ class WebLauncherTests(unittest.TestCase):
                 (build / name).write_text(name)
             web_launcher.copy_web_build("stub", build, tmp / "site")
             copied = sorted(f.name for f in (tmp / "site/stub").iterdir())
-            self.assertEqual(copied, ["App.data", "App.data.gz", "App.js", "App.wasm", "App.wasm.gz", "index.html", "runtime.html"])
-            self.assertEqual(gzip.decompress((tmp / "site/stub/App.wasm.gz").read_bytes()), b"App.wasm")
+            self.assertEqual(copied, ["App.data", "App.js", "App.wasm", "index.html", "runtime.html"])
 
-    def test_engine_compression_preserves_wasm_type_and_identity_fallback(self):
+    def test_program_files_are_sent_compressed_and_assets_carry_an_etag(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            raw = b"wasm fixture" * 1000
-            original = root / "Engine.wasm"
-            original.write_bytes(raw)
-            packed = root / "Engine.wasm.gz"
-            packed.write_bytes(gzip.compress(raw))
-            server = ThreadingHTTPServer(("127.0.0.1", 0), partial(web_launcher.IsolatedHandler, directory=tmp))
+            tmp = Path(tmp)
+            build = tmp / "build"
+            build.mkdir()
+            (build / "index.html").write_text("page")
+            program = b"(module)" * 4096
+            (build / "App.wasm").write_bytes(program)
+            site = tmp / "site"
+            web_launcher.copy_web_build("stub", build, site)
+            self.assertEqual(gzip.decompress((site / "stub/App.wasm.gz").read_bytes()), program)
+            asset = tmp / "archive.bin"
+            asset.write_bytes(b"x" * 64)
+            route = "/_game-assets/stub/archive.bin"
+            server = ThreadingHTTPServer(("127.0.0.1", 0), partial(
+                web_launcher.IsolatedHandler, directory=str(site), asset_files={route: asset}))
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            url = f"http://127.0.0.1:{server.server_port}/Engine.wasm"
+            base = f"http://127.0.0.1:{server.server_port}"
             try:
-                with urlopen(Request(url, headers={"Accept-Encoding": "gzip"})) as response:
-                    self.assertEqual(response.headers["Content-Type"], "application/wasm")
+                with urlopen(Request(base + "/stub/App.wasm", headers={"Accept-Encoding": "gzip"})) as response:
                     self.assertEqual(response.headers["Content-Encoding"], "gzip")
-                    self.assertEqual(response.headers["Vary"], "Accept-Encoding")
-                    self.assertEqual(gzip.decompress(response.read()), raw)
-                for encoding in ("identity", "gzip;q=0, *;q=1"):
-                    with urlopen(Request(url, headers={"Accept-Encoding": encoding})) as response:
-                        self.assertIsNone(response.headers.get("Content-Encoding"))
-                        self.assertEqual(response.read(), raw)
-                # A newer raw build must not use a stale sidecar.
-                import os
-                os.utime(packed, (1, 1))
-                with urlopen(Request(url, headers={"Accept-Encoding": "gzip"})) as response:
-                    self.assertIsNone(response.headers.get("Content-Encoding"))
-                    self.assertEqual(response.read(), raw)
+                    self.assertEqual(response.headers["Content-Type"], "application/wasm")
+                    self.assertEqual(gzip.decompress(response.read()), program)
+                    modified = response.headers["Last-Modified"]
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(base + "/stub/App.wasm", headers={
+                        "Accept-Encoding": "gzip", "If-Modified-Since": modified}))
+                self.assertEqual(error.exception.code, 304)
+                with urlopen(base + "/stub/App.wasm") as response:  # no Accept-Encoding
+                    self.assertIsNone(response.headers["Content-Encoding"])
+                    self.assertEqual(response.read(), program)
+                with urlopen(Request(base + route, method="HEAD")) as response:
+                    first = response.headers["ETag"]
+                    self.assertTrue(first)
+                asset.write_bytes(b"y" * 65)
+                with urlopen(Request(base + route, method="HEAD")) as response:
+                    self.assertNotEqual(response.headers["ETag"], first)
             finally:
                 server.shutdown()
                 server.server_close()

@@ -231,6 +231,18 @@ presenter. `RECOMP_*` switches go in the page's query string
 (`<game id>/?RECOMP_D3D9_STATS=1`). Reading a render target back is not
 supported in the browser.
 
+FFmpeg is left out of a web build unless the game asks for it in
+`game.toml`: `[launcher] web_video = "mpeg1"` compiles it to WebAssembly
+with only the MPEG-1 video decoder, `"all"` with the full desktop list
+(Bink and Windows Media included), linked statically either way. The page keeps the program (`.wasm`) and every
+one-MiB piece of streamed game data it reads in the browser's Cache
+Storage, so a second visit downloads neither again; a piece is keyed by the
+file's ETag, so a changed file is fetched afresh. `--web-build` writes a
+gzip twin of each `.js`/`.wasm`/`.data` (and a brotli one when the `brotli`
+Python module is installed) that `--serve` sends to browsers that accept
+it; a 189 MB program shrinks to 22 MB that way. Game pads reach the game
+through the browser's Gamepad API (SDL's gamepad subsystem).
+
 ## Other platforms and GPU APIs
 
 Direct3D 9 renders on Metal (macOS, iOS), Vulkan (Linux, Windows, and macOS

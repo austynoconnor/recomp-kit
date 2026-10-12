@@ -35,6 +35,45 @@ class LoadTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "cd_tracks"):
                     game_config.load(game)
 
+    def test_virtual_cd_label_and_drive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            stub = (ROOT / "games/stub/game.toml").read_text()
+            (game / "globals.toml").write_text("")
+            (game / "game.toml").write_text(stub)
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CD_LABEL ""', header)
+            self.assertIn("#define RECOMP_CD_DRIVE 'D'", header)
+            (game / "game.toml").write_text(stub + '\n[media]\ncd_label = "Disc One"\ncd_drive = "e"\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CD_LABEL "Disc One"', header)
+            self.assertIn("#define RECOMP_CD_DRIVE 'E'", header)
+            for bad, key in (('cd_label = 3', "cd_label"), ('cd_label = "' + "x" * 33 + '"', "cd_label"),
+                             ('cd_drive = "C"', "cd_drive"), ('cd_drive = "DE"', "cd_drive")):
+                (game / "game.toml").write_text(stub + '\n[media]\n' + bad + '\n')
+                with self.assertRaisesRegex(ValueError, key):
+                    game_config.load(game)
+
+    def test_setjmp_longjmp_addresses(self):
+        # [translate] setjmp/longjmp name the CRT pair the translator replaces
+        # with runtime intrinsics; anything but a positive integer is refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            game = Path(tmp)
+            stub = (ROOT / "games/stub/game.toml").read_text()
+            (game / "globals.toml").write_text("")
+            (game / "game.toml").write_text(
+                stub.replace("[translate]\n", "[translate]\nsetjmp = 0x4b0050\nlongjmp = 0x4affd4\n", 1))
+            cfg = game_config.load(game)
+            self.assertEqual(cfg["translate"]["setjmp"], 0x4b0050)
+            self.assertEqual(cfg["translate"]["longjmp"], 0x4affd4)
+            (game / "game.toml").write_text(
+                stub.replace("[translate]\n", "[translate]\nftol2 = 0x7522bc\n", 1))
+            self.assertEqual(game_config.load(game)["translate"]["ftol2"], 0x7522bc)
+            for bad in ('setjmp = "0x4b0050"', "longjmp = 0", "ftol2 = -1"):
+                (game / "game.toml").write_text(stub.replace("[translate]\n", "[translate]\n" + bad + "\n", 1))
+                with self.assertRaisesRegex(ValueError, bad.split()[0]):
+                    game_config.load(game)
+
     def test_windows_version_defaults_and_optional_build(self):
         with tempfile.TemporaryDirectory() as tmp:
             game = Path(tmp)
@@ -218,7 +257,19 @@ class LoadTests(unittest.TestCase):
             cfg = game_config.load(game)
             self.assertEqual(cfg["controls"]["default_layout"], "keys")
             self.assertEqual(cfg["controls"]["pad"], "mapped")
+            self.assertEqual(cfg["controls"]["mouse"], "absolute")
             self.assertEqual(cfg["controls"]["mapped"], game_config.MAPPED_DEFAULTS)
+            (game / "game.toml").write_text(base + '\n[controls]\nmouse = "relative"\n')
+            self.assertEqual(game_config.load(game)["controls"]["mouse"], "relative")
+            (game / "game.toml").write_text(base + '\n[controls]\nmouse = "sideways"\n')
+            with self.assertRaises(ValueError):
+                game_config.load(game)
+            self.assertEqual(cfg["controls"]["cursor"], "free")
+            (game / "game.toml").write_text(base + '\n[controls]\ncursor = "tracked"\n')
+            self.assertEqual(game_config.load(game)["controls"]["cursor"], "tracked")
+            (game / "game.toml").write_text(base + '\n[controls]\ncursor = "glued"\n')
+            with self.assertRaises(ValueError):
+                game_config.load(game)
 
             # The old [touch] keypad knob maps onto default_layout when the
             # game names no default_layout of its own.
@@ -246,6 +297,19 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 game_config.load(game)
 
+            for bad in ('keys = "W=Up"', 'keys = { W = "Nope" }', 'keys = { Nope = "Up" }',
+                        'keys = { W = 5 }', 'keys = { LShift = "Up" }', 'keys = { W = "Escape" }'):
+                (game / "game.toml").write_text(base + '\n[controls]\n[controls.native]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+            (game / "game.toml").write_text(base)
+            self.assertIn('#define RECOMP_CONTROLS_NATIVE_KEYS ""',
+                          gen_game_config.render_header(game_config.load(game)))
+            (game / "game.toml").write_text(
+                base + '\n[controls]\n[controls.native]\nkeys = { W = "Up", "1" = "E", Space = "Z" }\n')
+            self.assertIn('#define RECOMP_CONTROLS_NATIVE_KEYS "1=E;Space=Z;W=Up"',
+                          gen_game_config.render_header(game_config.load(game)))
+
             # The header.
             (game / "game.toml").write_text(
                 base + '\n[controls.mapped]\nleft_stick = "horizontal_arrows"\n')
@@ -255,6 +319,42 @@ class LoadTests(unittest.TestCase):
             header = gen_game_config.render_header(game_config.load(game))
             self.assertIn("#define RECOMP_CONTROLS_PAD 1", header)
             self.assertIn("cross=mouse_left", header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (-32768)", header)
+
+            # axis_range: the joystick's range until the game sets DIPROP_RANGE.
+            (game / "game.toml").write_text(
+                base + '\n[controls]\n[controls.native]\naxis_range = [-128, 127]\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (-128)", header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_AXIS_MAX (127)", header)
+            for bad in ("[127, -128]", "[0]", '["a", "b"]', "[true, 2]"):
+                (game / "game.toml").write_text(
+                    base + '\n[controls]\n[controls.native]\naxis_range = %s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+
+            # Half axes, d-pad on the stick, keyboard aliases.
+            (game / "game.toml").write_text(
+                base + '\n[controls]\nkey_aliases = { Up = "W", Escape = "Return" }\n'
+                '[controls.native]\naxes = ["x", "y", "z", "rz", "+y", "-y"]\ndpad = "stick"\n')
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CONTROLS_KEY_ALIASES "Escape=Return,Up=W"', header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK 1", header)
+            self.assertIn('"x,y,z,rz,+y,-y"', header)
+            (game / "game.toml").write_text(base)
+            header = gen_game_config.render_header(game_config.load(game))
+            self.assertIn('#define RECOMP_CONTROLS_KEY_ALIASES ""', header)
+            self.assertIn("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK 0", header)
+            for bad in ('key_aliases = { Up = "Nope" }', 'key_aliases = { W = "W" }',
+                        'key_aliases = ["Up"]'):
+                (game / "game.toml").write_text(base + '\n[controls]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+            for bad in ('dpad = "both"', 'axes = ["x", "y", "z", "rz", "++y", "-y"]',
+                        'axes = ["x", "y", "z", "rz", "w", "-y"]'):
+                (game / "game.toml").write_text(base + '\n[controls]\n[controls.native]\n%s\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
 
             # The old rows spelling still loads.
             (game / "game.toml").write_text(base + '\n[settings]\nrows = ["window", "keypad"]\n')
@@ -314,7 +414,11 @@ class LoadTests(unittest.TestCase):
             self.assertIn("#define RECOMP_LAUNCHER_MIN_FREE_MB 50u", header)
             self.assertIn('#define RECOMP_REQUIRED_DIRS {"data", "levels", 0}', header)
             self.assertIn('#define RECOMP_BUNDLE_EXCLUDE {"*.dll", "app", 0}', header)
-            for bad in ('min_free_mb = -1', 'gog_ids = "123"', 'title = 5'):
+            self.assertEqual(game_config.load(game)["launcher"]["web_video"], "off")
+            (game / "game.toml").write_text(base + '\n[launcher]\nweb_video = "mpeg1"\n')
+            self.assertEqual(game_config.load(game)["launcher"]["web_video"], "mpeg1")
+            for bad in ('min_free_mb = -1', 'gog_ids = "123"', 'title = 5', 'web_video = true',
+                        'web_video = "h264"'):
                 (game / "game.toml").write_text(base + "\n[launcher]\n" + bad + "\n")
                 with self.assertRaises(ValueError):
                     game_config.load(game)

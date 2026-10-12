@@ -33,6 +33,7 @@
 #include "../input_gate.h"
 #include "../input_touch.h"
 #include "../controls/controls_host.h"
+#include "../controls/key_remap.h"
 #include "../../mods/controls_settings.h"
 #include "../controls/gamepad_sdl.h"
 #include "../../mods/mods_internal.h"
@@ -53,6 +54,7 @@
 #ifdef __EMSCRIPTEN__
 #include "../gpu/d3d9_backend.h"
 #include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
 #include <emscripten/wasmfs.h>
 #include <thread>
 #endif
@@ -276,6 +278,9 @@ struct PendingInput {
     uint32_t character = 0;
     uint32_t flags = 0;
 };
+// PendingInput::flags of a MOTION event in relative mouse mode: dx/dy are
+// raw motion in drawable pixels and x/y mean nothing.
+constexpr uint32_t kRelativeMotion = 1;
 std::vector<PendingInput> g_pending_input;
 // The queue is FILLED on the host thread inside an idle slice, with the
 // scheduler's lock down, and DRAINED by whichever guest thread holds the baton
@@ -413,16 +418,34 @@ bool pointer_capture_wanted() {
 void update_platform_pointer_capture() {
     const bool want = g_platform_capture_requested && pointer_capture_wanted() &&
                       !g_close_requested && !g_fullscreen_transition;
-    if (want && !g_pointer_hidden) {
+    bool hide = want;
+#if defined(__EMSCRIPTEN__) && RECOMP_CONTROLS_CURSOR_TRACKED
+    // A browser hides the pointer only over the canvas, and the game's own
+    // cursor follows it there (host/input_gate.cpp), so it stays hidden while
+    // the game draws its own cursor - captured or not, focused or not - and
+    // there is never a second cursor beside the game's.
+    hide = hide || (platform_ui_pointer_capture_supported() && ddraw_gdi_primary_active() &&
+                    !mods_page_visible() && !mods_controls_editing() && !g_close_requested);
+#endif
+    if (hide && !g_pointer_hidden) {
         trace_state("capture ON: hiding the OS cursor");
         SDL_HideCursor();
         g_pointer_hidden = true;
     }
-    if (!want && g_pointer_hidden) {
+    if (!hide && g_pointer_hidden) {
         trace_state("capture OFF: showing the OS cursor");
         SDL_ShowCursor();
         g_pointer_hidden = false;
     }
+#if RECOMP_CONTROLS_RELATIVE_MOUSE
+    // A game that aims with the mouse reads raw motion while captured: SDL's
+    // relative mode (pointer lock in a browser) never lets the pointer reach
+    // an edge.
+    if (g_window && SDL_GetWindowRelativeMouseMode(g_window) != want) {
+        SDL_SetWindowRelativeMouseMode(g_window, want);
+        trace_state(want ? "relative mouse ON" : "relative mouse OFF");
+    }
+#endif
 
     // A regular window confines too; hiding alone lets the OS pointer leave
     // the frame. Dragging into the resize margin releases capture so the
@@ -562,6 +585,19 @@ void handle_mouse_move(const SDL_MouseMotionEvent &motion) {
         controls::host_pointer_moved(motion.x, motion.y);
     PendingInput e;
     e.kind = PendingInput::MOTION;
+#if RECOMP_CONTROLS_RELATIVE_MOUSE
+    if (g_window && motion.which != SDL_TOUCH_MOUSEID && SDL_GetWindowRelativeMouseMode(g_window)) {
+        // Window points to drawable pixels, so a delta means the same
+        // distance whatever the window's scale.
+        int bw, bh, dw, dh;
+        window_sizes(&bw, &bh, &dw, &dh);
+        e.flags = kRelativeMotion;
+        e.dx = motion.xrel * (bw > 0 ? double(dw) / bw : 1.0);
+        e.dy = motion.yrel * (bh > 0 ? double(dh) / bh : 1.0);
+        queue_or_apply(e);
+        return;
+    }
+#endif
     // A pointer resting against a system strip means the edge behind it.
     double strip_top = 0, strip_bottom = 0;
     system_strip_insets(&strip_top, &strip_bottom);
@@ -688,6 +724,19 @@ bool is_modifier_scancode(SDL_Scancode sc) {
            sc == SDL_SCANCODE_LGUI || sc == SDL_SCANCODE_RGUI || sc == SDL_SCANCODE_CAPSLOCK;
 }
 
+// [controls.native] keys: the key the game sees for each physical key.
+controls::KeyRemap &key_remap() {
+    static controls::KeyRemap remap;
+    static const bool parsed = [] {
+        std::string error;
+        if (!remap.parse(RECOMP_CONTROLS_NATIVE_KEYS, &error))
+            fprintf(stderr, "[controls] native keys ignored: %s\n", error.c_str());
+        return true;
+    }();
+    (void)parsed;
+    return remap;
+}
+
 void handle_key(const SDL_KeyboardEvent &event, bool down) {
     if (is_modifier_scancode(event.scancode)) {
         PendingInput e;
@@ -708,7 +757,14 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
             queue_or_apply(release);
         }
     }
-    const uint16_t key = host_keycode_from_scancode(event.scancode);
+    SDL_Scancode scancode = event.scancode;
+    if (!key_remap().empty()) {
+        int guest = scancode;
+        if (!key_remap().press(scancode, down, &guest))
+            return; // another physical key still holds (or never held) this one
+        scancode = (SDL_Scancode)guest;
+    }
+    const uint16_t key = host_keycode_from_scancode(scancode);
     if (key == 0xffff)
         return;
     PendingInput e;
@@ -717,7 +773,7 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
     e.down = down;
     // Keep the keyboard layout and Shift/Caps Lock when producing text.
     // Keycodes above the Unicode range are not characters.
-    const SDL_Keycode plain = SDL_GetKeyFromScancode(event.scancode, event.mod, false);
+    const SDL_Keycode plain = SDL_GetKeyFromScancode(scancode, event.mod, false);
     e.character = plain < 0x40000000 && plain >= 0x20 ? (uint32_t)plain : 0u;
     e.flags = host_modifier_flags_from_sdl(event.mod);
     queue_or_apply(e);
@@ -729,6 +785,8 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
 void note_focus(bool focused) {
     if (focused == g_focused && g_guest_activated)
         return;
+    if (!focused)
+        key_remap().release_all(); // the keys held now come up without telling us
     g_focused = focused;
     g_guest_activated = true;
     PendingInput e;
@@ -746,7 +804,18 @@ void apply_input(const PendingInput &e) {
         host_gate_fallback_layout(e.drawable_w, e.drawable_h);
     switch (e.kind) {
     case PendingInput::MOTION:
-        apply_motion(e.x, e.y, e.dx, e.dy);
+        if (e.flags & kRelativeMotion) {
+            // Sub-pixel motion is carried to the next event rather than lost.
+            static double carry_x = 0, carry_y = 0;
+            carry_x += e.dx;
+            carry_y += e.dy;
+            const int32_t ix = int32_t(carry_x), iy = int32_t(carry_y);
+            carry_x -= ix;
+            carry_y -= iy;
+            host_gate_relative_motion(ix, iy);
+        } else {
+            apply_motion(e.x, e.y, e.dx, e.dy);
+        }
         break;
     case PendingInput::BUTTON:
         apply_button(e.button, e.down, e.x, e.y, e.inside, e.edge);
@@ -1709,7 +1778,9 @@ int web_main(int argc, char **argv) {
         fprintf(stderr, RECOMP_APP_NAME ": the page gave no --exe\n");
         return 2;
     }
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+    // The gamepad subsystem reads the browser's Gamepad API; without it a pad
+    // plugged into the page never reaches the game.
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, RECOMP_APP_NAME ": SDL_Init failed: %s\n", SDL_GetError());
         return 3;
     }
@@ -1718,9 +1789,26 @@ int web_main(int argc, char **argv) {
         fprintf(stderr, RECOMP_APP_NAME ": this browser gave the page no WebGPU device\n");
         return 3;
     }
-    // The player's bounded CSS viewport is the web rendering budget. Do not
-    // multiply that budget by the monitor's pixel density on large displays.
-    g_window = SDL_CreateWindow(RECOMP_GAME_NAME, g_mode_w, g_mode_h, SDL_WINDOW_RESIZABLE);
+    // The player's bounded CSS viewport is the web rendering budget. A canvas
+    // sized in CSS pixels on a display scaled to 125% or 150% is stretched
+    // again by the browser after the presenter has scaled the game, which
+    // blurs everything, so the canvas takes the display's pixel density when
+    // the result stays within a 2560x1440 budget. A large high-density
+    // display keeps CSS pixels rather than multiplying the GPU's work.
+    SDL_WindowFlags web_flags = SDL_WINDOW_RESIZABLE;
+    {
+        const double dpr = emscripten_get_device_pixel_ratio();
+        double css_w = 0, css_h = 0;
+        if (dpr > 1.0 &&
+            emscripten_get_element_css_size("#canvas", &css_w, &css_h) ==
+                EMSCRIPTEN_RESULT_SUCCESS &&
+            css_w * css_h * dpr * dpr <= 2560.0 * 1440.0)
+            web_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        fprintf(stderr, "web canvas: %.0fx%.0f CSS pixels at density %.2f, %s\n", css_w, css_h, dpr,
+                (web_flags & SDL_WINDOW_HIGH_PIXEL_DENSITY) ? "drawn at full density"
+                                                            : "drawn in CSS pixels");
+    }
+    g_window = SDL_CreateWindow(RECOMP_GAME_NAME, g_mode_w, g_mode_h, web_flags);
     if (!g_window) {
         fprintf(stderr, RECOMP_APP_NAME ": SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 3;

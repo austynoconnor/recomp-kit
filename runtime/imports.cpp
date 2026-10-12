@@ -16,6 +16,7 @@ void sched_checkpoint();
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cstring>
 
 namespace {
 
@@ -430,8 +431,14 @@ bool imports_dispatch(X86 *c, uint32_t target) {
     uint8_t argc = tramps()[idx].argc;
     // A guest exception can longjmp across fn(c). Keep no C++ owner live
     // across that call, and do not retain a pointer into the movable vector.
+    // A plain bounded copy: formatting it cost every import a vsnprintf.
     char desc[512];
-    snprintf(desc, sizeof desc, "%s", tramps()[idx].desc.c_str());
+    {
+        const std::string &d = tramps()[idx].desc;
+        const size_t n = std::min(d.size(), sizeof desc - 1);
+        memcpy(desc, d.data(), n);
+        desc[n] = 0;
+    }
     ++tramps()[idx].calls;
     ++g_import_calls;
 
@@ -499,6 +506,7 @@ struct Callback {
     X86 *cpu;
     jmp_buf env;
     uint32_t saved_esp, saved_eip, return_sp, profile_depth;
+    uint32_t unwinds; // t_unwinds when the call began
 };
 struct Callbacks {
     std::vector<Callback *> stack;
@@ -508,7 +516,31 @@ struct Callbacks {
     }
 };
 thread_local Callbacks callbacks;
+thread_local uint32_t t_unwinds;
+
+Callback *innermost_returning(X86 *c) {
+    if (callbacks.stack.empty())
+        return nullptr;
+    Callback *call = callbacks.stack.back();
+    // Every translated return here is deeper on the host stack than this
+    // live guest_call. Match the guest return slot as well: a completing SEH
+    // landing may RET to an older callback's identical sentinel, in which
+    // case intercept must finish that function through its SEH checkpoint.
+    if (call->cpu != c || c->r[R_ESP] < call->return_sp + 4 || c->r[R_ESP] > call->saved_esp)
+        return nullptr;
+    return call;
+}
+
+[[noreturn]] void finish_through_checkpoint(Callback *call) {
+    mods_hooks_unwind_to_esp(call->return_sp);
+    recomp_profile_truncate(call->profile_depth);
+    longjmp(call->env, 1);
+}
 } // namespace
+
+void recomp_callback_note_unwind(void) {
+    ++t_unwinds;
+}
 
 uint32_t recomp_callback_depth(void) {
     return (uint32_t)callbacks.stack.size();
@@ -529,19 +561,22 @@ void recomp_callback_reset(X86 *c) {
         }
 }
 
+// A guest RET popped the innermost callback's sentinel. Translated frames
+// mirror guest frames, so when nothing has broken the nesting since the call
+// began (recomp_callback_note_unwind) the RET is the called function's own
+// and returning through it reaches guest_call directly. That matters in a
+// browser, where each longjmp is a JavaScript exception: Bully's effect
+// state manager callbacks spent two thirds of its game thread throwing them.
 void recomp_callback_return(X86 *c) {
-    if (callbacks.stack.empty())
+    Callback *call = innermost_returning(c);
+    if (!call || call->unwinds == t_unwinds)
         return;
-    Callback *call = callbacks.stack.back();
-    // Every translated return here is deeper on the host stack than this
-    // live guest_call. Match the guest return slot as well: a completing SEH
-    // landing may RET to an older callback's identical sentinel, in which
-    // case intercept must finish that function through its SEH checkpoint.
-    if (call->cpu != c || c->r[R_ESP] < call->return_sp + 4 || c->r[R_ESP] > call->saved_esp)
-        return;
-    mods_hooks_unwind_to_esp(call->return_sp);
-    recomp_profile_truncate(call->profile_depth);
-    longjmp(call->env, 1);
+    finish_through_checkpoint(call);
+}
+
+void recomp_callback_jump_return(X86 *c) {
+    if (Callback *call = innermost_returning(c))
+        finish_through_checkpoint(call);
 }
 
 uint32_t guest_call(X86 *c, uint32_t fn, const uint32_t *args, int nargs) {
@@ -550,6 +585,7 @@ uint32_t guest_call(X86 *c, uint32_t fn, const uint32_t *args, int nargs) {
     call->saved_esp = c->r[R_ESP];
     call->saved_eip = c->eip;
     call->profile_depth = recomp_profile_depth();
+    call->unwinds = t_unwinds;
     uint32_t esp = call->saved_esp;
     for (int i = nargs - 1; i >= 0; --i) {
         esp -= 4;

@@ -233,10 +233,55 @@ void find_w(X86 *c) {
 void find_ex_w(X86 *c) {
     find_named(c, true);
 }
-// RT_STRING blocks contain sixteen WORD-length-prefixed UTF-16 strings.
+// The UTF-16 string `id` in a module's RT_STRING table: its guest address and
+// its length in units, 0 when there is none. RT_STRING blocks contain sixteen
+// WORD-length-prefixed UTF-16 strings; block n + 1 holds ids 16n to 16n + 15.
+static uint32_t string_resource(uint32_t module, uint32_t id, uint32_t *units) {
+    uint32_t bytes = 0;
+    uint32_t p =
+        resource_data(resource_find(6, (id >> 4) + 1, nullptr, module), &bytes, nullptr, module);
+    uint32_t end = p + bytes;
+    for (uint32_t i = 0; p && i < 16; ++i) {
+        if (end - p < 2)
+            break;
+        uint32_t n = rd16(p);
+        p += 2;
+        if (n > (end - p) / 2)
+            break;
+        if (i == (id & 15)) {
+            *units = n;
+            return n ? p : 0;
+        }
+        p += n * 2;
+    }
+    *units = 0;
+    return 0;
+}
+// LoadStringA(hInstance, uID, lpBuffer, cchBufferMax): the string in the ANSI
+// code page, truncated to the buffer and NUL-terminated, its length returned.
+// A character outside Latin-1 becomes '?', which is what a Western European
+// code page shows for what it cannot represent.
+void load_string_a(X86 *c) {
+    uint32_t module = arg(c, 0), id = arg(c, 1) & 0xffff, out = arg(c, 2), cap = arg(c, 3);
+    uint32_t units = 0, p = string_resource(module, id, &units);
+    if (!out || !cap || !gm_valid(out, cap)) {
+        set_eax(c, 0);
+        return;
+    }
+    uint32_t n = std::min(units, cap - 1);
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t w = rd16(p + 2 * i);
+        g_mem[out + i] = (uint8_t)(w < 256 ? w : '?');
+    }
+    g_mem[out + n] = 0;
+    set_eax(c, n);
+}
 void load_string(X86 *c) {
-    uint32_t id = arg(c, 1) & 0xffff, out = arg(c, 2), cap = arg(c, 3), bytes = 0;
-    uint32_t p = resource_data(resource_find(6, (id >> 4) + 1), &bytes), end = p + bytes;
+    uint32_t module = arg(c, 0), id = arg(c, 1) & 0xffff, out = arg(c, 2), cap = arg(c, 3);
+    uint32_t bytes = 0;
+    uint32_t p = resource_data(resource_find(6, (id >> 4) + 1, nullptr, module), &bytes, nullptr,
+                               module),
+             end = p + bytes;
     for (uint32_t i = 0; p && i < 16; ++i) {
         if (end - p < 2)
             break;
@@ -525,6 +570,7 @@ const ImportShim shims[] = {
     W("LoadBitmapW", 2, load_bitmap),
     W("LoadIconW", 2, load_icon),
     W("LoadStringW", 4, load_string),
+    W("LoadStringA", 4, load_string_a),
     W("DrawTextW", 5, draw_text),
     W("DrawTextExW", 6, draw_text_ex),
     W("CharUpperW", 1, upper),

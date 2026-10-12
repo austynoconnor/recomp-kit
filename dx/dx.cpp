@@ -522,7 +522,18 @@ void dx_report_failure(const char *desc, uint32_t eax) {
     // cannot be mistaken for failures.
     if (!(eax & 0x80000000u))
         return;
-    if (!desc || !strstr(desc, "::"))
+    // A game that repeats one failing call every frame (a lost-device test,
+    // say) is reported once; skip the string work for the same failure.
+    // (desc is the dispatcher's stack copy, so compare the text.)
+    static thread_local char t_last_desc[160];
+    static thread_local uint32_t t_last_eax = 0;
+    if (!desc)
+        return;
+    if (eax == t_last_eax && strncmp(desc, t_last_desc, sizeof t_last_desc) == 0)
+        return;
+    t_last_eax = eax;
+    snprintf(t_last_desc, sizeof t_last_desc, "%s", desc);
+    if (!strstr(desc, "::"))
         return;
     if (!strstr(desc, "IDirect") && !strstr(desc, "IDirect3D"))
         return;
@@ -590,6 +601,7 @@ void dx_register_shims() {
     d3dcompiler_register();
     d3dx10_register();
     d3d9_register();
+    d3d8_register();
     d3dx9_register();
     dinput_register();
     xinput_register();

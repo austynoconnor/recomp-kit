@@ -16,6 +16,8 @@ are enabled. The full LGPL 2.1 license from the release follows below.
 - Android shared libraries: `libavformat.so`, `libavcodec.so`, `libavutil.so`.
 - Linux shared libraries: `libavformat.so.61`, `libavcodec.so.61`, `libavutil.so.59`.
 - Windows shared libraries: `avformat-61.dll`, `avcodec-61.dll`, `avutil-59.dll`.
+- Web (Emscripten) static libraries: `libavformat.a`, `libavcodec.a`,
+  `libavutil.a`, linked into the game's `.wasm`.
 
 ## Build configuration
 
@@ -122,6 +124,18 @@ and make are managed by that build. `RECOMP_VIDEO` defaults to ON for
 macOS, iOS, Android and Linux, and on Windows with the prerequisites above;
 OFF omits FFmpeg entirely. Native Windows and Windows cross-build CI enable it.
 
+A web build (`--target web`) enables it only when the game's `game.toml`
+asks: `[launcher] web_video = "mpeg1"` or `"all"` (the default is
+`"off"`). Emscripten's `emcc` builds
+FFmpeg as plain C with `--enable-cross-compile --target-os=none
+--arch=x86_32 --disable-asm --disable-x86asm --disable-inline-asm
+--disable-pthreads --disable-runtime-cpudetect --disable-shared
+--enable-static` and `-pthread` in the C and linker flags (the game's module
+uses shared memory). With `"mpeg1"` the web build enables only
+`--enable-decoder=mpeg1video --enable-parser=mpegvideo` in place of the
+full decoder/demuxer list, because a page downloads every decoder it
+links; `"all"` keeps the full list.
+
 Automatic optional dependency discovery and external compression/UI/media
 libraries are disabled to avoid dependencies on Homebrew or other local
 packages. The libraries may depend on each other and target system
@@ -169,6 +183,14 @@ files with ABI-compatible modified libraries using the same filenames and,
 on Linux, SONAMEs. No signing or relinking is needed for these desktop
 libraries. Fake-file staging tests cover package contents and video-OFF
 cleanup; native dynamic loading still needs verification on each platform.
+
+The web build cannot load libraries at run time, so it links the three
+static libraries into the game's `.wasm`. To use a modified FFmpeg there,
+change the source archive or configure arguments in
+`cmake/Dependencies.cmake` (or point the build's `ffmpeg/` prefix at your
+own Emscripten build of the same version) and rebuild with
+`tools/build.py --target web`; the whole kit, including the link step, is
+available as source for that purpose.
 
 ## GNU Lesser General Public License version 2.1
 

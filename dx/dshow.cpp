@@ -96,6 +96,9 @@ const uint32_t kVolumeMin = (uint32_t)-10000;
 
 const uint8_t CLSID_AMMultiMediaStream_[16] =
     IID_BYTES(0x49c47ce5, 0x9ba4, 0x11d0, 0x82, 0x12, 0x00, 0xc0, 0x4f, 0xc3, 0x2c, 0x45);
+// CLSID_FilterGraph {E436EBB3-524F-11CE-9F53-0020AF0BA770}.
+const uint8_t CLSID_FilterGraph_[16] =
+    IID_BYTES(0xe436ebb3, 0x524f, 0x11ce, 0x9f, 0x53, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70);
 const uint8_t CLSID_AMAudioData_[16] =
     IID_BYTES(0xf2468580, 0xaf8a, 0x11d0, 0x82, 0x12, 0x00, 0xc0, 0x4f, 0xc3, 0x2c, 0x45);
 const uint8_t IID_IMultiMediaStream_[16] =
@@ -753,8 +756,37 @@ void MM_AddMediaStream(X86 *c) {
         com_ret(c, S_OK);
 }
 
-// OpenFile(LPCWSTR, dwFlags): the file becomes the stream's source. A path
-// resolves the way CreateFileA's would.
+// Makes the wide path at `path` the source of `mm`, resolving it the way
+// CreateFileA would. The HRESULT OpenFile and RenderFile return.
+uint32_t open_source(ComObj *mm, uint32_t path, const char *who) {
+    if (!path || !gm_valid(path, 2))
+        return E_POINTER;
+    std::string guest = read_wide(path);
+    std::string host = win32_host_path(guest, false);
+    Source &s = source_for(mm);
+    stop_playback(s);
+    s.loaded = false;
+    s.name = guest;
+    if (host.empty() || !load_source(s, host)) {
+        bool exists = false;
+        if (!host.empty()) {
+            if (FILE *f = fopen(host.c_str(), "rb")) {
+                exists = true;
+                fclose(f);
+            }
+        }
+        LOGW("dshow: %s(%s): %s", who, guest.c_str(),
+             exists ? "not an MPEG audio file" : "no such file");
+        return exists ? MS_E_INCOMPATIBLE : HRESULT_FILE_NOT_FOUND;
+    }
+    if (!mm->dsh_stream)
+        media_stream_of(mm);
+    LOGV("dshow: %s(%s): %d Hz, %d channel(s), %zu bytes", who, guest.c_str(), s.hz, s.channels,
+         s.file_bytes);
+    return S_OK;
+}
+
+// OpenFile(LPCWSTR, dwFlags): the file becomes the stream's source.
 void MM_OpenFile(X86 *c) {
     ComObj *mm = com_this_arg(c, IF_MMSTREAM);
     uint32_t path = arg(c, 1);
@@ -770,30 +802,7 @@ void MM_OpenFile(X86 *c) {
         com_ret(c, MS_E_NOTINIT);
         return;
     }
-    std::string guest = read_wide(path);
-    std::string host = win32_host_path(guest, false);
-    Source &s = source_for(mm);
-    stop_playback(s);
-    s.loaded = false;
-    s.name = guest;
-    if (host.empty() || !load_source(s, host)) {
-        bool exists = false;
-        if (!host.empty()) {
-            if (FILE *f = fopen(host.c_str(), "rb")) {
-                exists = true;
-                fclose(f);
-            }
-        }
-        LOGW("dshow: OpenFile(%s): %s", guest.c_str(),
-             exists ? "not an MPEG audio file" : "no such file");
-        com_ret(c, exists ? MS_E_INCOMPATIBLE : HRESULT_FILE_NOT_FOUND);
-        return;
-    }
-    if (!mm->dsh_stream)
-        media_stream_of(mm);
-    LOGV("dshow: OpenFile(%s): %d Hz, %d channel(s), %zu bytes", guest.c_str(), s.hz, s.channels,
-         s.file_bytes);
-    com_ret(c, S_OK);
+    com_ret(c, open_source(mm, path, "OpenFile"));
 }
 
 DX_STUB(MM_OpenMoniker, E_NOTIMPL)
@@ -1296,7 +1305,21 @@ DX_STUB(GB_Disconnect, E_NOTIMPL)
 DX_STUB(GB_SetDefaultSyncSource, S_OK)
 DX_STUB(GB_Connect, E_NOTIMPL)
 DX_STUB(GB_Render, E_NOTIMPL)
-DX_STUB(GB_RenderFile, E_NOTIMPL)
+// IGraphBuilder::RenderFile(lpcwstrFile, lpcwstrPlayList) and
+// IMediaControl::RenderFile(BSTR): the "graph" a CLSID_FilterGraph object
+// builds for an MPEG audio file is this module's decoder and host channel, so
+// rendering a file opens it as the graph's source, ready for Run.
+void graph_render_file(X86 *c) {
+    GraphThis t = graph_this(c);
+    if (!t.g || !t.mm) {
+        com_ret(c, E_FAIL);
+        return;
+    }
+    com_ret(c, open_source(t.mm, arg(c, 1), "RenderFile"));
+}
+void GB_RenderFile(X86 *c) {
+    graph_render_file(c);
+}
 DX_STUB(GB_AddSourceFilter, E_NOTIMPL)
 DX_STUB(GB_SetLogFile, S_OK)
 DX_STUB(GB_Abort, S_OK)
@@ -1381,7 +1404,9 @@ void MC_GetState(X86 *c) {
     com_ret(c, S_OK);
 }
 
-DX_STUB(MC_RenderFile, E_NOTIMPL)
+void MC_RenderFile(X86 *c) {
+    graph_render_file(c);
+}
 DX_STUB(MC_AddSourceFilter, E_NOTIMPL)
 DX_STUB(MC_get_FilterCollection, E_NOTIMPL)
 DX_STUB(MC_get_RegFilterCollection, E_NOTIMPL)
@@ -1929,6 +1954,35 @@ ComObj *audiodata_create() {
     return com_new(K_AUDIODATA);
 }
 
+// CLSID_FilterGraph: a graph the game builds itself with RenderFile rather
+// than one an AMMultiMediaStream hands out. It carries a stream of its own,
+// which nothing else can see, to hold the file and its playback; the graph
+// owns that stream (dsh_initialised marks it) and releases it with itself.
+ComObj *filtergraph_create() {
+    ComObj *mm = com_new(K_MMSTREAM);
+    if (!mm)
+        return nullptr;
+    mm->dsh_initialised = true;
+    ComObj *g = com_new(K_GRAPH);
+    if (!g) {
+        com_release(mm);
+        return nullptr;
+    }
+    g->dsh_owner = mm->id;
+    g->dsh_initialised = true;
+    return g;
+}
+void graph_destroy(ComObj *g) {
+    if (!g->dsh_initialised)
+        return;
+    ComObj *mm = owner_of(g);
+    g->dsh_owner = 0;
+    if (mm) {
+        mm->dsh_graph = 0;
+        com_release(mm);
+    }
+}
+
 } // namespace
 
 void dshow_frame_pump(X86 *) {
@@ -1996,10 +2050,12 @@ void dshow_register() {
 
     com_set_destructor(K_MMSTREAM, mmstream_destroy);
     com_set_destructor(K_STREAMSAMPLE, sample_destroy);
+    com_set_destructor(K_GRAPH, graph_destroy);
 
     com_register_class(CLSID_AMMultiMediaStream_, "AMMultiMediaStream", IF_MMSTREAM,
                        mmstream_create);
     com_register_class(CLSID_AMAudioData_, "AMAudioData", IF_AUDIODATA, audiodata_create);
+    com_register_class(CLSID_FilterGraph_, "FilterGraph", IF_GRAPH, filtergraph_create);
 }
 
 void dshow_reset() {

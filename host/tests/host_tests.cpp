@@ -2124,6 +2124,31 @@ static void test_audio_ring_and_clock() {
     CHECK_EQ(stats.sound_runs, 1u);
     CHECK_EQ(stats.discontinuities, 0u);
 
+    // A guest that stops writing (a stalled game thread): once what it wrote
+    // has played, the ring goes quiet instead of repeating old sound, and the
+    // next write brings it back.
+    host_audio_offline_render(19200, &peak); // a whole lap: what is left
+    host_audio_offline_render(4096, &peak);  // the fade
+    host_audio_offline_render(9600, &peak);
+    CHECK(peak == 0.0f);
+    CHECK_EQ(host_audio_write(21, ring.data(), 0, ring_bytes), (int32_t)ring_bytes);
+    host_audio_offline_render(4800, &peak);
+    CHECK(peak > 0.0f);
+
+    // A guest that writes half a ring every half lap - the usual DirectSound
+    // pattern, and the one a running total lost track of - never goes quiet,
+    // not even for 20 ms.
+    for (int half = 0; half < 8; ++half) {
+        const uint32_t half_bytes = ring_bytes / 2;
+        CHECK_EQ(host_audio_write(21, ring.data() + (half % 2) * half_bytes,
+                                  (half % 2) * half_bytes, half_bytes),
+                 (int32_t)half_bytes);
+        for (int chunk = 0; chunk < 10; ++chunk) {
+            host_audio_offline_render(960, &peak);
+            CHECK(peak > 0.0f);
+        }
+    }
+
     // And the queue's own answer comes from the clock, not from a completion.
     // A stream that has been playing for a while reports less outstanding than
     // it was handed, without anything having reported a buffer finished.
@@ -9710,6 +9735,13 @@ static void test_d3d9_gpu_renderer() {
     CHECK(p[1] >= 190 && p[1] <= 192);
     const d9sh::Program &prog3 = d9sh::program_for(ps3);
     CHECK(prog3.ok && prog3.major == 3 && prog3.idefs.count(0) == 1);
+    // A relative source names the component of a0 it adds: skinning reads
+    // c[a0.x], c[a0.y], c[a0.z] and c[a0.w] for its four bones.
+    const d9sh::Program &rel = d9sh::program_for(
+        d9_words({0xFFFE0200u, 0x03000001u, 0xC00F0000u, 0xA0E42002u, 0xB0550000u, 0x0000FFFFu}));
+    CHECK(rel.ok && rel.relative && rel.code.size() == 1);
+    CHECK(rel.code.size() == 1 && rel.code[0].src[0].rel && rel.code[0].src[0].rel_comp == 1 &&
+          !rel.code[0].src[0].rel_loop);
 
     // Multisampling: a diagonal edge over black leaves partly covered pixels
     // in a 4x target, and none in a single-sampled one.

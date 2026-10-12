@@ -13,6 +13,8 @@ export function controllerLabels(id = "") {
 // pad configuration. Face-button position must not imply a menu action.
 export function inputHintText(id, config) {
   const labels = id === null ? null : controllerLabels(id);
+  if (typeof config?.keyboard === "string" || typeof config?.controller === "string")
+    return hintText(labels, config);
   if (!config?.actions || !Object.keys(config.actions).length)
     return labels ? `${labels.name} · D-pad: browse · ${labels.confirm}: confirm · ${labels.back}: back · Use keyboard to type names`
       : "Keyboard · Arrow keys: browse · Enter: confirm · Esc: back · Type names · Backspace: delete";
@@ -45,7 +47,22 @@ export function inputHintText(id, config) {
   return text.join(" · ");
 }
 
-export function startInputHints(render, readPads = () => navigator.getGamepads?.() || [], readConfig = () => null) {
+// `custom` ({keyboard, controller}, game.toml [launcher] input_hints) replaces
+// the generic lines; {name}, {confirm} and {back} in the controller line take
+// the active pad's labels.
+export function hintText(labels, custom = null) {
+  if (labels) {
+    const line = custom?.controller ||
+      "{name} · D-pad: browse · {confirm}: confirm · {back}: back · Use keyboard to type names";
+    return line.replace(/\{(name|confirm|back)\}/g, (_, k) => labels[k]);
+  }
+  return custom?.keyboard ||
+    "Keyboard · Arrow keys: browse · Enter: confirm · Esc: back · Type names · Backspace: delete";
+}
+
+// The third argument is the hint config itself or a function returning it.
+export function startInputHints(render, readPads = () => navigator.getGamepads?.() || [], config = null) {
+  const readConfig = typeof config === "function" ? config : () => config;
   let active = "keyboard";
   let selected = null;
   let first = true;

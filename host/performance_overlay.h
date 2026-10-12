@@ -17,7 +17,7 @@ class PerformanceOverlay {
               const FramePacingSnapshot &s, double now, int mode, int limit);
 
   private:
-    static constexpr int width = 330, height = 136;
+    static constexpr int width = 330, height = 154;
     void update(gpu::Device *device, const FramePacingSnapshot &s, int mode, int limit);
     gpu::Device *device_ = nullptr;
     gpu::Texture texture_;

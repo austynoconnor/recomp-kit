@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <stdarg.h>
 #include <map>
 #include <algorithm>
@@ -970,6 +971,46 @@ static void test_resumable_stacks() {
     heap_free(stacks);
 }
 
+static void test_ftol2_intrinsic() {
+    section("_ftol2 intrinsic");
+    struct Case {
+        double v;
+        int64_t want;
+        bool invalid;
+    };
+    const Case cases[] = {
+        {2.7, 2, false},
+        {-2.7, -2, false},
+        {2.5, 2, false},
+        {-0.5, 0, false},
+        {0.0, 0, false},
+        {123456789012.9, 123456789012LL, false},
+        {-4294967296.5, -4294967296LL, false},
+        {1e30, INT64_MIN, true},
+        {-1e30, INT64_MIN, true},
+        {NAN, INT64_MIN, true},
+    };
+    for (const Case &k : cases) {
+        X86 c{};
+        c.fpu_cw = 0x037f;
+        c.fpu_tag = 0xffff;
+        fpush(&c, 1.0);
+        fpush(&c, k.v);
+        recomp_ftol2_value(&c);
+        const int64_t got = (int64_t)(((uint64_t)c.r[R_EDX] << 32) | c.r[R_EAX]);
+        check(got == k.want && ST(&c, 0) == 1.0 && ((c.fpu_sw & 1u) != 0) == k.invalid,
+              "_ftol2(%g) truncates to %lld (got %lld), pops once", k.v, (long long)k.want,
+              (long long)got);
+    }
+    X86 c{};
+    c.fpu_cw = 0x037f;
+    c.fpu_tag = 0xffff;
+    fpush_int(&c, INT64_MAX - 3);
+    recomp_ftol2_value(&c);
+    check(c.r[R_EAX] == 0xfffffffcu && c.r[R_EDX] == 0x7fffffffu && c.fpu_tag == 0xffff,
+          "an exact FILD value above 2^53 survives and the stack is left empty");
+}
+
 static void test_allocator() {
     section("allocator");
     check(heap_check().empty(), "the heap starts consistent with %u used blocks",
@@ -1328,6 +1369,55 @@ static void test_files(X86 *c) {
               memcmp(host + 16, g_mem + buf, 8) == 0,
           "reading after the seek returns offset 16");
     check(call_import(c, "KERNEL32.dll", "CloseHandle", {h}) == 1, "CloseHandle");
+
+    // Small reads come from a read-ahead buffer; the handle's position, a
+    // write through another handle and the end of the file behave as before.
+    {
+        std::string dir = win32_game_dir();
+        std::string path = dir + "/ahead-test.tmp";
+        uint8_t pattern[512];
+        for (int i = 0; i < 512; i++)
+            pattern[i] = (uint8_t)(i * 7 + 3);
+        FILE *af = fopen(path.c_str(), "wb");
+        check(af != nullptr, "created a read-ahead test file");
+        if (af) {
+            fwrite(pattern, 1, sizeof pattern, af);
+            fclose(af);
+        }
+        win32_invalidate_dir_cache();
+        uint32_t an = put_str("ahead-test.tmp");
+        uint32_t hr =
+            call_import(c, "KERNEL32.dll", "CreateFileA", {an, 0x80000000u, 1, 0, 3, 0x80, 0});
+        bool same = true;
+        for (int i = 0; i < 16; i++) {
+            same = call_import(c, "KERNEL32.dll", "ReadFile", {hr, buf, 4, read_count, 0}) == 1 &&
+                   rd32(read_count) == 4 && memcmp(g_mem + buf, pattern + i * 4, 4) == 0 && same;
+        }
+        check(hr != 0xffffffffu && same, "sixteen 4-byte reads return the file's bytes in order");
+        check(call_import(c, "KERNEL32.dll", "SetFilePointer", {hr, 0, 0, 1}) == 64,
+              "and leave the handle at offset 64");
+        uint32_t hw = call_import(c, "KERNEL32.dll", "CreateFileA",
+                                  {an, 0x40000000u, 1, 0, 3 /*OPEN_EXISTING*/, 0x80, 0});
+        uint32_t zz = put_str("ZZ");
+        check(hw != 0xffffffffu &&
+                  call_import(c, "KERNEL32.dll", "WriteFile", {hw, zz, 2, read_count, 0}) == 1,
+              "another handle writes the first two bytes");
+        call_import(c, "KERNEL32.dll", "CloseHandle", {hw});
+        call_import(c, "KERNEL32.dll", "SetFilePointer", {hr, 0, 0, 0});
+        check(call_import(c, "KERNEL32.dll", "ReadFile", {hr, buf, 4, read_count, 0}) == 1 &&
+                  memcmp(g_mem + buf, "ZZ", 2) == 0 && memcmp(g_mem + buf + 2, pattern + 2, 2) == 0,
+              "the reading handle sees the write, not its read-ahead copy");
+        call_import(c, "KERNEL32.dll", "SetFilePointer", {hr, 510, 0, 0});
+        check(call_import(c, "KERNEL32.dll", "ReadFile", {hr, buf, 8, read_count, 0}) == 1 &&
+                  rd32(read_count) == 2 && memcmp(g_mem + buf, pattern + 510, 2) == 0,
+              "a read across the end returns the last two bytes");
+        check(call_import(c, "KERNEL32.dll", "ReadFile", {hr, buf, 8, read_count, 0}) == 1 &&
+                  rd32(read_count) == 0,
+              "and a read at the end returns none");
+        call_import(c, "KERNEL32.dll", "CloseHandle", {hr});
+        os_unlink(path.c_str());
+        win32_invalidate_dir_cache();
+    }
 
     uint32_t missing = put_str("data\\NO_SUCH_FILE.DAT");
     check(call_import(c, "KERNEL32.dll", "CreateFileA", {missing, 0x80000000u, 1, 0, 3, 0x80, 0}) ==
@@ -4836,9 +4926,14 @@ static void test_kernel32_wide() {
               rd16(fd) == 0xa5a5,
           "GetSystemDirectoryW supports size queries without writing a buffer");
     check(call_import(&c, "KERNEL32.dll", "GetDriveTypeW", {0}) == 3, "GetDriveTypeW");
-    check(call_import(&c, "KERNEL32.dll", "GetLogicalDriveStringsW", {5, fd}) == 4 &&
-              gm_wstr(fd) == "C:\\" && rd16(fd + 8) == 0,
-          "GetLogicalDriveStringsW double terminates");
+    {
+        // C: always, then the game's virtual CD drive when its image is present.
+        uint32_t need = call_import(&c, "KERNEL32.dll", "GetLogicalDriveStringsW", {0, 0});
+        uint32_t got = call_import(&c, "KERNEL32.dll", "GetLogicalDriveStringsW", {need, fd});
+        check(need >= 5 && need <= 21 && got == need - 1 && gm_wstr(fd) == "C:\\" &&
+                  rd16(fd + 2 * got) == 0 && rd16(fd + 2 * (got - 1)) == 0,
+              "GetLogicalDriveStringsW double terminates");
+    }
     check(call_import(&c, "KERNEL32.dll", "GetVolumeInformationW",
                       {0, fd, 64, fd + 128, fd + 132, fd + 136, fd + 140, 64}) == 1 &&
               gm_wstr(fd + 140) == "FAT32",
@@ -6731,6 +6826,7 @@ int main(int argc, char **argv) {
         child_setjmp_abort(c);
     scratch = 0x0ee00000; // scratch area below the stack, inside the arena
 
+    test_ftol2_intrinsic();
     test_allocator();
     test_heap_shims(c);
     test_memory_shims_2(c);

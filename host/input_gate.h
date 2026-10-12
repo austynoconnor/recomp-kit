@@ -229,6 +229,10 @@ bool host_gate_pointer_place(int32_t x, int32_t y);
 // when this returns true. Buttons and wheel use the same position mapping.
 HitResult host_gate_window_pointer(int32_t x, int32_t y, int32_t *dx, int32_t *dy);
 bool host_gate_window_motion(int32_t x, int32_t y, double dx, double dy, HitResult *hit);
+// Relative mouse mode: motion with no position. The guest's cursor stays
+// where it is, the deltas go to DirectInput, and the pointer correction that
+// steers absolute motion toward the host pointer is dropped.
+void host_gate_relative_motion(int32_t dx, int32_t dy);
 
 // A resize is a latest-value mailbox independent of presenter acknowledgement.
 // The next input event rebuilds layout geometry at this size, including when

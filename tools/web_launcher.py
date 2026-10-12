@@ -10,9 +10,14 @@ game.toml). A game's web build, when one exists, goes in <dir>/<game id>/.
 --web-build copies a game's web build (build/web/recomp: index.html and the
 app's .js/.wasm/.data) there. Serve <dir> over HTTPS or from localhost with
 COOP/COEP headers (the game needs a secure, cross-origin isolated context);
---serve runs such a server for local testing."""
+--serve runs such a server for local testing.
+
+Each copied .js/.wasm/.data also gets a gzip twin (<name>.gz, and <name>.br
+when the brotli module is installed) that --serve sends to browsers that
+accept it; static hosts with precompressed-file support can do the same."""
 
 import argparse
+import email.utils
 import functools
 import fnmatch
 import gzip
@@ -32,6 +37,16 @@ import game_config  # noqa: E402
 PAGE_FILES = ("index.html", "app.js", "core.js", "worker.js")
 
 
+def input_hints(cfg, hints):
+    """Fixed {keyboard, controller} lines pass through; otherwise the entries
+    are actions resolved against the game's mapped pad bindings."""
+    if not hints:
+        return None
+    if "keyboard" in hints or "controller" in hints:
+        return hints
+    return {"bindings": cfg.get("controls", {}).get("mapped", {}), "actions": hints}
+
+
 def game_entry(cfg):
     game, launcher = cfg["game"], cfg["launcher"]
     return {
@@ -45,8 +60,7 @@ def game_entry(cfg):
         "installNames": launcher["install_names"],
         "minFreeMb": launcher["min_free_mb"],
         "streamAssets": launcher.get("stream_assets", False),
-        "inputHints": {"bindings": cfg.get("controls", {}).get("mapped", {}),
-                       "actions": launcher.get("input_hints", {})},
+        "inputHints": input_hints(cfg, launcher.get("input_hints")),
     }
 
 
@@ -64,6 +78,27 @@ def build(game_dirs, out):
 
 
 WEB_BUILD_SUFFIXES = (".js", ".wasm", ".data")
+# Content-Encoding for each precompressed twin, best first.
+ENCODINGS = (("br", ".br"), ("gzip", ".gz"))
+
+
+def compress_twins(path):
+    """Write <path>.gz (and .br with the brotli module) when it saves space."""
+    data = path.read_bytes()
+    packers = [(".gz", lambda b: gzip.compress(b, compresslevel=6, mtime=0))]
+    try:
+        import brotli  # optional: pip install brotli
+        packers.append((".br", lambda b: brotli.compress(b, quality=9)))
+    except ImportError:
+        pass
+    for suffix, pack in packers:
+        twin = path.with_name(path.name + suffix)
+        packed = pack(data)
+        if len(packed) < len(data) * 0.9:
+            twin.write_bytes(packed)
+            shutil.copystat(path, twin)
+        elif twin.exists():
+            twin.unlink()
 
 
 def copy_web_build(game_id, build, out):
@@ -74,19 +109,17 @@ def copy_web_build(game_id, build, out):
     for f in build.iterdir():
         if f.is_file() and (f.name in ("index.html", "runtime.html") or f.suffix in WEB_BUILD_SUFFIXES):
             shutil.copy2(f, dest / f.name)
-            if f.suffix in (".wasm", ".data"):
-                # Precompress generated engine files using a bounded buffer.
-                # Original game archives remain raw for byte-range access.
-                packed = dest / (f.name + ".gz")
-                temporary = packed.with_suffix(packed.suffix + ".tmp")
-                with f.open("rb") as source, temporary.open("wb") as target:
-                    with gzip.GzipFile(filename="", mode="wb", fileobj=target, mtime=0) as encoder:
-                        shutil.copyfileobj(source, encoder, 1024 * 1024)
-                temporary.replace(packed)
+            if f.suffix in WEB_BUILD_SUFFIXES:
+                compress_twins(dest / f.name)
 
 
-def hosted_assets(games, asset_dirs, out):
-    """Expose only configured game files, without copying private inputs into the site."""
+def hosted_assets(games, asset_dirs, out, export=False):
+    """Expose only configured game files, without copying private inputs into the site.
+
+    With `export`, the files are copied into <out>/<game id>/assets/ instead and
+    every URL is relative, so the directory can be uploaded to any static host
+    that answers HEAD with Content-Length and byte-range GETs (the streamed path
+    needs both; the full-import path needs only GET)."""
     routes = {}
     for game in games:
         if game["id"] not in asset_dirs:
@@ -112,15 +145,24 @@ def hosted_assets(games, asset_dirs, out):
             if parts[-1] in (".stamp", ".manifest.json", ".DS_Store") or parts[0] == "__MACOSX":
                 continue
             stat = path.stat()
-            url = "/_game-assets/%s/%s" % (quote(game["id"], safe=""), quote(rel, safe="/"))
-            routes[url] = resolved
+            if export:
+                copy = Path(out) / game["id"] / "assets" / rel
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(resolved, copy)
+                url = "assets/" + quote(rel, safe="/")  # relative to assets.json
+            else:
+                url = "/_game-assets/%s/%s" % (quote(game["id"], safe=""), quote(rel, safe="/"))
+                routes[url] = resolved
             entries.append({"path": rel, "size": stat.st_size, "mtime": int(stat.st_mtime),
                             "isDir": False, "url": url})
         dest = Path(out) / game["id"]
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "assets.json").write_text(json.dumps({"files": entries}) + "\n")
         game["hostedAssets"] = "./%s/assets.json" % game["id"]
-        game["assetBase"] = "/_game-assets/%s" % quote(game["id"], safe="")
+        # The runtime page lives in <out>/<game id>/, so a relative base names
+        # the exported copy from there.
+        game["assetBase"] = ("../%s/assets" % quote(game["id"], safe="") if export
+                             else "/_game-assets/%s" % quote(game["id"], safe=""))
     (Path(out) / "games.json").write_text(json.dumps(games, indent=2) + "\n")
     return routes
 
@@ -142,40 +184,49 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
         route = self.asset_route(path)
         if route in self.asset_files:
             return str(self.asset_files[route])
-        if getattr(self, "precompressed", None):
-            return str(self.precompressed)
         return super().translate_path(path)
 
-    def guess_type(self, path):
-        if getattr(self, "precompressed", None) and path == str(self.precompressed):
-            return self.original_content_type
-        return super().guess_type(path)
+    def compressed_twin(self, route):
+        """The precompressed program file to send instead, if the browser takes it."""
+        path = Path(super().translate_path(route))
+        if path.suffix not in WEB_BUILD_SUFFIXES or not path.is_file():
+            return None
+        accepted = {part.split(";")[0].strip() for part in self.headers.get("Accept-Encoding", "").split(",")}
+        for encoding, suffix in ENCODINGS:
+            twin = path.with_name(path.name + suffix)
+            if encoding in accepted and twin.is_file() and twin.stat().st_mtime >= path.stat().st_mtime:
+                return path, twin, encoding
+        return None
+
+    def send_compressed(self, path, twin, encoding):
+        stat = path.stat()
+        since = self.headers.get("If-Modified-Since")
+        if since:
+            try:
+                if int(stat.st_mtime) <= email.utils.parsedate_to_datetime(since).timestamp():
+                    self.send_response(304)
+                    self.send_header("Vary", "Accept-Encoding")
+                    self.end_headers()
+                    return None
+            except (TypeError, ValueError):
+                pass
+        file = open(twin, "rb")
+        self.send_response(200)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Encoding", encoding)
+        self.send_header("Content-Length", str(twin.stat().st_size))
+        self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+        self.send_header("Vary", "Accept-Encoding")
+        self.end_headers()
+        return file
 
     def send_head(self):
         route = self.asset_route(self.path)
         self.byte_range = None
-        self.precompressed = None
-        self.vary_encoding = False
         if not route.startswith("/_game-assets/"):
-            original = Path(super().translate_path(self.path))
-            if original.suffix in (".wasm", ".data") and original.is_file():
-                self.vary_encoding = True
-                encodings = {}
-                for item in self.headers.get("Accept-Encoding", "").split(","):
-                    parts = item.strip().split(";")
-                    quality = 1.0
-                    for parameter in parts[1:]:
-                        if parameter.strip().startswith("q="):
-                            try:
-                                quality = float(parameter.strip()[2:])
-                            except ValueError:
-                                quality = 0.0
-                    encodings[parts[0].lower()] = quality
-                packed = Path(str(original) + ".gz")
-                if (encodings.get("gzip", encodings.get("*", 0)) > 0 and not self.headers.get("Range")
-                        and packed.is_file() and packed.stat().st_mtime >= original.stat().st_mtime):
-                    self.precompressed = packed
-                    self.original_content_type = super().guess_type(str(original))
+            twin = self.compressed_twin(route)
+            if twin:
+                return self.send_compressed(*twin)
             return super().send_head()
         path = self.asset_files.get(route)
         if path is None:
@@ -210,6 +261,10 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(206 if requested else 200)
         self.send_header("Content-Type", self.guess_type(str(path)))
         self.send_header("Accept-Ranges", "bytes")
+        # The streamed reader keys its Cache Storage pieces on this, so a
+        # replaced game file never reuses stale pieces.
+        stat = path.stat()
+        self.send_header("ETag", '"%x-%x"' % (stat.st_size, stat.st_mtime_ns))
         self.send_header("Content-Length", str(end - start + 1))
         if requested:
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
@@ -230,10 +285,6 @@ class IsolatedHandler(http.server.SimpleHTTPRequestHandler):
             remaining -= len(chunk)
 
     def end_headers(self):
-        if getattr(self, "precompressed", None):
-            self.send_header("Content-Encoding", "gzip")
-        if getattr(self, "vary_encoding", False):
-            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
@@ -256,16 +307,20 @@ def main():
     parser.add_argument("--serve", type=int, nargs="?", const=8000, metavar="PORT")
     parser.add_argument("--asset-dir", action="append", default=[], metavar="ID=DIR",
                         help="serve game files automatically from a local installation")
+    parser.add_argument("--export-assets", action="store_true",
+                        help="copy the --asset-dir files into the site for a static host "
+                             "instead of serving them (no --serve needed)")
     args = parser.parse_args()
     games = build(args.game_dir, args.out)
     ids = {g["id"] for g in games}
     asset_dirs = {}
     for spec in args.asset_dir:
         game_id, sep, directory = spec.partition("=")
-        if not sep or game_id not in ids or args.serve is None:
-            parser.error("--asset-dir needs ID=DIR for a known game and --serve")
+        if not sep or game_id not in ids or (args.serve is None and not args.export_assets):
+            parser.error("--asset-dir needs ID=DIR for a known game and --serve or --export-assets")
         asset_dirs[game_id] = directory
-    asset_files = hosted_assets(games, asset_dirs, args.out) if asset_dirs else {}
+    asset_files = (hosted_assets(games, asset_dirs, args.out, export=args.export_assets)
+                   if asset_dirs else {})
     for spec in args.web_build:
         game_id, sep, build_dir = spec.partition("=")
         if not sep or game_id not in ids:
