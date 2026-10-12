@@ -139,10 +139,22 @@ enum ComIface : uint16_t {
     // version 8 vtables.
     IF_DINPUT8,
     IF_DINPUTDEVICE8,
+    // DirectSound 8 (dsound.cpp): the same objects as DirectSound, reached
+    // through the version 8 vtables, which append a few methods.
+    IF_DSOUND8,
+    IF_DSBUFFER8,
+    // Direct3D 8 (d3d8.cpp): views of the Direct3D 9 objects through the
+    // version 8 vtables.
+    IF_D3D8,
+    IF_D3DDEVICE8,
+    IF_D3DTEXTURE8,
+    IF_D3DCUBETEXTURE8,
+    IF_D3DSURFACE8,
+    IF_D3DVERTEXBUFFER8,
+    IF_D3DINDEXBUFFER8,
     IF_D3DXBUFFER,
     IF_D3DVERTEXSHADER9,
     IF_D3DPIXELSHADER9,
-    IF_DSOUND8,
     IF_COUNT
 };
 
@@ -213,7 +225,6 @@ enum ComKind : uint16_t {
     K_D3DXBUFFER,     // assembled shader bytes or a NUL-terminated diagnostic
     K_D3D9VS,
     K_D3D9PS,
-    K_DSOUND8,
 };
 
 // A DirectInput joystick axis's DIPROP_RANGE, DIPROP_DEADZONE and
@@ -277,6 +288,7 @@ struct ComObj {
     uint32_t ckey_dst_lo = 0, ckey_dst_hi = 0;
     bool has_ckey_src = false, has_ckey_dst = false;
     int32_t lock_count = 0;
+    uint32_t lock_lo = 0, lock_hi = 0; // vertex/index buffers: bytes locked
     // Once handed a writable Lock pointer, the guest may keep using it forever.
     bool retained_pointer = false;
     bool is_primary = false;

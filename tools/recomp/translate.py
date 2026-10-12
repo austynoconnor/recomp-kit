@@ -132,6 +132,19 @@ def configure(cfg):
     RESUMABLE_STACKS = cfg["translate"].get("resumable_stacks", False)
     EXTRA_ENTRY_POINTS = frozenset(int(a) for a in cfg["translate"].get("entry_points", ()))
     FUNCTION_ALIGNMENT = cfg["translate"].get("function_alignment", 16)
+    # The CRT's __setjmp3/longjmp pair, when the game links one; the defaults
+    # are Populous's. Rebuilt in place so every holder of INTRINSIC_BODY sees it.
+    global INTRINSIC_SETJMP, INTRINSIC_LONGJMP
+    INTRINSIC_SETJMP = int(cfg["translate"].get("setjmp", INTRINSIC_SETJMP))
+    INTRINSIC_LONGJMP = int(cfg["translate"].get("longjmp", INTRINSIC_LONGJMP))
+    INTRINSIC_BODY.clear()
+    INTRINSIC_BODY[INTRINSIC_LONGJMP] = "recomp_longjmp(c);"
+    INTRINSIC_BODY[INTRINSIC_SETJMP] = "recomp_setjmp(c);"
+    # The CRT's _ftol2, when named: run natively, and in line at a direct call.
+    global INTRINSIC_FTOL2
+    INTRINSIC_FTOL2 = int(cfg["translate"].get("ftol2", 0)) or None
+    if INTRINSIC_FTOL2 is not None:
+        INTRINSIC_BODY[INTRINSIC_FTOL2] = "recomp_ftol2(c);"
     global OPERAND_REDIRECTS, INSTRUCTION_PATCHES, DATA_SEEDS
     OPERAND_REDIRECTS = {int(r["at"]): (int(r["from"]), int(r["to"]))
                          for r in cfg["translate"].get("operand_redirects", ())}
@@ -253,7 +266,7 @@ def hook_kind(addr, listed, alt_owner, provenance, evidence, intrinsics):
     place the program *names* has a meaning stable enough to hook, and the
     exclusions come first:
 
-      intrinsic     a substituted body (setjmp, longjmp).  Its address is an
+      intrinsic     a substituted body (setjmp, longjmp, _ftol2).  Its address is an
                     implementation detail of this translator.
       block         a recovered block, or an alternate entry a jump table
                     names.  A jump-table target is an internal block of its
@@ -295,8 +308,10 @@ GUEST_SHIM_END = 0x10000000
 
 # Runtime intrinsics: guest addresses whose translated body is replaced by a
 # call into runtime/intrinsics.h.
+# Populous's addresses; a game names its own with [translate] setjmp/longjmp.
 INTRINSIC_LONGJMP = 0x0055DB78          # _longjmp
 INTRINSIC_SETJMP  = 0x0055DAFC          # __setjmp3, buffer at ESP+4
+INTRINSIC_FTOL2 = None                  # _ftol2, only when [translate] ftol2 names it
 INTRINSIC_BODY = {
     INTRINSIC_LONGJMP: "recomp_longjmp(c);",
     INTRINSIC_SETJMP:  "recomp_setjmp(c);",   # single-call fallback, indirect only
@@ -2678,8 +2693,13 @@ class Translator(object):
         out = []
         if fn.addr in INTRINSIC_BODY:
             self.stats["_intrinsic_body"] += 1
+            # An entry inside the replaced body (a data pointer that happens
+            # to land there) has no translated code to enter; reaching one is
+            # reported rather than left an undefined symbol.
             return ["/* runtime intrinsic */",
-                    "void fn_%08x(X86 *c) { %s }" % (fn.addr, INTRINSIC_BODY[fn.addr])]
+                    "void fn_%08x(X86 *c) { %s }" % (fn.addr, INTRINSIC_BODY[fn.addr])] + [
+                "void fn_%08x(X86 *c) { recomp_unmodelled(c, %s); }" % (e, hexlit(e))
+                for e in entries if e != fn.addr]
         # Following branches can pull in addresses BELOW the entry, so the
         # first instruction in address order is not necessarily where this
         # function starts.  Jump to the entry explicitly rather than falling
@@ -3191,17 +3211,32 @@ class Translator(object):
             t = self.branch_target(ins)
             if t is None:
                 raise TranslateError("indirect conditional jump")
-            return ["if (%s) { %s }" % (cond, " ".join(self.goto_target(fn, t, ins)))]
+            go = self.goto_target(fn, t, ins)
+            if t < ins.addr and self.is_spin_wait(fn, t, i):
+                self.stats["_spin_wait"] += 1
+                go = ["recomp_spin_wait(c);"] + go
+            return ["if (%s) { %s }" % (cond, " ".join(go))]
 
         if m == "JMP":
             t = self.branch_target(ins)
             if t is not None:
+                if t < ins.addr and self.is_spin_wait(fn, t, i):
+                    self.stats["_spin_wait"] += 1
+                    return ["recomp_spin_wait(c);"] + self.goto_target(fn, t, ins)
                 return self.goto_target(fn, t, ins)
             return self.emit_indirect_jump(fn, i, ins, ops[0])
 
         if m == "CALL":
             if ins.ops and ins.ops[0].startswith("0x"):
                 t = int(ins.ops[0], 16)
+                if t == INTRINSIC_FTOL2:
+                    # The CRT's float-to-integer helper, called a thousand
+                    # times a frame: its effect runs here with no guest frame.
+                    # Only the return address it would have left below ESP,
+                    # dead stack, is not written.
+                    self.stats["_intrinsic_ftol2"] += 1
+                    L.append("recomp_ftol2_value(c); c->eip = %s;" % hexlit(nxt))
+                    return L
                 L.append("c->r[4] -= 4; wr32(c->r[4], %s);" % hexlit(nxt))
                 if t == INTRINSIC_SETJMP:
                     # The host jmp_buf has to belong to a frame that is still
@@ -3523,7 +3558,11 @@ class Translator(object):
             port = read_op(ops[0], 32) if ops[0].kind == "reg" else read_op(ops[0], 32)
             L.append("recomp_out(c, %s, %s, %d);" % (port, read_op(ops[1], size), size // 8))
             return L
-        if m in ("NOP", "WAIT", "PAUSE"):
+        if m == "PAUSE":
+            # The spin-loop hint: whoever the loop waits for may be another
+            # guest thread, which runs only when this one hands over.
+            return ["recomp_spin_wait(c);"]
+        if m in ("NOP", "WAIT"):
             return [";"]
         if m == "EMMS":
             # Every x87 register empty; TOP and the values are left alone.
@@ -3571,6 +3610,47 @@ class Translator(object):
         if GUEST_SHIM_BASE <= t < GUEST_SHIM_END or t == INTRINSIC_SETJMP:
             return
         raise TranslateError("call to %08x, which is outside the image" % t)
+
+    #: What a spin-wait loop body may contain: loads into registers and
+    #: tests of them. Anything else (a store, a call, an address register
+    #: that moves) makes it real work rather than a wait.
+    SPIN_BODY = frozenset(("MOV", "MOVZX", "MOVSX", "CMP", "TEST"))
+    SPIN_MAX = 6
+
+    def is_spin_wait(self, fn, t, i):
+        """True when the backward branch at insn i to t closes a loop that only
+        re-reads the same memory until another thread changes it.
+
+        Guest threads run one at a time (runtime/README.md), and every call
+        into the runtime is where they hand over. A loop like
+        `L: mov dl,[ecx+0x20]; test dl,dl; je L` makes no call, so the thread
+        that would set the byte never runs and the wait never ends. Such a
+        loop gets a scheduling checkpoint on its back edge. Walking a list
+        (`mov esi,eax; mov eax,[esi]; ...`) moves its address register and is
+        left alone, so ordinary loops pay nothing."""
+        j = fn.index.get(t)
+        if j is None or j >= i or i - j > self.SPIN_MAX:
+            return False
+        body = fn.insns[j:i]
+        written, bases, loads = set(), set(), 0
+        for k, ins in enumerate(body):
+            if ins.mnem not in self.SPIN_BODY or ins.rep or len(ins.ops) != 2:
+                return False
+            if j + k + 1 < len(fn.insns) and not fn.contiguous[j + k]:
+                return False
+            try:
+                ops = [parse_operand(o) for o in ins.ops]
+            except TranslateError:
+                return False
+            if ins.mnem not in ("CMP", "TEST"):
+                if ops[0].kind != "reg":
+                    return False      # a store
+                written.add(ops[0].reg)
+            for o in ops:
+                if o.kind == "mem":
+                    loads += 1
+                    bases.update(r for r in (o.base, o.index) if r is not None)
+        return loads > 0 and not (bases & written) and 4 not in written
 
     def goto_target(self, fn, t, ins):
         if t in fn.index:
@@ -6019,8 +6099,39 @@ def main():
             fh.write("__attribute__((constructor)) static void %sregister(void)\n"
                      "{\n    recomp_module_register(&%smodule);\n}\n" % (P, P))
         else:
-            fh.write("""int recomp_is_call_return(uint32_t target)
+            fh.write("""/* Every guest RET asks whether it lands after a CALL. One bit per byte of
+ * the span the call sites cover, built once at load, answers that without a
+ * binary search over all of them (1% of the browser's game thread). */
+static unsigned char *recomp_call_return_bits;
+static uint32_t recomp_call_return_lo, recomp_call_return_span;
+__attribute__((constructor)) static void recomp_call_return_bits_init(void)
 {
+    uint32_t i, lo, span;
+    unsigned char *bits;
+    if (!recomp_call_return_count)
+        return;
+    lo = recomp_call_returns[0];
+    span = recomp_call_returns[recomp_call_return_count - 1] - lo + 1u;
+    if (span > (64u << 20))
+        return; /* the binary search below still answers */
+    bits = (unsigned char *)calloc(span / 8u + 1u, 1);
+    if (!bits)
+        return;
+    for (i = 0; i < recomp_call_return_count; ++i) {
+        uint32_t o = recomp_call_returns[i] - lo;
+        bits[o >> 3] |= (unsigned char)(1u << (o & 7u));
+    }
+    recomp_call_return_lo = lo;
+    recomp_call_return_span = span;
+    recomp_call_return_bits = bits;
+}
+
+int recomp_is_call_return(uint32_t target)
+{
+    if (recomp_call_return_bits) {
+        uint32_t o = target - recomp_call_return_lo;
+        return o < recomp_call_return_span && ((recomp_call_return_bits[o >> 3] >> (o & 7u)) & 1u);
+    }
     uint32_t lo = 0, hi = recomp_call_return_count;
     while (lo < hi) {
         uint32_t mid = lo + (hi - lo) / 2;

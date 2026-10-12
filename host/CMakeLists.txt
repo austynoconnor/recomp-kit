@@ -77,6 +77,7 @@ set_tests_properties(keypad_tests PROPERTIES LABELS nogame)
 add_executable(controls_tests ${HOST}/controls/json.cpp ${HOST}/controls/layout.cpp
                               ${HOST}/controls/builtin_layouts.cpp ${HOST}/controls/layout_store.cpp
                               ${HOST}/controls/router.cpp ${HOST}/controls/vpad.cpp
+                              ${HOST}/controls/key_remap.cpp
                               ${HOST}/controls/binding.cpp ${HOST}/controls/overlay_view.cpp
                               ${HOST}/controls/raster.cpp ${HOST}/controls/overlay_paint.cpp
                               ${HOST}/controls/pad_art.cpp
@@ -154,13 +155,15 @@ function(pop_host target)
 endfunction()
 
 # The mixer, its output device and the synth: portable, over SDL audio.
-set(POP_AUDIO_SOURCES ${HOST}/audio/mixer.cpp ${HOST}/audio/sdl_sink.cpp ${HOST}/audio/midi_synth.cpp
+set(POP_AUDIO_SOURCES ${HOST}/audio/mixer.cpp ${HOST}/audio/sdl_sink.cpp ${HOST}/audio/web_sink.cpp
+                      ${HOST}/audio/midi_synth.cpp
                       ${HOST}/audio_math.cpp ${HOST}/audio_capture.cpp)
 set(POP_CORE_LIBS recomp_platform recomp_runtime recomp_snapshot recomp_dx recomp_mods lua host_common gpu_backend)
 # The on-screen controls the presenter draws (controls_host.cpp is the app's own).
 set(POP_CONTROLS_SOURCES ${HOST}/controls/json.cpp ${HOST}/controls/layout.cpp
                          ${HOST}/controls/builtin_layouts.cpp ${HOST}/controls/layout_store.cpp
                          ${HOST}/controls/router.cpp ${HOST}/controls/vpad.cpp
+                         ${HOST}/controls/key_remap.cpp
                          ${HOST}/controls/binding.cpp ${HOST}/controls/overlay_view.cpp
                          ${HOST}/controls/overlay.cpp ${HOST}/controls/raster.cpp
                           ${HOST}/controls/overlay_paint.cpp ${HOST}/controls/pad_art.cpp
@@ -271,7 +274,9 @@ if(TARGET recomp_gen)
     endif()
     if(EXISTS ${RECOMP_GAME_DIR}/mods/core)
       file(COPY ${RECOMP_GAME_DIR}/mods/core DESTINATION ${web_resources}/mods FILES_MATCHING PATTERN "*.toml"
-           PATTERN "*.json" PATTERN "*.lua" PATTERN "*.png" PATTERN "*.bmp" PATTERN "*.txt")
+           PATTERN "*.json" PATTERN "*.lua" PATTERN "*.png" PATTERN "*.bmp" PATTERN "*.txt"
+           # Data-only mods replace game settings files (Crazy Taxi's Taxi.cfg).
+           PATTERN "*.cfg" PATTERN "*.ini")
     endif()
     # The player page (tools/web_launcher.py --web-build places it beside the launcher).
     set(APP ${RECOMP_APP_NAME})
@@ -285,6 +290,7 @@ if(TARGET recomp_gen)
     if(NOT RECOMP_WEB_LINK_OPT_LEVEL MATCHES "^[012]$")
       message(FATAL_ERROR "RECOMP_WEB_LINK_OPT_LEVEL must be 0, 1 or 2")
     endif()
+    configure_file(${POP_ROOT}/web/player/input-hints.js ${POP_OUT}/input-hints.js COPYONLY)
     target_link_options(recomp_app PRIVATE
       # Emscripten also optimizes at link time. Release's per-target compile
       # flags do not reach this step; without -g0 every translated function's
@@ -294,14 +300,18 @@ if(TARGET recomp_gen)
       # Keep diagnostic stack traces resolvable without embedding DWARF in
       # the large Wasm. This sidecar stays in the private build directory.
       $<$<STREQUAL:${RECOMP_WEB_LINK_OPT_LEVEL},0>:--emit-symbol-map>
-      # Avoid the old 24-worker/1 GiB startup burst on the user's desktop.
-      # The pool and heap can grow after startup when the guest needs them.
+      # Prewarm a modest pool instead of instantiating the large translated
+      # module in dozens of idle workers. Additional guest threads can be
+      # created while the browser's host loop continues servicing events.
       -pthread -sPTHREAD_POOL_SIZE=8 -sWASMFS
+      --js-library ${POP_ROOT}/web/player/fetch-backend.js
       -sINITIAL_MEMORY=536870912 -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4294967296
       -sSTACK_SIZE=8388608 -sDEFAULT_PTHREAD_STACK_SIZE=16777216
       -sENVIRONMENT=web,worker -sEXIT_RUNTIME=0 -sINVOKE_RUN=0
       -sEXPORTED_RUNTIME_METHODS=ENV,callMain,FS
       --preload-file ${web_resources}@/app/resources)
+    set_property(TARGET recomp_app APPEND PROPERTY LINK_DEPENDS
+      ${POP_ROOT}/web/player/fetch-backend.js)
   elseif(APPLE)
     pop_mac_bundle(recomp_app)
   else()

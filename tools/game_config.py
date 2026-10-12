@@ -58,6 +58,8 @@ HEAP_END = 0x0e000000        # runtime/x86.h GUEST_HEAP_END; the mods' heap star
 GUEST_SIZE_DEFAULT = 0x10000000   # runtime/x86.h GUEST_SIZE: the arena, 256 MB unless a module needs more
 AUX_REQUIRED_KEYS = ("name", "path", "sha256", "base", "size")
 
+WEB_VIDEO = ("off", "mpeg1", "all")
+
 
 def windows_version(value):
     """Decode major.minor[.build]; keep the historical 9x default and 6.1 SP1."""
@@ -89,6 +91,12 @@ def load_controls(controls, touch, source):
         raise ValueError("%s: [controls] default_layout must be one of %s, not %r"
                          % (source, ", ".join(CONTROLS_LAYOUTS), controls["default_layout"]))
     pad = controls.setdefault("pad", "mapped")
+    mouse = controls.setdefault("mouse", "absolute")
+    if mouse not in ("absolute", "relative"):
+        raise ValueError('%s: [controls] mouse must be "absolute" or "relative", not %r' % (source, mouse))
+    cursor = controls.setdefault("cursor", "free")
+    if cursor not in ("free", "tracked"):
+        raise ValueError('%s: [controls] cursor must be "free" or "tracked", not %r' % (source, cursor))
     if pad not in ("native", "mapped", "off"):
         raise ValueError('%s: [controls] pad must be "native", "mapped" or "off", not %r' % (source, pad))
 
@@ -117,25 +125,68 @@ def load_controls(controls, touch, source):
             raise ValueError("%s: [controls.mapped] %s names no key: %r" % (source, key, value))
     controls["mapped"] = mapped
 
+    # Extra keys that also press a key the game reads, {"Up" = "W"}: the
+    # DirectInput keyboard reports the target held while the alias is held,
+    # so a game with one binding per action takes arrows and WASD alike.
+    aliases = controls.setdefault("key_aliases", {})
+    if not isinstance(aliases, dict) or not all(
+            k in KEY_NAMES and isinstance(v, str) and v in KEY_NAMES and k != v
+            for k, v in aliases.items()):
+        raise ValueError("%s: [controls] key_aliases must map key names to other key names "
+                         "(%s), not %r" % (source, ", ".join(KEY_NAMES), aliases))
+
     native = dict(controls.get("native", {}))
-    unknown_native = sorted(k for k in native if k not in ("xinput", "dinput", "axes", "buttons"))
+    unknown_native = sorted(k for k in native
+                            if k not in ("xinput", "dinput", "axes", "buttons", "axis_range",
+                                         "keys", "dpad"))
     if unknown_native:
-        raise ValueError("%s: [controls.native] may name only xinput, dinput, axes, buttons, not %s"
-                         % (source, ", ".join(unknown_native)))
+        raise ValueError("%s: [controls.native] may name only xinput, dinput, axes, buttons, "
+                         "axis_range, keys, dpad, not %s" % (source, ", ".join(unknown_native)))
     native.setdefault("xinput", True)
     native.setdefault("dinput", True)
     if not isinstance(native["xinput"], bool) or not isinstance(native["dinput"], bool):
         raise ValueError("%s: [controls.native] xinput and dinput must be booleans" % source)
+    # One DIJOYSTATE axis per pad axis (left X, left Y, right X, right Y, left
+    # trigger, right trigger). "+y" / "-y" map a control onto one half of an
+    # axis (combined pedals); an axis fed twice reads the larger deflection.
     axes = native.setdefault("axes", ["x", "y", "z", "rz", "rx", "ry"])
-    if not isinstance(axes, list) or sorted(axes) != sorted(NATIVE_AXES):
-        raise ValueError("%s: [controls.native] axes must list all six of %s exactly once, not %r"
-                         % (source, ", ".join(NATIVE_AXES), axes))
+    if (not isinstance(axes, list) or len(axes) != 6
+            or not all(isinstance(a, str) and a.lstrip("+-") in NATIVE_AXES
+                       and len(a) - len(a.lstrip("+-")) <= 1 for a in axes)):
+        raise ValueError("%s: [controls.native] axes must name six of %s (optionally "
+                         "+/- for a half axis), not %r" % (source, ", ".join(NATIVE_AXES), axes))
     buttons = native.setdefault(
         "buttons", ["square", "cross", "circle", "triangle", "l1", "r1", "l2", "r2", "select",
                    "start", "l3", "r3", "ps"])
     if not isinstance(buttons, list) or sorted(buttons) != sorted(PAD_BUTTONS):
         raise ValueError("%s: [controls.native] buttons must list all thirteen of %s exactly once, not %r"
                          % (source, ", ".join(PAD_BUTTONS), buttons))
+    # The range every joystick axis reports until the game sets DIPROP_RANGE.
+    # A game that never sets one was written against its own controller's
+    # driver default (Crazy Taxi expects about -128..127).
+    axis_range = native.setdefault("axis_range", [-32768, 32767])
+    if (not isinstance(axis_range, list) or len(axis_range) != 2
+            or not all(isinstance(v, int) and not isinstance(v, bool) for v in axis_range)
+            or not -2**31 <= axis_range[0] < axis_range[1] < 2**31):
+        raise ValueError("%s: [controls.native] axis_range must be [min, max] integers with "
+                         "min < max, not %r" % (source, axis_range))
+    # keys = { W = "Up", ... }: the key the game sees for each physical key
+    # (host/controls/key_remap.h). Modifiers and Escape stay themselves: the
+    # host tracks modifiers separately and Escape frees the mouse.
+    keys = native.setdefault("keys", {})
+    if not isinstance(keys, dict):
+        raise ValueError("%s: [controls.native] keys must be a table of key = key" % source)
+    fixed = ("LCtrl", "LShift", "LAlt", "Escape")
+    for physical, guest in keys.items():
+        if (physical not in KEY_NAMES or not isinstance(guest, str) or guest not in KEY_NAMES
+                or physical in fixed or guest in fixed):
+            raise ValueError("%s: [controls.native] keys: %s = %r must name two keys of %s "
+                             "(not a modifier or Escape)" % (source, physical, guest, ", ".join(KEY_NAMES)))
+    # "stick": the d-pad also moves the left stick's axes, for games that
+    # read menus and steering only from axes; "hat" (default): only the POV.
+    if native.setdefault("dpad", "hat") not in ("hat", "stick"):
+        raise ValueError('%s: [controls.native] dpad must be "hat" or "stick", not %r'
+                         % (source, native["dpad"]))
     controls["native"] = native
     return controls
 
@@ -159,9 +210,23 @@ def load(game_dir):
     alignment = translate.setdefault("function_alignment", 16)
     if type(alignment) is not int or alignment <= 0:
         raise ValueError("%s: [translate] function_alignment must be a positive integer" % source)
+    for key in ("setjmp", "longjmp", "ftol2"):
+        if key in translate and (type(translate[key]) is not int or translate[key] <= 0):
+            raise ValueError("%s: [translate] %s must be a guest address" % (source, key))
     tracks = cfg.setdefault("media", {}).setdefault("cd_tracks", [])
     if not isinstance(tracks, list) or not all(isinstance(v, str) for v in tracks):
         raise ValueError("%s: [media] cd_tracks must be a list of strings" % source)
+    # A virtual CD-ROM drive for a game that checks for its disc by volume
+    # label: the drive letter and the label the player's own disc carries.
+    cd = cfg["media"]
+    cd.setdefault("cd_label", "")
+    cd.setdefault("cd_drive", "D")
+    if not isinstance(cd["cd_label"], str) or len(cd["cd_label"]) > 32:
+        raise ValueError("%s: [media] cd_label must be a string of at most 32 characters" % source)
+    if (not isinstance(cd["cd_drive"], str) or len(cd["cd_drive"]) != 1
+            or not cd["cd_drive"].isalpha() or cd["cd_drive"].upper() in "ABC"):
+        raise ValueError("%s: [media] cd_drive must be one letter from D to Z" % source)
+    cd["cd_drive"] = cd["cd_drive"].upper()
     cfg.setdefault("hooks", {})
     cfg.setdefault("bundle", {}).setdefault("exclude", [])
     touch = cfg.setdefault("touch", {})
@@ -189,6 +254,19 @@ def load(game_dir):
     for key in ("title", "store"):
         if not isinstance(launcher[key], str):
             raise ValueError("%s: [launcher] %s must be a string" % (source, key))
+    if not isinstance(launcher.setdefault("stream_assets", False), bool):
+        raise ValueError("%s: [launcher] stream_assets must be a boolean" % source)
+    # FFmpeg in the web build: "off" (the default), "mpeg1" (MPEG-1 video
+    # only, the DirectShow movie path) or "all" (the desktop decoder list).
+    if launcher.setdefault("web_video", "off") not in WEB_VIDEO:
+        raise ValueError("%s: [launcher] web_video must be one of %s" % (source, ", ".join(WEB_VIDEO)))
+    # The control lines under the game in the browser: {keyboard = "...",
+    # controller = "..."}, the controller one with {name}/{confirm}/{back}.
+    hints = launcher.setdefault("input_hints", {})
+    if not isinstance(hints, dict) or not all(
+            k in ("keyboard", "controller") and isinstance(v, str) for k, v in hints.items()):
+        raise ValueError('%s: [launcher] input_hints may set only "keyboard" and "controller" '
+                         "strings, not %r" % (source, hints))
     min_free = launcher.setdefault("min_free_mb", 0)
     if not isinstance(min_free, int) or min_free < 0:
         raise ValueError("%s: [launcher] min_free_mb must be a non-negative integer" % source)

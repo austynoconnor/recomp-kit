@@ -386,12 +386,14 @@ export async function importGame(game, source, store, { onProgress, signal, free
       continue;
     }
     const writer = await store.createWriter(f.relative);
-    const reader = (await source.stream(f.entry)).getReader();
+    let reader;
     try {
+      reader = (await source.stream(f.entry)).getReader();
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         if (signal && signal.aborted) {
+          await reader.cancel();
           await writer.abort();
           await store.writeText(MANIFEST, JSON.stringify(manifest));
           return { result: "cancelled", copied, skipped };
@@ -402,6 +404,7 @@ export async function importGame(game, source, store, { onProgress, signal, free
         onProgress && onProgress({ ...progress });
       }
     } catch (e) {
+      await reader?.cancel().catch(() => {});
       await writer.abort();
       await store.writeText(MANIFEST, JSON.stringify(manifest));
       const full = e && (e.name === "QuotaExceededError" || /quota/i.test(String(e.message)));

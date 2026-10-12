@@ -38,7 +38,7 @@
     <p id="message" role="status" aria-live="polite"></p>
   </section>
   <div id="stage" hidden></div>
-
+  <p id="input-hints" role="status" aria-live="polite" hidden></p>
 </main>
 <script>
 "use strict";
@@ -47,7 +47,7 @@ const stopButton = document.getElementById("stop");
 const welcome = document.getElementById("welcome");
 const stage = document.getElementById("stage");
 const message = document.getElementById("message");
-
+const hints = document.getElementById("input-hints");
 let frame = null;
 let releaseSession = null;
 let pending = false;
@@ -79,7 +79,7 @@ startButton.addEventListener("click", async () => {
         stage.hidden = false;
         welcome.hidden = true;
         stopButton.hidden = false;
-
+        hints.hidden = false;
         stopButton.focus();
       });
     });
@@ -100,7 +100,8 @@ function stopGame() {
   stage.hidden = true;
   welcome.hidden = false;
   stopButton.hidden = true;
-
+  hints.hidden = true;
+  hints.textContent = "";
   releaseSession?.();
   releaseSession = null;
   message.textContent = "Game stopped. Cached files and saves are kept.";
@@ -108,6 +109,10 @@ function stopGame() {
 }
 stopButton.addEventListener("click", stopGame);
 window.addEventListener("pagehide", stopGame);
+window.addEventListener("message", event => {
+  if (event.origin === location.origin && event.source === frame?.contentWindow &&
+      event.data?.type === "recomp-input-hints") hints.textContent = event.data.text;
+});
 </script>
 </body>
 </html>

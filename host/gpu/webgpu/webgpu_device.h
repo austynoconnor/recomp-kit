@@ -136,6 +136,7 @@ class WebGpuDevice final : public Device {
         bool bindings_dirty = true;
         WGPURenderPipeline bound = nullptr;
         std::vector<std::function<void(CommandStatus, double)>> callbacks;
+        std::vector<size_t> ring_chunks; // ring chunks this recording staged bytes into
         bool viewport_set = false;
         Viewport viewport{};
     };
@@ -158,7 +159,7 @@ class WebGpuDevice final : public Device {
     WGPURenderPipeline variant_for(Cmd &c);
     WGPUSampler sampler_for(const SamplerState &s);
     void bind(Cmd &c, bool compute);
-    Binding stage_bytes(const void *bytes, uint64_t count);
+    Binding stage_bytes(Cmd &c, const void *bytes, uint64_t count);
     WGPUBindGroupLayout make_layout(bool compute);
 
     WGPUInstance instance_ = nullptr;
@@ -171,12 +172,21 @@ class WebGpuDevice final : public Device {
     WGPUTexture dummy_texture_ = nullptr;
     WGPUTextureView dummy_view_ = nullptr;
     WGPUSampler dummy_sampler_ = nullptr;
-    // set_bytes data: a ring of storage buffers, reused once nothing recording
-    // can still name an old offset.
+    // set_bytes data: a ring of storage buffers. A chunk is reused once no
+    // command buffer still recording has staged into it; work already
+    // submitted is safe, because queue writes run after earlier submissions.
     std::vector<WGPUBuffer> ring_;
+    std::vector<uint32_t> ring_users_; // recordings that staged into each chunk
     size_t ring_chunk_ = 0;
     uint64_t ring_used_ = 0;
     size_t recording_count_ = 0;
+    // Destroyed while something was recording: freed at the next commit that
+    // leaves nothing recording. A browser frees GPU memory only on destroy or
+    // at garbage collection, so a bare release kept every freed frame-sized
+    // texture alive for seconds (gigabytes in the GPU process).
+    std::vector<WGPUTexture> doomed_textures_;
+    std::vector<WGPUBuffer> doomed_buffers_;
+    void free_doomed();
 
     uint64_t next_id_ = 1;
     std::unordered_map<uint64_t, Tex> textures_;

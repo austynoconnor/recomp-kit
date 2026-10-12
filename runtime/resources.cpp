@@ -1,8 +1,23 @@
 #include "resources.h"
 #include "loader.h"
+#include "memory.h"
 #include "../platform/os.h"
 
+#include <stdio.h>
+#include <string.h>
+#include <algorithm>
+#include <map>
+
 namespace {
+// Resource-only modules: mapped size by guest base, and base by host path.
+std::map<uint32_t, uint32_t> &resource_modules() {
+    static auto *m = new std::map<uint32_t, uint32_t>();
+    return *m;
+}
+std::map<std::string, uint32_t> &resource_module_paths() {
+    static auto *m = new std::map<std::string, uint32_t>();
+    return *m;
+}
 bool fail(std::string *why, const char *message) {
     if (why)
         *why = message;
@@ -24,9 +39,16 @@ struct Directory {
     bool relative(uint32_t offset, uint32_t bytes) const {
         return offset <= size && bytes <= size - offset;
     }
-    bool open() {
+    bool open(uint32_t module = 0) {
         image = loader_image_base();
         image_size = loader_image_size();
+        if (module && module != image) {
+            auto it = resource_modules().find(module);
+            if (it == resource_modules().end())
+                return fail(why, "not a module with resources");
+            image = it->first;
+            image_size = it->second;
+        }
         if (!image || !gm_valid(image, image_size) || image_size < 64 || rd16(image) != 0x5a4d)
             return fail(why, "no loaded PE image");
         uint32_t nt = rd32(image + 0x3c);
@@ -142,10 +164,11 @@ bool identifier(uint32_t p, ResourceName &out, std::string *why) {
 }
 } // namespace
 
-uint32_t resource_find(uint32_t type_id_or_name, uint32_t name_id_or_name, std::string *why) {
+uint32_t resource_find(uint32_t type_id_or_name, uint32_t name_id_or_name, std::string *why,
+                       uint32_t module) {
     Directory dir(why);
     ResourceName type, name;
-    if (!dir.open() || !identifier(type_id_or_name, type, why) ||
+    if (!dir.open(module) || !identifier(type_id_or_name, type, why) ||
         !identifier(name_id_or_name, name, why))
         return 0;
     uint32_t type_dir, name_dir, first, count;
@@ -164,21 +187,22 @@ uint32_t resource_find(uint32_t type_id_or_name, uint32_t name_id_or_name, std::
     uint32_t entry = dir.root + data_offset;
     return dir.data(entry, nullptr) ? entry : 0;
 }
-uint32_t resource_data(uint32_t entry, uint32_t *size, std::string *why) {
+uint32_t resource_data(uint32_t entry, uint32_t *size, std::string *why, uint32_t module) {
     if (size)
         *size = 0;
     Directory dir(why);
-    return dir.open() ? dir.data(entry, size) : 0;
+    return dir.open(module) ? dir.data(entry, size) : 0;
 }
-bool resource_names(uint32_t type_id_or_name, std::vector<ResourceName> *names, std::string *why) {
+bool resource_names(uint32_t type_id_or_name, std::vector<ResourceName> *names, std::string *why,
+                    uint32_t module) {
     if (!names)
         return fail(why, "missing resource-name output");
     names->clear();
     Directory dir(why);
     ResourceName type;
     uint32_t type_dir, first, count;
-    if (!dir.open() || !identifier(type_id_or_name, type, why) || !dir.child(0, type, type_dir) ||
-        !dir.entries(type_dir, first, count))
+    if (!dir.open(module) || !identifier(type_id_or_name, type, why) ||
+        !dir.child(0, type, type_dir) || !dir.entries(type_dir, first, count))
         return false;
     for (uint32_t i = 0; i < count; ++i) {
         ResourceName name;
@@ -189,4 +213,66 @@ bool resource_names(uint32_t type_id_or_name, std::vector<ResourceName> *names, 
         names->push_back(name);
     }
     return true;
+}
+
+// The file's headers and each section's raw bytes at its RVA, in a zeroed
+// block of SizeOfImage. Relocations are not applied and imports are not
+// bound: nothing in the block is ever executed.
+uint32_t resource_module_load(const std::string &host_path) {
+    auto known = resource_module_paths().find(host_path);
+    if (known != resource_module_paths().end())
+        return known->second;
+    FILE *f = fopen(host_path.c_str(), "rb");
+    if (!f)
+        return 0;
+    std::vector<uint8_t> file;
+    uint8_t chunk[65536];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof chunk, f)) > 0 && file.size() < (64u << 20))
+        file.insert(file.end(), chunk, chunk + n);
+    fclose(f);
+    auto u16 = [&](size_t at) -> uint32_t {
+        return at + 2 <= file.size() ? (uint32_t)(file[at] | file[at + 1] << 8) : 0;
+    };
+    auto u32 = [&](size_t at) -> uint32_t {
+        return at + 4 <= file.size()
+                   ? (uint32_t)file[at] | (uint32_t)file[at + 1] << 8 |
+                         (uint32_t)file[at + 2] << 16 | (uint32_t)file[at + 3] << 24
+                   : 0;
+    };
+    if (u16(0) != 0x5a4d)
+        return 0;
+    uint32_t nt = u32(0x3c);
+    if (u32(nt) != 0x4550 || u16(nt + 24) != 0x10b)
+        return 0;
+    uint32_t sections = u16(nt + 6), opt_size = u16(nt + 20);
+    uint32_t image_size = u32(nt + 24 + 56), headers = u32(nt + 24 + 60);
+    if (!image_size || image_size > (64u << 20) || headers > file.size() || headers > image_size)
+        return 0;
+    uint32_t base = heap_alloc(image_size, true, 0x10000);
+    if (!base)
+        return 0;
+    memcpy(gm_ptr(base), file.data(), headers);
+    uint32_t table = nt + 24 + opt_size;
+    for (uint32_t i = 0; i < sections; ++i) {
+        uint32_t sh = table + 40 * i;
+        uint32_t vsize = u32(sh + 8), va = u32(sh + 12), raw_size = u32(sh + 16),
+                 raw = u32(sh + 20);
+        if (raw >= file.size() || va >= image_size)
+            continue;
+        uint32_t copy = std::min(raw_size, vsize ? vsize : raw_size);
+        copy = std::min<uint32_t>(copy, (uint32_t)file.size() - raw);
+        copy = std::min(copy, image_size - va);
+        memcpy(gm_ptr(base + va), file.data() + raw, copy);
+    }
+    resource_modules()[base] = image_size;
+    resource_module_paths()[host_path] = base;
+    return base;
+}
+bool resource_module_known(uint32_t module) {
+    return !module || module == loader_image_base() || resource_modules().count(module) != 0;
+}
+void resource_modules_reset() {
+    resource_modules().clear();
+    resource_module_paths().clear();
 }

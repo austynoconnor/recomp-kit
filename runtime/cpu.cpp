@@ -85,6 +85,8 @@ int32_t module_index(const RecompModule *m, uint32_t target) {
 }
 } // namespace
 
+void sched_checkpoint(); // kernel32.cpp: the scheduler's turn-taking point
+
 extern "C" {
 
 const int recomp_resumable_stacks = RECOMP_RESUMABLE_STACKS;
@@ -209,10 +211,13 @@ void recomp_unknown_call(X86 *c, uint32_t target) {
     // call through a null pointer faults at the call, and there are no
     // instructions at it to interpret. Reading them would be the very
     // dereference this page exists to refuse.
-    if (target >= GUEST_NULL_LIMIT && interp_call(c, target))
-        return;
+    if (target >= GUEST_NULL_LIMIT) {
+        recomp_callback_note_unwind();
+        if (interp_call(c, target))
+            return;
+    }
     if (target == GUEST_RETURN_SENTINEL) {
-        recomp_callback_return(c);
+        recomp_callback_jump_return(c);
         // With no matching live callback this is an ordinary undeliverable
         // CALL, whose pushed return still needs to be consumed.
         return_as_if_ret(c);
@@ -336,6 +341,12 @@ void recomp_unmodelled(X86 *c, uint32_t addr) {
     abort();
 }
 
+// A spin-wait's back edge (translate.py is_spin_wait) or a PAUSE. The flag the
+// loop polls belongs to another guest thread, which runs only at a checkpoint.
+void recomp_spin_wait(X86 *) {
+    sched_checkpoint();
+}
+
 // INT3: a breakpoint no debugger will handle. On Windows that is an unhandled
 // exception, so the process ends; so does this one, with the address.
 void recomp_breakpoint(X86 *c, uint32_t addr) {
@@ -454,6 +465,7 @@ void recomp_setjmp(X86 *c) {
 }
 
 void recomp_longjmp(X86 *c) {
+    recomp_callback_note_unwind();
     uint32_t buf = rd32(c->r[R_ESP] + 4);
     int value = (int)rd32(c->r[R_ESP] + 8);
     auto it = setjmps().find(buf);

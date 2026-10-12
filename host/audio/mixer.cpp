@@ -49,6 +49,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <time.h>
 
 #include <assert.h>
@@ -104,6 +105,12 @@ struct Segment {
     int completion = 0; // 0 none, 1 a generation, 2 queued bytes
     uint64_t generation = 0;
     uint32_t bytes = 0;
+    // A DirectSound streaming buffer played in place (Channel::ring). Render
+    // mutex. `played` counts the ring frames played since it started, `head`
+    // is where in the ring the player is, and `fresh_until` is how far (on
+    // the `played` count) the guest's writes reach: at most one lap ahead.
+    bool ring = false;
+    double played = 0, head = 0, fresh_until = 0;
     uint32_t frames() const {
         return uint32_t(l.size());
     }
@@ -114,6 +121,12 @@ struct Player {
     double played = 0; // frames rendered since play(), at the source rates
     float volume = 1.0f;
     bool playing = false;
+    // A ring whose fresh frames have all been played has nothing new in it:
+    // the guest has stopped feeding it (a stalled game thread) and what is
+    // left is old sound, so it plays as silence until the next write instead
+    // of repeating. The gain ramps over one block either way, so the cut and
+    // the return do not click.
+    float ring_gain = 1.0f;
 };
 
 std::mutex g_render_mutex;
@@ -158,6 +171,23 @@ inline void sample_at(const Segment &s, double pos, float *l, float *r) {
 
 // Render mutex held. Adds `frames` of this player into the mix.
 void render_player(int32_t id, Player &p, float *left, float *right, uint32_t frames) {
+    const float gain = p.volume;
+    float ring_from = p.ring_gain, ring_to = p.ring_gain;
+    if (!p.segments.empty() && p.segments.front()->ring) {
+        Segment &s = *p.segments.front();
+        // RECOMP_AUDIO_STALE_SILENCE=0 keeps the old repeat, for comparison.
+        static const bool silence = [] {
+            const char *v = recomp_env("AUDIO_STALE_SILENCE");
+            return !(v && v[0] == '0');
+        }();
+        ring_to =
+            !silence || s.fresh_until - s.played >= 1.0 ? 1.0f : 0.0f; // under a frame is rounding
+        s.played += double(frames) * double(s.rate) / g_render_rate;
+    } else {
+        ring_to = 1.0f;
+    }
+    p.ring_gain = ring_to;
+    const float ring_step = frames ? (ring_to - ring_from) / float(frames) : 0.0f;
     for (uint32_t i = 0; i < frames && p.playing; ++i) {
         if (p.segments.empty()) {
             p.playing = false;
@@ -171,8 +201,9 @@ void render_player(int32_t id, Player &p, float *left, float *right, uint32_t fr
         }
         float l, r;
         sample_at(s, p.pos, &l, &r);
-        left[i] += l * p.volume;
-        right[i] += r * p.volume;
+        const float g = gain * (ring_from + ring_step * float(i + 1));
+        left[i] += l * g;
+        right[i] += r * g;
         const double step = double(s.rate) / g_render_rate;
         p.pos += step;
         p.played += step;
@@ -193,6 +224,8 @@ void render_player(int32_t id, Player &p, float *left, float *right, uint32_t fr
             break; // the next segment starts at the carried-over position
         }
     }
+    if (!p.segments.empty() && p.segments.front()->ring)
+        p.segments.front()->head = p.pos;
 }
 
 // The whole mix for one block, into deinterleaved buffers that arrive zeroed.
@@ -862,6 +895,8 @@ extern "C" int32_t host_audio_write(int32_t id, const void *pcm, uint32_t offset
             if (!channel->ring)
                 return 0;
             channel->ring->loop = true;
+            channel->ring->ring = true;
+            channel->ring->fresh_until = double(channel->ring->frames());
             channel->ring_from_frame = from / frame;
             channel->ring_head_frames = from ? (total - from) / frame : 0;
             // The rest of the current lap, played once before the loop takes
@@ -972,6 +1007,14 @@ extern "C" int32_t host_audio_write(int32_t id, const void *pcm, uint32_t offset
                 // these same floats. Data lock, then render lock, is the
                 // order the render thread never takes the other way round.
                 std::lock_guard<std::mutex> render(g_render_mutex);
+                // How far ahead of the player the run ends: a run just behind
+                // the head is the next lap's sound, as DirectSound has it.
+                const double n = double(ring->frames());
+                double ahead = std::fmod(double(at) - ring->head, n);
+                if (ahead < 0)
+                    ahead += n;
+                ring->fresh_until = std::max(ring->fresh_until,
+                                             ring->played + std::min(n, ahead + double(written)));
                 float *left = ring->l.data() + at;
                 float *right = ring->r.data() + at;
                 for (uint32_t i = 0; i < written; ++i) {

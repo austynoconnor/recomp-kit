@@ -14,7 +14,6 @@
   #canvas { display: block; width: 100vw; height: 100vh; outline: none; }
   #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
             text-align: center; padding: 0 16px; white-space: pre-line; pointer-events: none; }
-  [hidden] { display: none !important; }
   #status a { pointer-events: auto; color: #8cf; }
 </style>
 </head>
@@ -36,8 +35,15 @@ function status(text, back) {
   statusEl.hidden = !text;
 }
 const log = [];
-function record(t) { log.push(t); if (log.length > 512) log.shift(); }
 window.recompLog = log; // for tests
+// Keep diagnostics bounded during long runs; the browser console need not
+// retain every line emitted by translated code.
+function record(text) {
+  if (text.includes("[host] could not prepare streamed game files"))
+    status("Game data could not be prepared. Stop and choose Start game to retry.");
+  log.push(text);
+  if (log.length > 1000) log.splice(0, log.length - 1000);
+}
 
 async function gameId() {
   const parts = location.pathname.split("/").filter(Boolean);
@@ -45,7 +51,81 @@ async function gameId() {
   return decodeURIComponent(parts[parts.length - 1] || "");
 }
 
+async function prepareGame(game) {
+  const worker = new Worker("../worker.js", { type: "module" });
+  let nextId = 0;
+  const pending = new Map();
+  worker.onmessage = ({ data }) => {
+    if (data.progress) {
+      const p = data.progress;
+      const percent = p.bytesTotal ? Math.floor(p.bytesDone / p.bytesTotal * 100) : 0;
+      status(`Downloading game · ${percent}%\n${data.startup ? `${(p.bytesDone / 1024 ** 2).toFixed(1)} of ${(p.bytesTotal / 1024 ** 2).toFixed(1)} MB` : `${(p.bytesDone / 1024 ** 3).toFixed(2)} of ${(p.bytesTotal / 1024 ** 3).toFixed(2)} GB`}\n${data.startup ? "Other game files load as they are needed." : "Your next visit will use the cached files."}`);
+      return;
+    }
+    const request = pending.get(data.id);
+    if (!request) return;
+    pending.delete(data.id);
+    if (data.error) request.reject(new Error(data.error));
+    else request.resolve(data.result);
+  };
+  worker.onerror = () => {
+    for (const request of pending.values()) request.reject(new Error("Game files could not be loaded. Try Start again."));
+    pending.clear();
+  };
+  const request = (cmd, extra = {}) => new Promise((resolve, reject) => {
+    const id = ++nextId;
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, cmd, game, ...extra });
+  });
+  try {
+    status("Checking game files…");
+    const cached = await request("status");
+    if (cached.status.state === "ready") return false;
+    if (!game.hostedAssets) throw new Error(`${game.title} has not been imported yet.`);
+    status("Preparing your first play…\nDownloading game files automatically.");
+    const manifestUrl = new URL(game.hostedAssets, new URL("../games.json", location.href)).href;
+    const streamed = game.streamAssets && game.assetBase;
+    const outcome = await request(streamed ? "streamSetup" : "import", { kind: "hosted", manifestUrl });
+    if (outcome.result === "noSpace") throw new Error("There isn't enough browser storage for this game.");
+    if (outcome.result !== "done") throw new Error(outcome.error || "Game download did not finish. Stop and try Start again to resume.");
+    return !!streamed;
+  } finally {
+    worker.terminate();
+  }
+}
+
+// The program (.wasm) is far larger than a browser's HTTP cache keeps per
+// entry, so it lives in Cache Storage instead: one cheap If-Modified-Since
+// check per visit, a full download only when the build changed, and the
+// stored copy when the server cannot be reached.
+async function programResponse(url) {
+  let store = null, hit;
+  try {
+    store = await caches.open("recomp-program-v1");
+    hit = await store.match(url);
+  } catch { store = null; }
+  const headers = {};
+  const stamp = hit && hit.headers.get("Last-Modified");
+  if (stamp) headers["If-Modified-Since"] = stamp;
+  let response;
+  try {
+    response = await fetch(url, { headers, cache: "no-store" });
+  } catch (error) {
+    if (hit) return hit;
+    throw error;
+  }
+  if (response.status === 304 && hit) return hit;
+  if (!response.ok) {
+    if (hit) return hit;
+    throw new Error(`The game's program could not be downloaded (${response.status}).`);
+  }
+  if (store && response.headers.get("Last-Modified"))
+    await store.put(url, response.clone()).catch(() => {});
+  return response;
+}
+
 async function start() {
+  if (window.parent === window) throw new Error("Open the player page and choose Start game.");
   if (!crossOriginIsolated) throw new Error("This page must be served cross-origin isolated (COOP/COEP headers).");
   if (!navigator.gpu) throw new Error("This browser has no WebGPU.");
   const id = await gameId();
@@ -54,14 +134,9 @@ async function start() {
   if (!game) throw new Error(`No game "${id}" in the launcher's games.json.`);
   document.title = game.title;
 
-  // The game must have been imported by the launcher first.
-  let dir = await navigator.storage.getDirectory();
-  try {
-    for (const p of [id, "game"]) dir = await dir.getDirectoryHandle(p);
-    await dir.getFileHandle(game.executable);
-  } catch {
-    throw new Error(`${game.title} has not been imported yet.`);
-  }
+  // Hosted games populate OPFS automatically; existing imported copies work too.
+  const streamed = await prepareGame(game);
+  status("Starting game…");
 
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
   if (!adapter) throw new Error("WebGPU gave no adapter.");
@@ -85,16 +160,27 @@ async function start() {
     canvas,
     preinitializedWebGPUDevice: device,
     noInitialRun: true,
-    print: (t) => { record(t); console.log(t); },
-    printErr: (t) => { record(t); console.warn(t); },
+    print: record,
+    printErr: record,
     setStatus: (t) => status(t ? t : ""),
     onAbort: (what) => status(`The game stopped: ${what}`, true),
     preRun: [() => {
       const m = Module;
       m.ENV.RECOMP_PROFILE_DIR = `/opfs/${id}/profile`;
+      if (streamed) {
+        m.ENV.RECOMP_WEB_ASSET_BASE = new URL(game.assetBase, location.href).href;
+        m.ENV.RECOMP_WEB_ASSET_INDEX = `/opfs/${id}/game/.stream-index`;
+      }
       const extra = new URLSearchParams(location.search);
       for (const [k, v] of extra) if (k.startsWith("RECOMP_")) m.ENV[k] = v;
     }],
+    instantiateWasm(imports, done) {
+      programResponse(new URL("@APP@.wasm", location.href).href)
+        .then((response) => WebAssembly.instantiateStreaming(response, imports))
+        .then((result) => done(result.instance, result.module))
+        .catch((error) => status(`The game could not start: ${error.message}`, true));
+      return {};
+    },
     onRuntimeInitialized() {
       status("");
       canvas.focus();
@@ -102,8 +188,17 @@ async function start() {
     },
   };
   window.Module = Module;
+  // The loader script must match the program: a browser may keep an old
+  // copy of it in its HTTP cache after an update while the program above is
+  // fetched fresh, and the pair then fails to link ("function import
+  // requires a callable"). Revalidate it and load it under its own date.
+  let version = "";
+  try {
+    const head = await fetch("@APP@.js", { method: "HEAD", cache: "no-cache" });
+    version = head.headers.get("Last-Modified") || head.headers.get("ETag") || "";
+  } catch {}
   const script = document.createElement("script");
-  script.src = "@APP@.js";
+  script.src = version ? `@APP@.js?v=${encodeURIComponent(version)}` : "@APP@.js";
   script.onerror = () => status("The game's web build is missing.", true);
   document.body.append(script);
 }
@@ -111,6 +206,17 @@ async function start() {
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("click", () => canvas.focus());
 start().catch((e) => status(e.message, true));
+</script>
+<script type="module">
+import { startInputHints } from "./input-hints.js";
+// The game's own control lines, when its game.toml names them.
+const parts = location.pathname.split("/").filter(Boolean);
+if (parts.length && parts[parts.length - 1].includes(".")) parts.pop();
+const id = decodeURIComponent(parts[parts.length - 1] || "");
+const games = await fetch("../games.json").then(r => r.json()).catch(() => []);
+const custom = games.find?.(g => g.id === id)?.inputHints || null;
+startInputHints(text => parent.postMessage({ type: "recomp-input-hints", text }, location.origin),
+                undefined, custom);
 </script>
 </body>
 </html>

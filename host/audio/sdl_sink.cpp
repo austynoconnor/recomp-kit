@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <vector>
 #include <functional>
@@ -149,5 +150,12 @@ class SdlSink final : public AudioSink {
 } // namespace
 
 std::unique_ptr<AudioSink> make_sdl_sink() {
+#ifdef __EMSCRIPTEN__
+    // SDL's browser backend renders on the page's main thread (a
+    // ScriptProcessorNode); RECOMP_AUDIO_SINK=sdl keeps it, for A/B runs.
+    const char *which = recomp_env("AUDIO_SINK");
+    if (!which || strcmp(which, "sdl") != 0)
+        return make_web_sink();
+#endif
     return std::make_unique<SdlSink>();
 }
