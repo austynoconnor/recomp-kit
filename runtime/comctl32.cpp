@@ -622,6 +622,10 @@ const ImportShim shims[] = {
     {"COMCTL32.dll", "ImageList_Write", 2, fail},
     {"COMCTL32.dll", "ImageList_DragLeave", 1, yes},
     {"COMCTL32.dll", "ImageList_DragShowNolock", 1, yes},
+    // InitCommonControls (exported by ordinal 17): no arguments, nothing to
+    // register for a host with no native common controls.
+    {"COMCTL32.dll", "InitCommonControls", 0, yes},
+    {"COMCTL32.dll", "ord17", 0, yes},
     {"COMCTL32.dll", "InitializeFlatSB", 1, yes},
     {"COMCTL32.dll", "_TrackMouseEvent", 1, yes},
     {"COMCTL32.dll", "FlatSB_GetScrollPos", 2, win32_get_scroll_pos},
