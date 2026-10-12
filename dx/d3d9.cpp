@@ -1763,6 +1763,45 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
             d.fog_depth, d9_pipeline(dev->id).transform[3][11],
             d9_pipeline(dev->id).transform[3][15], fbits(pl.rs[195]), fbits(pl.rs[175]));
     }
+    if (trace9()) {
+        // The vertex layout (stream.offset:type/usage.index) and the first
+        // few vertex shader constants, which a draw's shape depends on.
+        char line[1024];
+        size_t at = 0;
+        for (uint32_t i = 0; i + 8 <= d.decl_size && at + 32 < sizeof line; i += 8) {
+            const uint8_t *e = d.decl + i;
+            if (e[0] == 0xff)
+                break;
+            at += (size_t)snprintf(line + at, sizeof line - at, " %u.%u:%u/%u.%u", e[0],
+                                   e[2] | e[3] << 8, e[4], e[6], e[7]);
+        }
+        for (uint32_t r = 0; r < 4 && r < d.vconst_count && at + 64 < sizeof line; ++r)
+            at += (size_t)snprintf(line + at, sizeof line - at, " c%u(%g,%g,%g,%g)", r,
+                                   d.vconst[r * 4], d.vconst[r * 4 + 1], d.vconst[r * 4 + 2],
+                                   d.vconst[r * 4 + 3]);
+        // The first vertex the draw reads, from stream 0.
+        uint32_t first = d.start;
+        if (d.index_buffer) {
+            ComObj *ib = com_get(d.index_buffer);
+            size_t isz = d.index_size == 4 ? 4 : 2;
+            if (ib && (size_t)d.start * isz + isz <= ib->blob.size()) {
+                first = ib->blob[d.start * isz] | ib->blob[d.start * isz + 1] << 8;
+                if (isz == 4)
+                    first |= (uint32_t)ib->blob[d.start * 4 + 2] << 16 |
+                             (uint32_t)ib->blob[d.start * 4 + 3] << 24;
+            }
+            first += (uint32_t)d.base_vertex;
+        }
+        ComObj *vb = com_get(d.stream[0].buffer);
+        size_t vat = (size_t)d.stream[0].offset + (size_t)first * d.stream[0].stride;
+        at += (size_t)snprintf(line + at, sizeof line - at, " v%u:", first);
+        for (uint32_t i = 0; vb && i < d.stream[0].stride && i < 64 && vat + i < vb->blob.size() &&
+                             at + 4 < sizeof line;
+             ++i)
+            at += (size_t)snprintf(line + at, sizeof line - at, "%02x", vb->blob[vat + i]);
+        fprintf(stderr, "d3d9trace f%u decl%s stride %u start %u base %d\n", g_presents9, line,
+                d.stream[0].stride, d.start, d.base_vertex);
+    }
     host_d9_draw(&d);
     bool color_write = !pl.rs_set[168] || (pl.rs[168] & 0xf) != 0;
     bool z_write = (!pl.rs_set[14] || pl.rs[14]) && (!pl.rs_set[7] || pl.rs[7]);
