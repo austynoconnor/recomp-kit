@@ -713,6 +713,7 @@ class WebGpuRenderer final : public D9Backend {
         if (rs[RS_FOGENABLE]) {
             uint32_t table = rs[RS_FOGTABLEMODE];
             pparams.fog_mode = table == 3 ? 2 : table == 1 ? 3 : table == 2 ? 4 : 1;
+            pparams.fog_depth = (int32_t)d.fog_depth;
             uint32_t fc = rs[RS_FOGCOLOR];
             pparams.fog_color[0] = ((fc >> 16) & 255) / 255.0f;
             pparams.fog_color[1] = ((fc >> 8) & 255) / 255.0f;
@@ -1806,9 +1807,15 @@ class WebGpuRenderer final : public D9Backend {
             ds.stencilReadMask = rs[RS_STENCILMASK] & 0xff;
             ds.stencilWriteMask = rs[RS_STENCILWRITEMASK] & 0xff;
         }
+        // WebGPU allows depth bias on triangles only, strips included. Strips
+        // went without it, so a game that lifts coplanar decals, shadows and
+        // road markings off a surface with D3DRS_ZBIAS/DEPTHBIAS (Crazy Taxi
+        // draws much of its city as strips) flickered against it.
+        const bool triangles = p.topology == WGPUPrimitiveTopology_TriangleList ||
+                               p.topology == WGPUPrimitiveTopology_TriangleStrip;
         const bool strip = p.topology == WGPUPrimitiveTopology_TriangleStrip ||
                            p.topology == WGPUPrimitiveTopology_LineStrip;
-        if (!strip) {
+        if (triangles) {
             ds.depthBias = p.bias;
             ds.depthBiasSlopeScale = p.slope;
         }

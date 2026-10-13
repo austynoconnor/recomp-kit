@@ -305,7 +305,7 @@ struct Machine {
         case R_CONST: {
             int32_t idx = (int32_t)s.index;
             if (s.rel)
-                idx += (int32_t)std::floor(a0[0] + 0.5f);
+                idx += (int32_t)std::floor(a0[s.rel_comp & 3] + 0.5f);
             raw = idx >= 0 ? constant((uint32_t)idx) : V4();
             break;
         }

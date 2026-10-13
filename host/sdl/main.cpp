@@ -33,6 +33,7 @@
 #include "../input_gate.h"
 #include "../input_touch.h"
 #include "../controls/controls_host.h"
+#include "../controls/key_remap.h"
 #include "../../mods/controls_settings.h"
 #include "../controls/gamepad_sdl.h"
 #include "../../mods/mods_internal.h"
@@ -403,7 +404,7 @@ bool pointer_capture_wanted() {
     // surface of its own: while it is still showing plain windows - a launcher,
     // a settings form - it draws no cursor, so hiding the host one would leave
     // the player with nothing to aim.
-    if (!ddraw_gdi_primary_active())
+    if (!ddraw_gdi_primary_active() && !d3d9_display_active())
         return false;
     if (!g_focused || !g_window || !window_focused() || g_escape_held)
         return false;
@@ -423,7 +424,8 @@ void update_platform_pointer_capture() {
     // cursor follows it there (host/input_gate.cpp), so it stays hidden while
     // the game draws its own cursor - captured or not, focused or not - and
     // there is never a second cursor beside the game's.
-    hide = hide || (platform_ui_pointer_capture_supported() && ddraw_gdi_primary_active() &&
+    hide = hide || (platform_ui_pointer_capture_supported() &&
+                    (ddraw_gdi_primary_active() || d3d9_display_active()) &&
                     !mods_page_visible() && !mods_controls_editing() && !g_close_requested);
 #endif
     if (hide && !g_pointer_hidden) {
@@ -723,6 +725,19 @@ bool is_modifier_scancode(SDL_Scancode sc) {
            sc == SDL_SCANCODE_LGUI || sc == SDL_SCANCODE_RGUI || sc == SDL_SCANCODE_CAPSLOCK;
 }
 
+// [controls.native] keys: the key the game sees for each physical key.
+controls::KeyRemap &key_remap() {
+    static controls::KeyRemap remap;
+    static const bool parsed = [] {
+        std::string error;
+        if (!remap.parse(RECOMP_CONTROLS_NATIVE_KEYS, &error))
+            fprintf(stderr, "[controls] native keys ignored: %s\n", error.c_str());
+        return true;
+    }();
+    (void)parsed;
+    return remap;
+}
+
 void handle_key(const SDL_KeyboardEvent &event, bool down) {
     if (is_modifier_scancode(event.scancode)) {
         PendingInput e;
@@ -743,7 +758,14 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
             queue_or_apply(release);
         }
     }
-    const uint16_t key = host_keycode_from_scancode(event.scancode);
+    SDL_Scancode scancode = event.scancode;
+    if (!key_remap().empty()) {
+        int guest = scancode;
+        if (!key_remap().press(scancode, down, &guest))
+            return; // another physical key still holds (or never held) this one
+        scancode = (SDL_Scancode)guest;
+    }
+    const uint16_t key = host_keycode_from_scancode(scancode);
     if (key == 0xffff)
         return;
     PendingInput e;
@@ -752,7 +774,7 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
     e.down = down;
     // Keep the keyboard layout and Shift/Caps Lock when producing text.
     // Keycodes above the Unicode range are not characters.
-    const SDL_Keycode plain = SDL_GetKeyFromScancode(event.scancode, event.mod, false);
+    const SDL_Keycode plain = SDL_GetKeyFromScancode(scancode, event.mod, false);
     e.character = plain < 0x40000000 && plain >= 0x20 ? (uint32_t)plain : 0u;
     e.flags = host_modifier_flags_from_sdl(event.mod);
     queue_or_apply(e);
@@ -764,6 +786,8 @@ void handle_key(const SDL_KeyboardEvent &event, bool down) {
 void note_focus(bool focused) {
     if (focused == g_focused && g_guest_activated)
         return;
+    if (!focused)
+        key_remap().release_all(); // the keys held now come up without telling us
     g_focused = focused;
     g_guest_activated = true;
     PendingInput e;

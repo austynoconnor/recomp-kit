@@ -2,6 +2,93 @@
 
 ## Unreleased
 
+- 2026-10-13 — Claude Opus 5.5: Generic fixes from `giggity-re4`
+  (Resident Evil 4) brought to `giggity-d3d8`. Pointer capture now also
+  starts for Direct3D 9/8 games once they present a frame (it was gated on
+  a DirectDraw/GDI primary, so mouse-look games never captured the mouse).
+  IDirect3DDevice9::UpdateTexture and UpdateSurface copy whole levels from a
+  system-memory texture (games streaming video or decoded images that way
+  drew nothing). user32 GetQueueStatus returns 0. DirectShow can play a
+  movie through the game's own renderer filter (the DX9 SDK Texture3D9
+  pattern): the kit supplies the source filter, pin, allocator and samples
+  and pushes MPEG-1 frames decoded by FFmpeg into the game's
+  IMemInputPin::Receive. A prebuilt web FFmpeg can be used through the
+  RECOMP_FFMPEG_PREBUILT environment variable. Native dx_tests: 141225
+  checks, 0 failures.
+
+- 2026-10-12 — Claude Opus 5.5: Skinned characters on the GPU renderers
+  (from `giggity-bully`).
+  Bully's player and students were invisible in the browser; two bugs.
+  A relative constant read in a vs_2_0+ shader carries a token naming the
+  address register component it adds (`c[a0.y + n]`); the parser skipped
+  it, so every such read used `a0.x` and four-bone skinning took all four
+  bones from the first index. The parser now records the component, or the
+  loop counter `aL`, and the WGSL/GLSL/MSL generator and the CPU
+  rasterizer use it. And the effect stores Bully's bones as a 3x4
+  parameter while the shader reads a 4x3 constant: SetMatrixTransposeArray
+  kept only the top three rows of each matrix, dropping the translation,
+  so every skinned mesh collapsed to the world origin. A matrix set with
+  SetMatrix* is now kept whole and cut to the shader table's shape when
+  bound; raw values whose dimensions are the shader's swapped are read
+  transposed. In the browser the scheduler's clock reads adapt to the
+  import rate (every 50 to 200 microseconds; Bully makes about half a
+  million imports a second and the clock read is a call out to
+  JavaScript: 3% of its game thread before), and `dx_report_failure`
+  skips its string work when the same call fails again. Debugging aids:
+  `RECOMP_D3D9_TRACE_FRAME` also prints each draw's vertex layout, c0-c3
+  and first vertex; `RECOMP_D3DX_TRACE` prints each effect matrix
+  parameter's shape and first matrix once.
+
+- 2026-10-11 — Claude Opus 5.5: Faster streamed games in the browser
+  (from `giggity-bully`). A callback's own RET now returns straight to
+  `guest_call` instead of through a longjmp, unless an exception, unwind,
+  guest longjmp or the interpreter ran since the call began
+  (`recomp_callback_note_unwind`); a guest CALL or JMP to the sentinel
+  still uses the checkpoint. In a browser each longjmp is a JavaScript
+  exception, and Bully's effect state manager callbacks spent two thirds of
+  its game thread on them (5 to about 20 frames a second once fixed).
+  ReadFile reads the clock only around real host reads, not for bytes
+  served from the read-ahead buffer. The streamed file backend asks the
+  server about a missing file once (a game retrying a failed read had sent
+  a HEAD request per retry). `RECOMP_TRACE_DISK` reports read-ahead refills
+  and their cost.
+
+- 2026-10-11 15:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8`: depth bias on triangle strips (WebGPU).
+  - Coplanar surfaces flickered in the browser (Crazy Taxi buildings,
+    shadows, adverts, road markings). `host/gpu/webgpu/d3d9_webgpu.cpp`
+    applied D3DRS_DEPTHBIAS / SLOPESCALEDEPTHBIAS only to non-strip
+    topologies, so triangle strips got none. A frame trace of Crazy Taxi
+    showed 2128 of 2180 draws are strips, 179 of them with a ZBIAS (1-16,
+    from its ZBiasConfig.txt), all drawn unbiased. Bias now applies to
+    triangle lists and strips. Lines and points, where WebGPU requires it to
+    be 0, no longer get it either (previously line and point lists did).
+  - The D3D9 frame trace (`RECOMP_D3D9_TRACE_FRAME`) also prints each draw's
+    `zbias` and `slope`.
+
+- 2026-10-10 17:25 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-d3d8` (from `giggity-mgs2` `09c64c1` and `5dda06e`):
+  - **Fog measured the wrong distance.** Table fog used the vertex's
+    clip-space z, so a game that sets FOGSTART 0 / FOGEND 1 (fog by depth
+    buffer value, as MGS2 does) had every pixel fully fogged: a flat
+    fog-coloured screen. Table fog now uses what Direct3D uses: the depth
+    buffer's z for a game's own vertex shaders or a flat projection, and eye
+    distance (clip w) for perspective fixed-function draws. New
+    `HostD9Draw::fog_depth` and `D9PSParams::fog_depth` (the old padding)
+    carry the choice to the WebGPU, Vulkan and Metal shaders.
+  - **`[controls.native] keys`.** A table such as `keys = { W = "Up",
+    A = "Left" }` changes which key the game sees for each physical key,
+    before the game reads it (host/controls/key_remap.*). Unlike
+    `key_aliases` it replaces the key, for games that already use the
+    physical key for something else. Two physical keys on one game key are
+    reference-counted; held keys are released when the window loses focus.
+    Modifiers and Escape cannot be remapped. Header macro
+    `RECOMP_CONTROLS_NATIVE_KEYS`; tests in controls_tests and
+    test_game_config.
+  - **D3D9 frame trace (debug aid).** `RECOMP_D3D9_TRACE_FRAME`,
+    `RECOMP_D3D9_TRACE_FRAMES` and `RECOMP_D3D9_TRACE_FILE` log every clear,
+    copy, draw and present of chosen frames (targets, shaders, blend, fog and
+    texture-stage states). Off unless set.
 - 2026-10-10 17:00 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-swbf2`: merged `giggity-d3d8` 90eb38e, the Crazy Taxi agent's
   shared web fixes: the WebGPU clock read locally, the AudioWorklet sink

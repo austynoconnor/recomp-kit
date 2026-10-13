@@ -22,9 +22,50 @@
 #include <algorithm>
 #include <limits.h>
 
+namespace {
+const size_t kStreamMargin = 4096;
+}
+
+void Mp3Source::begin_stream() {
+    bytes_.clear();
+    first_.clear();
+    offset_ = 0;
+    position_ = 0;
+    rate_ = channels_ = 0;
+    duration_ = -1;
+    mp3dec_init(&dec_);
+    streaming_ = true;
+    finished_ = false;
+    drained_ = false;
+}
+
+void Mp3Source::append(const uint8_t *p, size_t n) {
+    bytes_.insert(bytes_.end(), p, p + n);
+    if (!finished_)
+        drained_ = false;
+}
+
+void Mp3Source::finish() {
+    finished_ = true;
+    duration_ = -1;
+}
+
+// The format from the first frame of what has been appended so far.
+bool Mp3Source::open_streamed() {
+    seek_frames(0);
+    if (!decode_frame(first_) || !rate_ || !channels_) {
+        first_.clear();
+        seek_frames(0);
+        return false;
+    }
+    return true;
+}
+
 // Probe the first frame for format without consuming it from the caller.
 bool Mp3Source::open(const std::vector<uint8_t> &bytes) {
     bytes_ = bytes;
+    streaming_ = false;
+    finished_ = true;
     rate_ = channels_ = 0;
     duration_ = -1;
     seek_frames(0);
@@ -42,6 +83,10 @@ bool Mp3Source::decode_frame(std::vector<int16_t> &out) {
     out.clear();
     int16_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
     while (offset_ < bytes_.size()) {
+        // A stream still being appended keeps a margin so a frame is never
+        // judged on a partial tail.
+        if (streaming() && bytes_.size() - offset_ < kStreamMargin)
+            return false;
         mp3dec_frame_info_t info;
         int n = mp3dec_decode_frame(&dec_, bytes_.data() + offset_,
                                     (int)std::min(bytes_.size() - offset_, (size_t)INT_MAX), pcm,
@@ -59,6 +104,8 @@ bool Mp3Source::decode_frame(std::vector<int16_t> &out) {
             return true;
         }
     }
+    if (streaming())
+        return false;
     drained_ = true;
     return false;
 }
@@ -94,7 +141,7 @@ void Mp3Source::seek_frames(uint64_t target) {
 
 // Count lazily with an independent parser so duration queries do not seek.
 int64_t Mp3Source::duration_frames() {
-    if (duration_ >= 0)
+    if (duration_ >= 0 && !streaming())
         return duration_;
     mp3dec_t dec;
     mp3dec_init(&dec);
@@ -110,6 +157,7 @@ int64_t Mp3Source::duration_frames() {
         off += (size_t)info.frame_bytes;
         total += n;
     }
-    duration_ = total;
+    if (!streaming())
+        duration_ = total;
     return total;
 }

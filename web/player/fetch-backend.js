@@ -58,12 +58,18 @@ addToLibrary({
       })).catch(() => { storeRoom = false; });
       if (++puts % 64 === 0) checkRoom();
     }
+    // A file the server refuses stays refused for this session: a game that
+    // retries a failed read in a loop (Bully reads text a byte at a time)
+    // must not send a request for every retry.
+    const refused = new Set();
     async function details(file) {
       if (info.has(file)) return info.get(file);
+      if (refused.has(file)) throw new Error('Game file is not on the server.');
       const path = UTF8ToString(__wasmfs_fetch_get_file_url(file));
       const url = new URL(path, self.location.origin).href;
       const response = await fetch(url, {method: 'HEAD'});
       const size = Number(response.headers.get('Content-Length'));
+      if (response.status === 404 || response.status === 410) refused.add(file);
       if (!response.ok || !response.headers.has('Content-Length') ||
           !Number.isSafeInteger(size) || size < 0 || response.headers.get('Accept-Ranges') !== 'bytes')
         throw new Error('Game server must support sized HTTP ranges.');
@@ -105,6 +111,7 @@ addToLibrary({
       allocFile: async () => {},
       freeFile: async file => {
         info.delete(file);
+        refused.delete(file);
         for (const [key, data] of cache) if (key.startsWith(file + ':')) {
           cachedBytes -= data.byteLength;
           cache.delete(key);

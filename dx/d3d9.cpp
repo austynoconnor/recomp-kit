@@ -77,6 +77,8 @@ static void gpu_target_drawn(ComObj *dev, bool color, bool depth);
 static void gpu_sync(ComObj *o);
 
 // One scratch block for structures a method fills in for the guest.
+static uint32_t g_presents9 = 0; // presented frames, for RECOMP_D3D9_TRACE_FRAME
+static bool trace9();
 static uint32_t g_scratch = 0, g_scratch_size = 0;
 static uint32_t scratch9(uint32_t n) {
     if (g_scratch_size < n) {
@@ -396,8 +398,6 @@ D9_STUB(CreateAdditionalSwapChain, 3)
 D9_STUB(GetSwapChain, 3)
 D9_STUB(GetRasterStatus, 3)
 D9_STUB(SetDialogBoxMode, 2)
-D9_STUB(UpdateSurface, 5)
-D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
 D9_STUB(GetFrontBufferData, 3)
 D9_STUB(ColorFill, 4)
@@ -534,6 +534,10 @@ void Dev_Clear(X86 *c) {
         HostD9Target target = gpu_target(dev);
         int32_t vp[4];
         target_viewport(dev, target, vp);
+        if (trace9())
+            fprintf(
+                stderr, "d3d9trace f%u clear flags %x color %08x rects %u rt %u vp %d,%d %dx%d\n",
+                g_presents9, flags, color, count, target.color[0].id, vp[0], vp[1], vp[2], vp[3]);
         std::vector<int32_t> rs;
         if (count && rects && gm_fits(rects, count * 16u))
             for (uint32_t i = 0; i < count * 4; ++i)
@@ -592,8 +596,15 @@ void Dev_Clear(X86 *c) {
 // (this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion). The back
 // buffer goes to the host as a 32-bit frame: the first thing this module puts
 // on screen.
+extern "C" bool d3d9_display_active(void) {
+    return g_presents9 > 0;
+}
+
 void Dev_Present(X86 *c) {
     ComObj *dev = this_device9(c);
+    if (trace9())
+        fprintf(stderr, "d3d9trace f%u present\n", g_presents9);
+    ++g_presents9;
     ComObj *bb = dev ? device_backbuffer(dev) : nullptr;
     if (bb && gpu_on()) {
         gpu_sync(bb);
@@ -1232,6 +1243,13 @@ void Dev_StretchRect(X86 *c) {
         if (arg(c, 4))
             for (int i = 0; i < 4; ++i)
                 dr[i] = (int32_t)rd32(arg(c, 4) + 4u * (uint32_t)i);
+        if (trace9())
+            fprintf(stderr,
+                    "d3d9trace f%u stretch %u(%ux%u f%u) %d,%d-%d,%d -> %u(%ux%u f%u) %d,%d-%d,%d "
+                    "filter %u\n",
+                    g_presents9, src->id, src->width, src->height, src->rmask, sr[0], sr[1], sr[2],
+                    sr[3], dst->id, dst->width, dst->height, dst->rmask, dr[0], dr[1], dr[2], dr[3],
+                    arg(c, 5));
         host_d9_stretch(surface_ref(src), sr, surface_ref(dst), dr, arg(c, 5));
         gpu_drawn_into(dst);
         com_ret(c, D3D_OK9);
@@ -1638,6 +1656,40 @@ static D9Pipeline *draw_pipeline(ComObj *dev) {
     return shadow;
 }
 
+// RECOMP_D3D9_TRACE_FRAME=N: one line per draw, clear, target change and copy
+// in the Nth presented frame (and RECOMP_D3D9_TRACE_FRAMES more after it), on
+// stderr. A debugging aid: it says what each pass of a frame does.
+static bool trace9() {
+    static long first =
+        getenv("RECOMP_D3D9_TRACE_FRAME") ? atol(getenv("RECOMP_D3D9_TRACE_FRAME")) : -1;
+    static const long more =
+        getenv("RECOMP_D3D9_TRACE_FRAMES") ? atol(getenv("RECOMP_D3D9_TRACE_FRAMES")) : 0;
+    // RECOMP_D3D9_TRACE_FILE: start at the first present after that file appears.
+    static const char *file = getenv("RECOMP_D3D9_TRACE_FILE");
+    static uint32_t checked = 0;
+    if (file && first < 0 && g_presents9 != checked && g_presents9 % 30 == 0) {
+        checked = g_presents9;
+        if (FILE *f = fopen(file, "rb")) {
+            fclose(f);
+            first = (long)g_presents9 + 1;
+        }
+    }
+    return first >= 0 && (long)g_presents9 >= first && (long)g_presents9 <= first + more;
+}
+static double fbits(uint32_t v) {
+    float f;
+    memcpy(&f, &v, 4);
+    return f;
+}
+static void trace_surface(char *out, size_t n, ComObj *s) {
+    if (!s) {
+        snprintf(out, n, "-");
+        return;
+    }
+    ComObj *l = s->kind == K_D3D9TEXTURE ? com_get(s->back_obj) : s;
+    snprintf(out, n, "%u%s(%ux%u f%u)", s->id, s->kind == K_D3D9TEXTURE ? "t" : "s",
+             l ? l->width : 0, l ? l->height : 0, l ? l->rmask : 0);
+}
 static void gpu_draw(ComObj *dev, HostD9Draw &d) {
     D9Pipeline *use = draw_pipeline(dev);
     if (!use)
@@ -1698,7 +1750,80 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
     for (int st = 0; st < 8; ++st)
         if (pl.tss[st][24] & 0x100) // D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_PROJECTED
             d.projected_mask |= 1u << st;
+    // Table fog: a game's vertex shader gives Direct3D no eye distance, so it
+    // fogs by the depth buffer's z (MGS2 sets FOGSTART 0, FOGEND 1 for that).
+    // Fixed function fogs by eye distance unless the projection is flat.
+    {
+        const D9Pipeline &own = d9_pipeline(dev->id);
+        d.fog_depth = !own.vs.empty() || own.transform[3][11] == 0.0f ? 1u : 0u;
+    }
     d.label = pl.label;
+    if (trace9()) {
+        char tgt[64], t0[64], t1[64], t2[64];
+        ComObj *rt = com_get(pl.color_target[0]);
+        if (!rt)
+            rt = com_get(dev->render_target) ? com_get(dev->render_target) : device_backbuffer(dev);
+        trace_surface(tgt, sizeof tgt, rt);
+        trace_surface(t0, sizeof t0, com_get(pl.sampler_tex[0]));
+        trace_surface(t1, sizeof t1, com_get(pl.sampler_tex[1]));
+        trace_surface(t2, sizeof t2, com_get(pl.sampler_tex[2]));
+        fprintf(
+            stderr,
+            "d3d9trace f%u draw p%u n%u rt %s z %u vp %d,%d %dx%d | vs %08x ps %08x fvf %x %s | "
+            "blend %u %u/%u op %u sep %u %u/%u | atest %u ref %u fn %u | z %u zw %u zfn %u | "
+            "cw %x cull %u fog %u | tex %s %s %s | ts0 c%u(%x,%x) a%u(%x,%x) ts1 c%u(%x,%x) "
+            "a%u ts2 c%u tf %x | fog t%u v%u c%08x %g..%g d%g fd%u p34 %g p44 %g | zbias %g "
+            "slope %g\n",
+            g_presents9, d.primitive, d.primitive_count, tgt, dev->zbuffer_obj, d.viewport[0],
+            d.viewport[1], d.viewport[2], d.viewport[3], (uint32_t)pl.vs_key, (uint32_t)pl.ps_key,
+            pl.fvf, use == &d9_pipeline(dev->id) ? "shader" : "ffp", pl.rs[27], pl.rs[19],
+            pl.rs[20], pl.rs[171], pl.rs[206], pl.rs[207], pl.rs[208], pl.rs[15], pl.rs[24],
+            pl.rs[25], pl.rs[7], pl.rs[14], pl.rs[23], pl.rs[168], pl.rs[22], pl.rs[28], t0, t1, t2,
+            pl.tss[0][1], pl.tss[0][2], pl.tss[0][3], pl.tss[0][4], pl.tss[0][5], pl.tss[0][6],
+            pl.tss[1][1], pl.tss[1][2], pl.tss[1][3], pl.tss[1][4], pl.tss[2][1], pl.rs[60],
+            pl.rs[35], pl.rs[140], pl.rs[34], fbits(pl.rs[36]), fbits(pl.rs[37]), fbits(pl.rs[38]),
+            d.fog_depth, d9_pipeline(dev->id).transform[3][11],
+            d9_pipeline(dev->id).transform[3][15], fbits(pl.rs[195]), fbits(pl.rs[175]));
+    }
+    if (trace9()) {
+        // The vertex layout (stream.offset:type/usage.index) and the first
+        // few vertex shader constants, which a draw's shape depends on.
+        char line[1024];
+        size_t at = 0;
+        for (uint32_t i = 0; i + 8 <= d.decl_size && at + 32 < sizeof line; i += 8) {
+            const uint8_t *e = d.decl + i;
+            if (e[0] == 0xff)
+                break;
+            at += (size_t)snprintf(line + at, sizeof line - at, " %u.%u:%u/%u.%u", e[0],
+                                   e[2] | e[3] << 8, e[4], e[6], e[7]);
+        }
+        for (uint32_t r = 0; r < 4 && r < d.vconst_count && at + 64 < sizeof line; ++r)
+            at += (size_t)snprintf(line + at, sizeof line - at, " c%u(%g,%g,%g,%g)", r,
+                                   d.vconst[r * 4], d.vconst[r * 4 + 1], d.vconst[r * 4 + 2],
+                                   d.vconst[r * 4 + 3]);
+        // The first vertex the draw reads, from stream 0.
+        uint32_t first = d.start;
+        if (d.index_buffer) {
+            ComObj *ib = com_get(d.index_buffer);
+            size_t isz = d.index_size == 4 ? 4 : 2;
+            if (ib && (size_t)d.start * isz + isz <= ib->blob.size()) {
+                first = ib->blob[d.start * isz] | ib->blob[d.start * isz + 1] << 8;
+                if (isz == 4)
+                    first |= (uint32_t)ib->blob[d.start * 4 + 2] << 16 |
+                             (uint32_t)ib->blob[d.start * 4 + 3] << 24;
+            }
+            first += (uint32_t)d.base_vertex;
+        }
+        ComObj *vb = com_get(d.stream[0].buffer);
+        size_t vat = (size_t)d.stream[0].offset + (size_t)first * d.stream[0].stride;
+        at += (size_t)snprintf(line + at, sizeof line - at, " v%u:", first);
+        for (uint32_t i = 0; vb && i < d.stream[0].stride && i < 64 && vat + i < vb->blob.size() &&
+                             at + 4 < sizeof line;
+             ++i)
+            at += (size_t)snprintf(line + at, sizeof line - at, "%02x", vb->blob[vat + i]);
+        fprintf(stderr, "d3d9trace f%u decl%s stride %u start %u base %d\n", g_presents9, line,
+                d.stream[0].stride, d.start, d.base_vertex);
+    }
     host_d9_draw(&d);
     bool color_write = !pl.rs_set[168] || (pl.rs[168] & 0xf) != 0;
     bool z_write = (!pl.rs_set[14] || pl.rs[14]) && (!pl.rs_set[7] || pl.rs[7]);
@@ -2237,6 +2362,53 @@ void Tex_GetSurfaceLevel(X86 *c) {
     com_out_ptr(out, view_);
     com_ret(c, D3D_OK9);
 }
+// Copies one surface's bytes over another of the same size and format, as
+// the device's own copies do, and has the destination uploaded again.
+static bool copy_surface_bytes(ComObj *src, ComObj *dst) {
+    if (!src || !dst || src == dst || src->blob.empty() || src->blob.size() != dst->blob.size() ||
+        src->lock_count || dst->lock_count)
+        return false;
+    gpu_before_lock(src);
+    memcpy(dst->blob.data(), src->blob.data(), src->blob.size());
+    d9_raster_invalidate(dst->id);
+    gpu_after_unlock(dst, 0, (uint32_t)dst->blob.size());
+    return true;
+}
+
+// UpdateTexture(pSourceTexture, pDestinationTexture): a system-memory
+// texture's levels into a default-pool texture of the same shape. Resident
+// Evil 4 fills its movie picture this way every frame.
+void Dev_UpdateTexture(X86 *c) {
+    ComObj *src = com_this(arg(c, 1)), *dst = com_this(arg(c, 2));
+    if (!src || !dst || src->kind != K_D3D9TEXTURE || dst->kind != K_D3D9TEXTURE) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t copied = 0;
+    for (uint32_t level = 0; level < 16; ++level) {
+        ComObj *s = texture_level(src, level), *d = texture_level(dst, level);
+        if (!s || !d)
+            break;
+        if (copy_surface_bytes(s, d))
+            ++copied;
+    }
+    if (!copied)
+        log_once("d3d9.updatetexture", "d3d9: UpdateTexture found no level of matching size");
+    com_ret(c, copied ? D3D_OK9 : D3DERR_INVALIDCALL);
+}
+
+// UpdateSurface(pSource, pSourceRect, pDest, pDestPoint): the whole surface
+// when no rectangle or point is given; a part is not copied.
+void Dev_UpdateSurface(X86 *c) {
+    ComObj *src = com_this(arg(c, 1)), *dst = com_this(arg(c, 3));
+    if (arg(c, 2) || arg(c, 4)) {
+        log_once("d3d9.updatesurface.part", "d3d9: UpdateSurface of a part is not implemented");
+        com_ret(c, D3D_OK9);
+        return;
+    }
+    com_ret(c, copy_surface_bytes(src, dst) ? D3D_OK9 : D3DERR_INVALIDCALL);
+}
+
 void Tex_LockRect(X86 *c) {
     ComObj *s = texture_level(com_this_arg(c), arg(c, 1));
     uint32_t out = arg(c, 2);

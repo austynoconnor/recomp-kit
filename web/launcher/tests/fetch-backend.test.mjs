@@ -15,9 +15,10 @@ function fakeCaches({full = false} = {}) {
   })}};
 }
 
-async function fixture({store = null, etag = null} = {}) {
+async function fixture({store = null, etag = null, missing = false} = {}) {
   let library;
   const gets = [];
+  let heads = 0;
   let short = false;
   const heap = new Uint8Array(3 * 1024 * 1024);
   const context = {
@@ -30,7 +31,8 @@ async function fixture({store = null, etag = null} = {}) {
     navigator: {storage: {estimate: async () => ({usage: 0, quota: 1e9})}},
     fetch: async (url, options) => {
       const size = 3 * 1024 * 1024 + 17;
-      if (options.method === 'HEAD') return {ok: true, headers: new Headers({
+      if (options.method === 'HEAD' && missing) return heads++, {ok: false, status: 404, headers: new Headers()};
+      if (options.method === 'HEAD') return heads++, {ok: true, headers: new Headers({
         'Content-Length': String(size), 'Accept-Ranges': 'bytes', ...(etag ? {ETag: etag} : {})})};
       gets.push(url + ':' + options.headers.Range);
       const [, left, right] = options.headers.Range.match(/bytes=(\d+)-(\d+)/);
@@ -45,7 +47,7 @@ async function fixture({store = null, etag = null} = {}) {
     .replaceAll('{{{ cDefs.EROFS }}}', '30').replaceAll('{{{ cDefs.EIO }}}', '5');
   vm.runInNewContext(source, context);
   await library._wasmfs_create_fetch_backend_js(1);
-  return {backend: context.wasmFS$backends[1], heap, gets, truncate: () => short = true};
+  return {backend: context.wasmFS$backends[1], heap, gets, heads: () => heads, truncate: () => short = true};
 }
 
 test('bounded fetch reads cross chunk boundaries, caches and clips at EOF', async () => {
@@ -125,4 +127,12 @@ test('the backend exists before Cache Storage finishes opening', async () => {
   library._wasmfs_create_fetch_backend_js(1); // WasmFS does not wait for it
   assert.equal(typeof context.wasmFS$backends[1]?.allocFile, 'function');
   open({match: async () => undefined, put: async () => {}});
+});
+
+test('a file the server does not have is asked for once', async () => {
+  const f = await fixture({missing: true});
+  for (let i = 0; i < 5; i++) assert.equal(await f.backend.read(1, 0, 1, 0), -5);
+  assert.equal(await f.backend.getSize(1), -5);
+  assert.equal(f.heads(), 1);
+  assert.equal(f.gets.length, 0);
 });

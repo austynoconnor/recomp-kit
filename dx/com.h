@@ -86,6 +86,10 @@ enum ComIface : uint16_t {
     IF_BASICAUDIO,       // IBasicAudio
     IF_MEDIAPOSITION,    // IMediaPosition
     IF_ENUMFILTERS,      // IEnumFilters over the graph's (empty) filter list
+    IF_DSFILTER,         // IBaseFilter: the source filter AddSourceFilter makes for a movie
+    IF_DSPIN,            // IPin: that filter's one output pin
+    IF_DSALLOCATOR,      // IMemAllocator: the allocator the pin hands the renderer
+    IF_DSSAMPLE,         // IMediaSample: one decoded picture for the renderer
     IF_D3D11_DEVICE,
     IF_D3D11_CONTEXT,
     IF_D3D11_TEXTURE,
@@ -184,6 +188,7 @@ enum ComKind : uint16_t {
     K_STREAMSAMPLE, // one sample: fills an audio data object from a stream
     K_GRAPH,        // the filter graph a multimedia stream plays through
     K_ENUMFILTERS,  // an enumerator over that graph's filters
+    K_DSMOVIE,      // a movie's source filter, pin, allocator and sample
     K_D3D11_DEVICE,
     K_D3D11_CONTEXT,
     K_D3D11_TEXTURE,

@@ -44,6 +44,9 @@ void host_display_present_window(const uint32_t *argb, int w, int h);
 // presenter. The caller waits in the scheduler, never in the host.
 double host_present_refresh_delay(int intervals);
 bool ddraw_gdi_primary_active(void);
+// A Direct3D 9 (or 8, through it) device has presented a frame: the guest
+// draws its own picture, the way a DirectDraw primary does.
+bool d3d9_display_active(void);
 #ifdef __cplusplus
 }
 #endif

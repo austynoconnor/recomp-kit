@@ -66,6 +66,8 @@ def render_header(cfg):
     lines.append("#define RECOMP_CONTROLS_DINPUT %d" % int(native["dinput"]))
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXES %s" % c_string(",".join(native["axes"])))
     lines.append("#define RECOMP_CONTROLS_NATIVE_BUTTONS %s" % c_string(",".join(native["buttons"])))
+    lines.append("#define RECOMP_CONTROLS_NATIVE_KEYS %s" % c_string(
+        ";".join("%s=%s" % (k, v) for k, v in sorted(native["keys"].items()))))
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXIS_MIN (%d)" % native["axis_range"][0])
     lines.append("#define RECOMP_CONTROLS_NATIVE_AXIS_MAX (%d)" % native["axis_range"][1])
     lines.append("#define RECOMP_CONTROLS_NATIVE_DPAD_STICK %d" % int(native["dpad"] == "stick"))

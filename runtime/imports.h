@@ -18,6 +18,15 @@
 #include <utility>
 #include <vector>
 
+// Guest code is about to leave the usual call/return nesting: an exception
+// raise or unwind, a guest longjmp, or the interpreter. A callback live at the
+// time returns to its host caller through its checkpoint (guest_call), not by
+// returning through translated frames. Per host thread.
+void recomp_callback_note_unwind(void);
+// A guest CALL or JMP to the callback sentinel: always finishes the innermost
+// live callback through its checkpoint.
+void recomp_callback_jump_return(X86 *c);
+
 // argc_stdcall sentinels.
 static const uint8_t ARGC_CDECL = 0xff;   // caller cleans the stack: pop only the return address
 static const uint8_t ARGC_UNKNOWN = 0xfe; // signature unknown: pop nothing and log loudly
