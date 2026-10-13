@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- 2026-10-12 19:25 CDT — Claude Opus 5.5: Browser controllers now reach the
+  game in [controls] pad = "mapped" mode. The web start path (web_main) never
+  called controls::host_init, so the mapped binding kept an empty table and had
+  no hook to send its keys: the pad showed up in RECOMP_CONTROLS_TRACE but
+  pressed nothing. It now installs the same hooks as the desktop start.
+  RECOMP_CONTROLS_TRACE also logs each synthesized key push, SDL key event,
+  applied key and DirectInput keyboard edge ("[input]" lines). Verified in
+  visible Chrome with a simulated standard gamepad on Need for Speed: Most
+  Wanted, connected after boot and present from boot: d-pad and Y move
+  through the menus into a Quick Race, RT accelerates, the left stick steers.
+
 - 2026-10-12 15:05 CDT — Claude Opus 5.5: Direct3D 9 vertex and index buffers
   keep their guest-heap copy for life only when created D3DUSAGE_DYNAMIC; other
   buffers free it at their last Unlock, as before the giggity-d3d8 merge.

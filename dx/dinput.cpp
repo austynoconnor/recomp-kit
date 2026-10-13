@@ -13,6 +13,8 @@
 #include <mutex>
 #include "host_api.h"
 #include "../runtime/memory.h"
+#include "../platform/os.h"
+#include <stdio.h>
 #include "../runtime/win32.h"
 #include "../runtime/native_seam.h"
 
@@ -262,6 +264,10 @@ void poll_device(ComObj *d) {
         for (uint32_t k = 0; k < 256; ++k) {
             uint8_t now = g_host_in.keys[k] & 0x80u;
             if (now != (d->last_keys[k] & 0x80u)) {
+                static const bool trace = recomp_env("CONTROLS_TRACE") != nullptr;
+                if (trace)
+                    fprintf(stderr, "[input] dinput key %02x %s (buffer %u)\n", k,
+                            now ? "down" : "up", unsigned(d->buffer_size));
                 if (d->buffer_size)
                     d->events.push_back(pack_event(k, now ? 0x80 : 0));
                 d->last_keys[k] = now;
