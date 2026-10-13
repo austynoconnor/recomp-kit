@@ -367,8 +367,6 @@ D9_STUB(SetDialogBoxMode, 2)
 D9_STUB(SetGammaRamp, 4)
 D9_STUB(GetGammaRamp, 3)
 D9_STUB(CreateVolumeTexture, 9)
-D9_STUB(UpdateSurface, 5)
-D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
 D9_STUB(GetFrontBufferData, 3)
 D9_STUB(ColorFill, 4)
@@ -578,6 +576,10 @@ void Dev_Clear(X86 *c) {
 // (this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion). The back
 // buffer goes to the host as a 32-bit frame: the first thing this module puts
 // on screen.
+extern "C" bool d3d9_display_active(void) {
+    return g_presents9 > 0;
+}
+
 void Dev_Present(X86 *c) {
     ComObj *dev = this_device9(c);
     if (trace9())
@@ -1763,6 +1765,45 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
             d.fog_depth, d9_pipeline(dev->id).transform[3][11],
             d9_pipeline(dev->id).transform[3][15], fbits(pl.rs[195]), fbits(pl.rs[175]));
     }
+    if (trace9()) {
+        // The vertex layout (stream.offset:type/usage.index) and the first
+        // few vertex shader constants, which a draw's shape depends on.
+        char line[1024];
+        size_t at = 0;
+        for (uint32_t i = 0; i + 8 <= d.decl_size && at + 32 < sizeof line; i += 8) {
+            const uint8_t *e = d.decl + i;
+            if (e[0] == 0xff)
+                break;
+            at += (size_t)snprintf(line + at, sizeof line - at, " %u.%u:%u/%u.%u", e[0],
+                                   e[2] | e[3] << 8, e[4], e[6], e[7]);
+        }
+        for (uint32_t r = 0; r < 4 && r < d.vconst_count && at + 64 < sizeof line; ++r)
+            at += (size_t)snprintf(line + at, sizeof line - at, " c%u(%g,%g,%g,%g)", r,
+                                   d.vconst[r * 4], d.vconst[r * 4 + 1], d.vconst[r * 4 + 2],
+                                   d.vconst[r * 4 + 3]);
+        // The first vertex the draw reads, from stream 0.
+        uint32_t first = d.start;
+        if (d.index_buffer) {
+            ComObj *ib = com_get(d.index_buffer);
+            size_t isz = d.index_size == 4 ? 4 : 2;
+            if (ib && (size_t)d.start * isz + isz <= ib->blob.size()) {
+                first = ib->blob[d.start * isz] | ib->blob[d.start * isz + 1] << 8;
+                if (isz == 4)
+                    first |= (uint32_t)ib->blob[d.start * 4 + 2] << 16 |
+                             (uint32_t)ib->blob[d.start * 4 + 3] << 24;
+            }
+            first += (uint32_t)d.base_vertex;
+        }
+        ComObj *vb = com_get(d.stream[0].buffer);
+        size_t vat = (size_t)d.stream[0].offset + (size_t)first * d.stream[0].stride;
+        at += (size_t)snprintf(line + at, sizeof line - at, " v%u:", first);
+        for (uint32_t i = 0; vb && i < d.stream[0].stride && i < 64 && vat + i < vb->blob.size() &&
+                             at + 4 < sizeof line;
+             ++i)
+            at += (size_t)snprintf(line + at, sizeof line - at, "%02x", vb->blob[vat + i]);
+        fprintf(stderr, "d3d9trace f%u decl%s stride %u start %u base %d\n", g_presents9, line,
+                d.stream[0].stride, d.start, d.base_vertex);
+    }
     host_d9_draw(&d);
     bool color_write = !pl.rs_set[168] || (pl.rs[168] & 0xf) != 0;
     bool z_write = (!pl.rs_set[14] || pl.rs[14]) && (!pl.rs_set[7] || pl.rs[7]);
@@ -2274,6 +2315,53 @@ void Tex_GetSurfaceLevel(X86 *c) {
     com_out_ptr(out, view_);
     com_ret(c, D3D_OK9);
 }
+// Copies one surface's bytes over another of the same size and format, as
+// the device's own copies do, and has the destination uploaded again.
+static bool copy_surface_bytes(ComObj *src, ComObj *dst) {
+    if (!src || !dst || src == dst || src->blob.empty() || src->blob.size() != dst->blob.size() ||
+        src->lock_count || dst->lock_count)
+        return false;
+    gpu_before_lock(src);
+    memcpy(dst->blob.data(), src->blob.data(), src->blob.size());
+    d9_raster_invalidate(dst->id);
+    gpu_after_unlock(dst, 0, (uint32_t)dst->blob.size());
+    return true;
+}
+
+// UpdateTexture(pSourceTexture, pDestinationTexture): a system-memory
+// texture's levels into a default-pool texture of the same shape. Resident
+// Evil 4 fills its movie picture this way every frame.
+void Dev_UpdateTexture(X86 *c) {
+    ComObj *src = com_this(arg(c, 1)), *dst = com_this(arg(c, 2));
+    if (!src || !dst || src->kind != K_D3D9TEXTURE || dst->kind != K_D3D9TEXTURE) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t copied = 0;
+    for (uint32_t level = 0; level < 16; ++level) {
+        ComObj *s = texture_level(src, level), *d = texture_level(dst, level);
+        if (!s || !d)
+            break;
+        if (copy_surface_bytes(s, d))
+            ++copied;
+    }
+    if (!copied)
+        log_once("d3d9.updatetexture", "d3d9: UpdateTexture found no level of matching size");
+    com_ret(c, copied ? D3D_OK9 : D3DERR_INVALIDCALL);
+}
+
+// UpdateSurface(pSource, pSourceRect, pDest, pDestPoint): the whole surface
+// when no rectangle or point is given; a part is not copied.
+void Dev_UpdateSurface(X86 *c) {
+    ComObj *src = com_this(arg(c, 1)), *dst = com_this(arg(c, 3));
+    if (arg(c, 2) || arg(c, 4)) {
+        log_once("d3d9.updatesurface.part", "d3d9: UpdateSurface of a part is not implemented");
+        com_ret(c, D3D_OK9);
+        return;
+    }
+    com_ret(c, copy_surface_bytes(src, dst) ? D3D_OK9 : D3DERR_INVALIDCALL);
+}
+
 void Tex_LockRect(X86 *c) {
     ComObj *s = texture_level(com_this_arg(c), arg(c, 1));
     uint32_t out = arg(c, 2);

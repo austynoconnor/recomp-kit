@@ -320,6 +320,7 @@ uint32_t recomp_seh_pending_target(void) {
 // Called only for computed jumps, before even an existing dispatch-table hit.
 // The dispatcher keeps its own ESP; the pending registration identifies env.
 void recomp_seh_intercept(X86 *c, uint32_t target) {
+    recomp_callback_note_unwind();
     recomp_seh_validate_chain(c, "intercept", "");
     trace_frames(c, "intercept");
     uint32_t reg = state.g_seh_pending_target;
@@ -426,6 +427,7 @@ void recomp_seh_reset(X86 *c) {
 }
 
 int recomp_seh_raise(X86 *c, uint32_t code, uint32_t flags, uint32_t nargs, uint32_t args) {
+    recomp_callback_note_unwind();
     recomp_seh_validate_chain(c, "raise", "");
     X86 saved = *c;
     if (nargs > 15)
@@ -466,6 +468,7 @@ int recomp_seh_raise(X86 *c, uint32_t code, uint32_t flags, uint32_t nargs, uint
 // the dispatcher and lands on the saved host checkpoint.
 void recomp_seh_unwind(X86 *c, uint32_t target, uint32_t target_ip, uint32_t record,
                        uint32_t retval) {
+    recomp_callback_note_unwind();
     recomp_seh_validate_chain(c, "unwind", "");
     trace_frames(c, "unwind begin");
     SehDispatch *d = new_dispatch(c, record);

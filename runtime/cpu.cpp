@@ -211,10 +211,13 @@ void recomp_unknown_call(X86 *c, uint32_t target) {
     // call through a null pointer faults at the call, and there are no
     // instructions at it to interpret. Reading them would be the very
     // dereference this page exists to refuse.
-    if (target >= GUEST_NULL_LIMIT && interp_call(c, target))
-        return;
+    if (target >= GUEST_NULL_LIMIT) {
+        recomp_callback_note_unwind();
+        if (interp_call(c, target))
+            return;
+    }
     if (target == GUEST_RETURN_SENTINEL) {
-        recomp_callback_return(c);
+        recomp_callback_jump_return(c);
         // With no matching live callback this is an ordinary undeliverable
         // CALL, whose pushed return still needs to be consumed.
         return_as_if_ret(c);
@@ -467,6 +470,7 @@ void recomp_setjmp(X86 *c) {
 }
 
 void recomp_longjmp(X86 *c) {
+    recomp_callback_note_unwind();
     uint32_t buf = rd32(c->r[R_ESP] + 4);
     int value = (int)rd32(c->r[R_ESP] + 8);
     auto it = setjmps().find(buf);

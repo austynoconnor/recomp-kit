@@ -19,6 +19,7 @@
 #include "dx.h"
 #include "../runtime/guest.h"
 #include "../runtime/memory.h"
+#include "../platform/os.h"
 
 #include <string.h>
 #include <math.h>
@@ -355,6 +356,11 @@ struct FxParam {
     std::vector<uint32_t> annotations; // indices into FxEffect::annotations
     bool shared = false;               // D3DX_PARAMETER_SHARED: one value across the effect pool
     uint64_t stamp = 0;                // g_param_stamp at the last write
+    // Each element's 4x4 matrix as the game last set it with a SetMatrix
+    // call (transposed already for the Transpose ones), while no other write
+    // has changed the element since. See bind_constants.
+    std::vector<float> mats;
+    std::vector<uint8_t> mat_set;
 };
 // Counts parameter writes, so a result computed from parameters can tell
 // whether any of them changed.
@@ -756,10 +762,18 @@ static uint32_t param_slots(const FxParam &p) {
     return p.t.numeric() ? (uint32_t)(p.value.size() / 4) : 0;
 }
 
+// Set while a SetMatrix call writes its elements, so the writes keep the
+// element's whole matrix (FxParam::mats) valid.
+static bool g_putting_matrix = false;
+static void param_forget_matrices(FxParam &p) {
+    if (!g_putting_matrix)
+        p.mat_set.clear();
+}
 static void param_put_float(FxParam &p, uint32_t i, float f) {
     if (i >= param_slots(p))
         return;
     param_touched(p);
+    param_forget_matrices(p);
     if (p.t.type == FXT_FLOAT) {
         memcpy(&p.value[4 * i], &f, 4);
     } else {
@@ -771,6 +785,7 @@ static void param_put_int(FxParam &p, uint32_t i, int32_t n) {
     if (i >= param_slots(p))
         return;
     param_touched(p);
+    param_forget_matrices(p);
     if (p.t.type == FXT_FLOAT) {
         float f = (float)n;
         memcpy(&p.value[4 * i], &f, 4);
@@ -953,14 +968,36 @@ static uint32_t bind_constants(FxEffect &fx, const std::vector<uint8_t> &code, f
         ++bound;
         if (c.cls == FXC_MATRIX_ROWS || c.cls == FXC_MATRIX_COLUMNS) {
             uint32_t pr = p->t.rows ? p->t.rows : 1, pc = p->t.cols ? p->t.cols : 1;
+            // The effect can describe a parameter as the transpose of the
+            // shader's view of it: Bully's bones are a 3x4 row-major effect
+            // parameter and a 4x3 column-major shader constant, the same
+            // three registers. A matrix the game set with SetMatrix* is cut
+            // to the shader's shape directly; raw values (SetValue) are read
+            // transposed when the dimensions are the shader's swapped.
+            // (Square matrices keep their layout.)
+            uint32_t cr = c.rows ? c.rows : 4, cc = c.cols ? c.cols : 4;
+            bool flip = pr != pc && pr == cc && pc == cr;
             for (uint32_t r = 0; r < c.count && c.index + r < limit; ++r) {
                 uint32_t el = c.cls == FXC_MATRIX_COLUMNS ? r / (c.cols ? c.cols : 4)
                                                           : r / (c.rows ? c.rows : 4);
                 uint32_t line = c.cls == FXC_MATRIX_COLUMNS ? r % (c.cols ? c.cols : 4)
                                                             : r % (c.rows ? c.rows : 4);
+                if (el < p->mat_set.size() && p->mat_set[el]) {
+                    // The matrix the game set, cut to the shader's shape: the
+                    // effect's description of the parameter does not matter.
+                    const float *m = &p->mats[16 * el];
+                    for (uint32_t k = 0; k < 4; ++k) {
+                        uint32_t row = c.cls == FXC_MATRIX_COLUMNS ? k : line;
+                        uint32_t col = c.cls == FXC_MATRIX_COLUMNS ? line : k;
+                        reg[c.index + r][k] = row < cr && col < cc ? m[row * 4 + col] : 0.0f;
+                    }
+                    continue;
+                }
                 for (uint32_t k = 0; k < 4; ++k) {
                     uint32_t row = c.cls == FXC_MATRIX_COLUMNS ? k : line;
                     uint32_t col = c.cls == FXC_MATRIX_COLUMNS ? line : k;
+                    if (flip)
+                        std::swap(row, col);
                     reg[c.index + r][k] = (row < pr && col < pc)
                                               ? param_get_float(*p, el * pr * pc + row * pc + col)
                                               : 0.0f;
@@ -1557,6 +1594,7 @@ void Fx_SetValue(X86 *c) {
     FX_PARAM_OR_FAIL();
     uint32_t data = arg(c, 2), bytes = arg(c, 3);
     param_touched(*p);
+    param_forget_matrices(*p);
     if (p->t.cls == FXC_OBJECT && p->t.type >= FXT_TEXTURE && p->t.type <= FXT_TEXTURECUBE) {
         ComObj *tex = data ? com_this(rd32(data)) : nullptr;
         p->texture = tex ? tex->id : 0;
@@ -1692,7 +1730,32 @@ static void put_matrices(X86 *c, bool transpose, bool pointers, bool array) {
             continue;
         float m[16];
         read_guest_matrix(m_addr, m, transpose);
+        g_putting_matrix = true;
         param_put_matrix(*p, e, m);
+        g_putting_matrix = false;
+        size_t n = p->t.count() ? p->t.count() : 1;
+        if (p->mats.size() != 16 * n) {
+            p->mats.assign(16 * n, 0.0f);
+            p->mat_set.clear();
+        }
+        if (p->mat_set.size() != n)
+            p->mat_set.assign(n, 0);
+        memcpy(&p->mats[16 * e], m, sizeof m);
+        p->mat_set[e] = 1;
+        // RECOMP_D3DX_TRACE: each matrix parameter's shape and first matrix,
+        // once, to check how a game's matrices reach its constants.
+        static const bool trace = recomp_env("D3DX_TRACE") != nullptr;
+        if (trace && e == 0) {
+            char key[160];
+            snprintf(key, sizeof key, "d3dx.trace.%s.%d%d%d", p->t.name.c_str(), transpose,
+                     pointers, array);
+            log_once(key,
+                     "d3dx9: %s class %u %ux%u x%u (transpose %d pointers %d count %u): "
+                     "%g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g",
+                     p->t.name.c_str(), p->t.cls, p->t.rows, p->t.cols, p->t.count(), transpose,
+                     pointers, count, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9],
+                     m[10], m[11], m[12], m[13], m[14], m[15]);
+        }
     }
     com_ret(c, D3D_OKX);
 }
@@ -1739,6 +1802,7 @@ void Fx_SetRawValue(X86 *c) {
     FX_PARAM_OR_FAIL();
     uint32_t data = arg(c, 2), off = arg(c, 3), bytes = arg(c, 4);
     param_touched(*p);
+    param_forget_matrices(*p);
     if (data && off < p->value.size())
         memcpy(p->value.data() + off, gm_ptr(data), std::min<size_t>(bytes, p->value.size() - off));
     com_ret(c, D3D_OKX);
