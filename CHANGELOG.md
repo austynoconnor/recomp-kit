@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 2026-10-13 02:36 CDT â€” Claude Opus 5.5: Two code fixes from
+  `browser-release` (NFS Most Wanted) on this branch. The web start path
+  (web_main) now installs the controls hooks, so a browser controller in
+  `[controls] pad = "mapped"` mode reaches the game (7c2c708; also the
+  RECOMP_CONTROLS_TRACE "[input]" lines). Direct3D 9 vertex and index
+  buffers keep their guest-heap copy only when created D3DUSAGE_DYNAMIC;
+  others free it at their last Unlock, which saves memory (1373796, code
+  only; its hint-format part is not taken).
+
 - 2026-10-13 — Claude Opus 5.5: Generic fixes from `giggity-re4`
   (Resident Evil 4) brought to `giggity-d3d8`. Pointer capture now also
   starts for Direct3D 9/8 games once they present a frame (it was gated on

@@ -757,7 +757,16 @@ controls::KeyRemap &key_remap() {
     return remap;
 }
 
+bool input_trace() {
+    static const bool on = recomp_env("CONTROLS_TRACE") != nullptr;
+    return on;
+}
+
 void handle_key(const SDL_KeyboardEvent &event, bool down) {
+    if (input_trace())
+        fprintf(stderr, "[input] sdl key %d %s window %u
+", int(event.scancode),
+                down ? "down" : "up", unsigned(event.windowID));
     // A modifier remapped by [controls.native] keys goes on as its new key.
     if (is_modifier_scancode(event.scancode) &&
         key_remap().target(event.scancode) == event.scancode) {
@@ -846,6 +855,8 @@ void apply_input(const PendingInput &e) {
         apply_wheel(e.dz, e.x, e.y);
         break;
     case PendingInput::KEY:
+        if (input_trace())
+            fprintf(stderr, "[input] apply key %04x %s\n", unsigned(e.key), e.down ? "down" : "up");
         apply_key(e.key, e.down, e.character, e.flags);
         break;
     case PendingInput::MODIFIERS:
@@ -945,6 +956,8 @@ void push_touch_action_now(const TouchAction &a) {
             e.button.y = (float)a.y;
             break;
         case TouchAction::Key:
+            if (input_trace())
+                fprintf(stderr, "[input] push key %d %s\n", a.scancode, a.down ? "down" : "up");
             e.type = a.down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
             e.key.windowID = ours;
             e.key.scancode = (SDL_Scancode)a.scancode;
@@ -1876,6 +1889,17 @@ int web_main(int argc, char **argv) {
     mods_display_load_modes(classic_modes_path().c_str());
     host_present_on_mode_change(on_mode_change);
     host_input_set_notify(dinput_host_input_changed);
+    // The same controls hooks as the desktop start: without them the mapped
+    // pad binding keeps its empty default table and nowhere to send its keys,
+    // so a browser controller reached the virtual pad but never the game.
+    {
+        controls::HostHooks hooks;
+        hooks.key = push_touch_key;
+        hooks.touch_actions = push_touch_actions;
+        hooks.system_keyboard = toggle_system_keyboard;
+        hooks.open_settings = open_settings_page;
+        controls::host_init(hooks);
+    }
     host_present_start(g_surface, dw, dh);
     if (!host_d9_web_start(g_gpu.get()))
         fprintf(stderr,
