@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- 2026-10-12 19:55 CDT — Claude Opus 5.5: Movies through a game's own
+  DirectShow renderer, and pointer capture for Direct3D 9 games
+  (`giggity-re4`).
+  DirectShow: AddFilter, AddSourceFilter, Connect/ConnectDirect and Render
+  now build the graph a game makes for its own renderer filter (Resident
+  Evil 4's TextureRenderer, the SDK's Texture3D9 sample). An MPEG-1 system
+  stream is split as it is read: its MPEG audio feeds the stream's ordinary
+  host playback (Mp3Source now takes streamed input) and its pictures are
+  decoded by FFmpeg's MPEG-1 decoder and handed to the renderer's
+  IMemInputPin::Receive as bottom-up RGB24, paced by the sound's clock. The
+  source filter, its pin, allocator and sample are one host object
+  (K_DSMOVIE). Without FFmpeg in the build AddSourceFilter still says
+  E_NOTIMPL. Checked in Chrome: RE4's opening movies play with picture and
+  sound at 30 fps and Escape skips them.
+  Build: `RECOMP_FFMPEG_PREBUILT` (environment for tools/build.py, CMake
+  cache otherwise) links an FFmpeg another web build installed, for a
+  Windows host without MSYS2.
+  D3D9: UpdateTexture and UpdateSurface copy whole levels (were stubs).
+  user32: GetQueueStatus (returned through the unknown-import path with no
+  stack cleanup).
+  Pointer capture: a game that presents through Direct3D 9 (or 8 on it)
+  never has a DirectDraw primary, so `pointer_capture_wanted` refused
+  capture and mouse look/aim could not work; a presented D3D9 frame now
+  counts. Pointer lock itself cannot be granted to an automated Chrome, so
+  this is not yet confirmed by hand.
+
 - 2026-10-12 10:30 CDT — Claude Opus 5.5: `giggity-re4` for Resident Evil 4.
   Kept Codex's uncommitted RE4 kit work (high guest heap, D3D9 shader
   objects and assembler, d3dx9 quaternions, recursive callback discovery,
