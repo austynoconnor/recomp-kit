@@ -409,8 +409,6 @@ D9_STUB(SetDialogBoxMode, 2)
 D9_STUB(SetGammaRamp, 4)
 D9_STUB(GetGammaRamp, 3)
 D9_STUB(CreateVolumeTexture, 9)
-D9_STUB(UpdateSurface, 5)
-D9_STUB(UpdateTexture, 3)
 D9_STUB(GetRenderTargetData, 3)
 D9_STUB(GetFrontBufferData, 3)
 D9_STUB(ColorFill, 4)
@@ -651,6 +649,10 @@ static void present_wait(ComObj *dev) {
     const double delay = host_present_refresh_delay(int(dev->sync_interval));
     if (delay > 0)
         guest_sleep_ms(uint32_t(delay * 1000.0));
+}
+
+extern "C" bool d3d9_display_active(void) {
+    return g_presents9 > 0;
 }
 
 void Dev_Present(X86 *c) {
@@ -1866,7 +1868,8 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
             "d3d9trace f%u draw p%u n%u rt %s z %u vp %d,%d %dx%d | vs %08x ps %08x fvf %x %s | "
             "blend %u %u/%u op %u sep %u %u/%u | atest %u ref %u fn %u | z %u zw %u zfn %u | "
             "cw %x cull %u fog %u | tex %s %s %s | ts0 c%u(%x,%x) a%u(%x,%x) ts1 c%u(%x,%x) "
-            "a%u ts2 c%u tf %x | fog t%u v%u c%08x %g..%g d%g fd%u p34 %g p44 %g\n",
+            "a%u ts2 c%u tf %x | fog t%u v%u c%08x %g..%g d%g fd%u p34 %g p44 %g | zbias %g "
+            "slope %g\n",
             g_presents9, d.primitive, d.primitive_count, tgt, dev->zbuffer_obj, d.viewport[0],
             d.viewport[1], d.viewport[2], d.viewport[3], (uint32_t)pl.vs_key, (uint32_t)pl.ps_key,
             pl.fvf, use == &d9_pipeline(dev->id) ? "shader" : "ffp", pl.rs[27], pl.rs[19],
@@ -1876,7 +1879,7 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
             pl.tss[1][1], pl.tss[1][2], pl.tss[1][3], pl.tss[1][4], pl.tss[2][1], pl.rs[60],
             pl.rs[35], pl.rs[140], pl.rs[34], fbits(pl.rs[36]), fbits(pl.rs[37]), fbits(pl.rs[38]),
             d.fog_depth, d9_pipeline(dev->id).transform[3][11],
-            d9_pipeline(dev->id).transform[3][15]);
+            d9_pipeline(dev->id).transform[3][15], fbits(pl.rs[195]), fbits(pl.rs[175]));
     }
     if (trace9()) {
         // The vertex layout (stream.offset:type/usage.index) and the first
@@ -2455,6 +2458,53 @@ void Tex_GetSurfaceLevel(X86 *c) {
     com_out_ptr(out, view_);
     com_ret(c, D3D_OK9);
 }
+// Copies one surface's bytes over another of the same size and format, as
+// the device's own copies do, and has the destination uploaded again.
+static bool copy_surface_bytes(ComObj *src, ComObj *dst) {
+    if (!src || !dst || src == dst || src->blob.empty() || src->blob.size() != dst->blob.size() ||
+        src->lock_count || dst->lock_count)
+        return false;
+    gpu_before_lock(src);
+    memcpy(dst->blob.data(), src->blob.data(), src->blob.size());
+    d9_raster_invalidate(dst->id);
+    gpu_after_unlock(dst, 0, (uint32_t)dst->blob.size());
+    return true;
+}
+
+// UpdateTexture(pSourceTexture, pDestinationTexture): a system-memory
+// texture's levels into a default-pool texture of the same shape. Resident
+// Evil 4 fills its movie picture this way every frame.
+void Dev_UpdateTexture(X86 *c) {
+    ComObj *src = com_this(arg(c, 1)), *dst = com_this(arg(c, 2));
+    if (!src || !dst || src->kind != K_D3D9TEXTURE || dst->kind != K_D3D9TEXTURE) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    uint32_t copied = 0;
+    for (uint32_t level = 0; level < 16; ++level) {
+        ComObj *s = texture_level(src, level), *d = texture_level(dst, level);
+        if (!s || !d)
+            break;
+        if (copy_surface_bytes(s, d))
+            ++copied;
+    }
+    if (!copied)
+        log_once("d3d9.updatetexture", "d3d9: UpdateTexture found no level of matching size");
+    com_ret(c, copied ? D3D_OK9 : D3DERR_INVALIDCALL);
+}
+
+// UpdateSurface(pSource, pSourceRect, pDest, pDestPoint): the whole surface
+// when no rectangle or point is given; a part is not copied.
+void Dev_UpdateSurface(X86 *c) {
+    ComObj *src = com_this(arg(c, 1)), *dst = com_this(arg(c, 3));
+    if (arg(c, 2) || arg(c, 4)) {
+        log_once("d3d9.updatesurface.part", "d3d9: UpdateSurface of a part is not implemented");
+        com_ret(c, D3D_OK9);
+        return;
+    }
+    com_ret(c, copy_surface_bytes(src, dst) ? D3D_OK9 : D3DERR_INVALIDCALL);
+}
+
 void Tex_LockRect(X86 *c) {
     ComObj *s = texture_level(com_this_arg(c), arg(c, 1));
     uint32_t out = arg(c, 2);

@@ -404,7 +404,7 @@ bool pointer_capture_wanted() {
     // surface of its own: while it is still showing plain windows - a launcher,
     // a settings form - it draws no cursor, so hiding the host one would leave
     // the player with nothing to aim.
-    if (!ddraw_gdi_primary_active())
+    if (!ddraw_gdi_primary_active() && !d3d9_display_active())
         return false;
     if (!g_focused || !g_window || !window_focused() || g_escape_held)
         return false;
@@ -424,7 +424,8 @@ void update_platform_pointer_capture() {
     // cursor follows it there (host/input_gate.cpp), so it stays hidden while
     // the game draws its own cursor - captured or not, focused or not - and
     // there is never a second cursor beside the game's.
-    hide = hide || (platform_ui_pointer_capture_supported() && ddraw_gdi_primary_active() &&
+    hide = hide || (platform_ui_pointer_capture_supported() &&
+                    (ddraw_gdi_primary_active() || d3d9_display_active()) &&
                     !mods_page_visible() && !mods_controls_editing() && !g_close_requested);
 #endif
     if (hide && !g_pointer_hidden) {

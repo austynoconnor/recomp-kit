@@ -168,6 +168,9 @@ extern "C" __attribute__((weak)) void host_display_present_window(const uint32_t
 extern "C" __attribute__((weak)) bool ddraw_gdi_primary_active() {
     return false;
 }
+extern "C" __attribute__((weak)) bool d3d9_display_active() {
+    return false;
+}
 extern "C" __attribute__((weak)) uint32_t ddraw_gdi_begin_primary() {
     return 0;
 }
