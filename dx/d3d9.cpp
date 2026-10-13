@@ -576,6 +576,10 @@ void Dev_Clear(X86 *c) {
 // (this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion). The back
 // buffer goes to the host as a 32-bit frame: the first thing this module puts
 // on screen.
+extern "C" bool d3d9_display_active(void) {
+    return g_presents9 > 0;
+}
+
 void Dev_Present(X86 *c) {
     ComObj *dev = this_device9(c);
     if (trace9())
