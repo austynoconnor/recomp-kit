@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- 2026-10-13 02:45 CDT — Claude Opus 5.5: WS2_32 (Winsock 2) now behaves as a
+  machine whose network is down instead of a list of pop counts. WSAStartup
+  succeeds and fills WSADATA; socket, bind, connect, send, recv, select and the
+  rest fail with WSAENETDOWN (WSAGetLastError reports it per thread);
+  gethostbyname fails with WSAHOST_NOT_FOUND; gethostname answers. Each entry
+  is listed by name and by ordinal: executables such as Need for Speed: Most
+  Wanted import WS2_32 by ordinal, and an ordinal with no table entry popped
+  nothing, drifted the guest stack and tripped the game's buffer-overrun check
+  when LAN Play opened. Verified in visible Chrome: LAN Play shows an empty
+  server list, Create Server reports "There was a problem trying to start the
+  LAN server", and Back returns to the main menu.
+
 - 2026-10-12 19:25 CDT — Claude Opus 5.5: Browser controllers now reach the
   game in [controls] pad = "mapped" mode. The web start path (web_main) never
   called controls::host_init, so the mapped binding kept an empty table and had
