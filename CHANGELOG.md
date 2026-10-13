@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 2026-10-13 — Claude Opus 5.5: Generic fixes from `giggity-re4`
+  (Resident Evil 4) brought to `giggity-d3d8`. Pointer capture now also
+  starts for Direct3D 9/8 games once they present a frame (it was gated on
+  a DirectDraw/GDI primary, so mouse-look games never captured the mouse).
+  IDirect3DDevice9::UpdateTexture and UpdateSurface copy whole levels from a
+  system-memory texture (games streaming video or decoded images that way
+  drew nothing). user32 GetQueueStatus returns 0. DirectShow can play a
+  movie through the game's own renderer filter (the DX9 SDK Texture3D9
+  pattern): the kit supplies the source filter, pin, allocator and samples
+  and pushes MPEG-1 frames decoded by FFmpeg into the game's
+  IMemInputPin::Receive. A prebuilt web FFmpeg can be used through the
+  RECOMP_FFMPEG_PREBUILT environment variable. Native dx_tests: 141225
+  checks, 0 failures.
+
 - 2026-10-12 — Claude Opus 5.5: Skinned characters on the GPU renderers
   (from `giggity-bully`).
   Bully's player and students were invisible in the browser; two bugs.
