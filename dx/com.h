@@ -305,6 +305,7 @@ struct ComObj {
     bool has_ckey_src = false, has_ckey_dst = false;
     int32_t lock_count = 0;
     uint32_t lock_lo = 0, lock_hi = 0; // vertex/index buffers: bytes locked
+    bool dynamic_buffer = false;       // vertex/index buffers: D3DUSAGE_DYNAMIC
     // Once handed a writable Lock pointer, the guest may keep using it forever.
     bool retained_pointer = false;
     bool is_primary = false;
