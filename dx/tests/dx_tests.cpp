@@ -10920,7 +10920,7 @@ static void test_d3d9_device_getters_and_shaders() {
     uint32_t d3d = call_shim(tramp("d3d9.dll", "Direct3DCreate9"), {32});
     CHECK(d3d != 0);
     // The adapter offers 640x480 up to the 1280x960 desktop, smallest first.
-    CHECK_EQ(call_method(d3d, 6, {0, 22}), 4u); // GetAdapterModeCount
+    CHECK_EQ(call_method(d3d, 6, {0, 22}), 4u);              // GetAdapterModeCount
     CHECK_EQ(call_method(d3d, 7, {0, 22, 0, sc(0x40)}), 0u); // EnumAdapterModes
     CHECK_EQ(rd32(sc(0x40)), 640u);
     CHECK_EQ(rd32(sc(0x44)), 480u);
@@ -11093,6 +11093,22 @@ static void test_d3d9_device_getters_and_shaders() {
     wr16(sc(0x1000) + 2, 0);
     CHECK_EQ(call_method(dev, 22, {0, sc(0x1000)}), 0u);
     CHECK_EQ(rd16(sc(0x1000) + 2), 0x1234u);
+
+    // A texture level counts its references on the texture: releasing the
+    // level and then the texture frees both (Battlefront II's loading movie
+    // makes a texture a frame and leaked every one of them).
+    const uint32_t live = com_live_count();
+    CHECK_EQ(call_method(dev, 23, {64, 32, 1, 0, 21, 1, sc(0x1100), 0}), 0u); // CreateTexture
+    uint32_t tex = rd32(sc(0x1100));
+    CHECK(tex != 0);
+    CHECK_EQ(call_method(tex, 18, {0, sc(0x1104)}), 0u); // GetSurfaceLevel
+    uint32_t level = rd32(sc(0x1104));
+    CHECK(level != 0);
+    CHECK_EQ(call_method(level, 1, {}), 3u); // AddRef: the texture's count
+    CHECK_EQ(call_method(level, 2, {}), 2u);
+    CHECK_EQ(call_method(tex, 2, {}), 1u); // the level keeps it alive
+    CHECK_EQ(call_method(level, 2, {}), 0u);
+    CHECK_EQ(com_live_count(), live);
 }
 
 // ps_1_1 texture addressing: texm3x2pad/texm3x2tex and texbem decode (the

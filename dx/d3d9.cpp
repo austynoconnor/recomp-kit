@@ -698,6 +698,33 @@ static void stage_unlock(ComObj *o) {
     }
 }
 
+// A texture's levels and faces count their references on the texture, as
+// Direct3D's do. Each used to take one of its own as well as one on the
+// texture, and the game's Release of the level dropped only its own, so a
+// texture whose level was ever fetched lived forever. Battlefront II makes a
+// texture for every frame of its loading movie: the leak reached gigabytes
+// within a minute and the campaign load stalled on a black screen.
+static ComObj *level_owner(ComObj *s) {
+    if (s->kind != K_D3D9SURFACE || !s->front_obj)
+        return nullptr;
+    ComObj *tex = com_get(s->front_obj);
+    return tex && tex->kind == K_D3D9TEXTURE ? tex : nullptr;
+}
+
+static void d3d9_resource_destroy(ComObj *o);
+// The texture's own surfaces go with it.
+static void d3d9_texture_destroy(ComObj *o) {
+    std::vector<uint32_t> levels;
+    levels.swap(o->surfaces);
+    for (uint32_t id : levels)
+        if (ComObj *s = com_get(id)) {
+            if (s->front_obj == o->id)
+                s->front_obj = 0;
+            com_release(s);
+        }
+    d3d9_resource_destroy(o);
+}
+
 static void d3d9_resource_destroy(ComObj *o) {
     if (o->pixels)
         heap_free(o->pixels);
@@ -1073,7 +1100,7 @@ void Dev_CreateIndexBuffer(X86 *c) {
     ib->dev_d3d = dev->id;
     ib->buf_bytes = bytes;
     ib->dynamic_buffer = (arg(c, 2) & 0x200u) != 0; // D3DUSAGE_DYNAMIC
-    ib->rmask = arg(c, 3) == 102 ? 4 : 2; // D3DFMT_INDEX32 or D3DFMT_INDEX16
+    ib->rmask = arg(c, 3) == 102 ? 4 : 2;           // D3DFMT_INDEX32 or D3DFMT_INDEX16
     uint32_t view_ = com_view(ib, IF_D3DINDEXBUFFER9);
     if (!view_) {
         com_release(ib);
@@ -2301,7 +2328,6 @@ void Tex_GetCubeMapSurface(X86 *c) {
         return;
     }
     com_addref(tex);
-    com_addref(s);
     com_out_ptr(out, view);
     com_ret(c, D3D_OK9);
 }
@@ -2357,17 +2383,15 @@ void Tex_GetSurfaceLevel(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
-    // A level is a view into the texture and references it, the same way a
-    // cube face does.
+    // A level is a view into the texture: its references are the texture's
+    // (level_owner), the same way a cube face's are.
     s->front_obj = tex->id;
-    com_addref(tex);
-    com_addref(s);
     uint32_t view_ = com_view(s, IF_D3DSURFACE9);
     if (!view_) {
-        com_release(s);
         com_ret(c, E_OUTOFMEMORY);
         return;
     }
+    com_addref(tex);
     com_out_ptr(out, view_);
     com_ret(c, D3D_OK9);
 }
@@ -2974,10 +2998,11 @@ static void out_object(uint32_t out, uint32_t id, ComIface iface) {
     ComObj *o = com_get(id);
     uint32_t view_ = 0;
     if (o) {
-        com_addref(o);
+        ComObj *owner = com_ref_target(o);
+        com_addref(owner);
         view_ = com_view(o, iface);
         if (!view_)
-            com_release(o);
+            com_release(owner);
     }
     com_out_ptr(out, view_);
 }
@@ -3695,8 +3720,10 @@ void d3d9_register() {
     com_bind(IF_D3DVOLUME9, K_D3D9VOLUME);
     com_set_destructor(K_D3D9VOLUME, d3d9_resource_destroy);
     com_set_destructor(K_D3D9VOLTEX, volume_texture_destroy);
-    for (ComKind k : {K_D3D9TEXTURE, K_D3D9SURFACE, K_D3D9VB, K_D3D9IB})
+    for (ComKind k : {K_D3D9SURFACE, K_D3D9VB, K_D3D9IB})
         com_set_destructor(k, d3d9_resource_destroy);
+    com_set_destructor(K_D3D9TEXTURE, d3d9_texture_destroy);
+    com_set_ref_owner(K_D3D9SURFACE, level_owner);
     com_set_destructor(K_D3D9QUERY, query_destroy);
     imports_register(g_d3d9_exports, std::size(g_d3d9_exports));
 }

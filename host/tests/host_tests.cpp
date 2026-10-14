@@ -2153,6 +2153,22 @@ static void test_audio_ring_and_clock() {
         }
     }
 
+    // A pan or rate change keeps the ring the one being played. Re-planning
+    // it from a copy left the guest writing into a ring nobody played while
+    // the copy looped for ever: here the ring would never go quiet.
+    host_audio_set_pan(21, 600);
+    host_audio_set_frequency(21, hz + 50);
+    host_audio_set_frequency(21, hz + 50); // unchanged: must not stop anything
+    host_audio_offline_render(4800, &peak);
+    CHECK(peak > 0.0f);
+    host_audio_offline_render(19200, &peak); // the rest of what was written
+    host_audio_offline_render(4096, &peak);  // the fade
+    host_audio_offline_render(9600, &peak);
+    CHECK(peak == 0.0f);
+    CHECK_EQ(host_audio_write(21, ring.data(), 0, ring_bytes), (int32_t)ring_bytes);
+    host_audio_offline_render(4800, &peak);
+    CHECK(peak > 0.0f);
+
     // And the queue's own answer comes from the clock, not from a completion.
     // A stream that has been playing for a while reports less outstanding than
     // it was handed, without anything having reported a buffer finished.

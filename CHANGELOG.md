@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- 2026-10-14 16:34 CDT — Claude Opus 5.5: Two Battlefront II live-site fixes.
+  (1) A constant half-second repeating sound: a SetPan or SetFrequency on a
+  playing DirectSound streaming buffer re-planned it from a copy of its
+  data, while the game kept writing into the original, so the copy looped
+  forever. The ring is now rebuilt in place and keeps its position; a pan or
+  rate call that changes nothing no longer marks the channel stopped.
+  (2) Campaign loads stuck on a black screen while memory climbed by
+  gigabytes: a Direct3D 9 texture level (GetSurfaceLevel, GetCubeMapSurface)
+  took a reference of its own as well as one on the texture, and Release
+  dropped only its own, so any texture whose level was fetched was never
+  freed. Battlefront II makes a texture for every loading-movie frame. Levels
+  now count their references on the texture (COM ref-owner hook in com.cpp),
+  and a texture frees its levels with it. New native checks in host_tests
+  (ring rebuild) and dx_tests (level references).
+
 - 2026-10-13 02:36 CDT â€” Claude Opus 5.5: Two code fixes from
   `browser-release` (NFS Most Wanted) on this branch. The web start path
   (web_main) now installs the controls hooks, so a browser controller in

@@ -18,6 +18,7 @@ std::deque<ComObj> &objects() {
 uint32_t g_vtable[IF_COUNT] = {0};
 uint64_t g_kind_mask[IF_COUNT] = {0}; // bit per ComKind
 void (*g_dtor[64])(ComObj *) = {nullptr};
+ComObj *(*g_ref_owner[64])(ComObj *) = {nullptr};
 ComQiHook g_qi_hook[64] = {nullptr};
 const char *g_iface_name[IF_COUNT] = {nullptr};
 
@@ -243,6 +244,17 @@ bool com_iface_binds(ComIface iface, ComKind kind) {
 void com_set_destructor(ComKind kind, void (*fn)(ComObj *)) {
     if ((size_t)kind < 64)
         g_dtor[kind] = fn;
+}
+
+void com_set_ref_owner(ComKind kind, ComObj *(*fn)(ComObj *)) {
+    if ((size_t)kind < 64)
+        g_ref_owner[kind] = fn;
+}
+ComObj *com_ref_target(ComObj *o) {
+    if (o && (size_t)o->kind < 64 && g_ref_owner[o->kind])
+        if (ComObj *owner = g_ref_owner[o->kind](o))
+            return owner;
+    return o;
 }
 
 void com_addref(ComObj *o) {
@@ -737,12 +749,12 @@ void com_QueryInterface(X86 *c) {
         return;
     }
     wr32(out, view);
-    com_addref(target);
+    com_addref(com_ref_target(target));
     com_ret(c, S_OK);
 }
 
 void com_AddRef(X86 *c) {
-    ComObj *o = com_this_arg(c);
+    ComObj *o = com_ref_target(com_this_arg(c));
     if (!o) {
         com_ret(c, 0);
         return;
@@ -752,7 +764,7 @@ void com_AddRef(X86 *c) {
 }
 
 void com_Release(X86 *c) {
-    ComObj *o = com_this_arg(c);
+    ComObj *o = com_ref_target(com_this_arg(c));
     if (!o) {
         com_ret(c, 0);
         return;
