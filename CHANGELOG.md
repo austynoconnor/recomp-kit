@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- 2026-10-13 — Claude Opus 5.5: Generated mipmaps for Direct3D 9
+  textures. A texture made with D3DUSAGE_AUTOGENMIPMAP got a full chain of
+  levels from the shim but only its top level was ever filled, so anything
+  drawn small sampled empty levels: Resident Evil 4's inventory items showed
+  as black squares, Leon had holes where alpha test threw away the empty
+  texels, and distant ground went dark. Any level of an A8R8G8B8 or X8R8G8B8
+  texture the game never wrote is now made from the level above with a box
+  filter before upload, as the driver would. An AUTOGENMIPMAP texture
+  reports one level to the game and GenerateMipSubLevels succeeds (the
+  levels are made on the next upload). Render targets are left alone.
+
 - 2026-10-12 19:55 CDT — Claude Opus 5.5: Movies through a game's own
   DirectShow renderer, and pointer capture for Direct3D 9 games
   (`giggity-re4`).
