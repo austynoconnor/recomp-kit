@@ -151,6 +151,7 @@ class WebGpuDevice final : public Device {
         WGPUTextureFormat format = WGPUTextureFormat_BGRA8Unorm;
         int width = 0, height = 0;
         uint64_t current = 0; // the acquired texture's handle
+        std::string selector;  // the canvas, to notice when the page sizes it to 0x0
     };
 
     Cmd *cmd(CommandBuffer cb);

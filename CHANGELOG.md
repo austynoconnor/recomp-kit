@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 2026-10-14 17:30 CDT — Claude Opus 5.5: WebGPU present skips frames while
+  the page's canvas is 0x0 (a stage hidden or not laid out yet at start) and
+  configures the surface once the canvas has a size. Before, the first
+  presents asked for a 0x0 swapchain texture and every view, copy and submit
+  after it failed validation (seen on the live Need for Speed: Most Wanted).
 - 2026-10-13 — Claude Opus 5.5: Generated mipmaps for Direct3D 9
   textures. A texture made with D3DUSAGE_AUTOGENMIPMAP got a full chain of
   levels from the shim but only its top level was ever filled, so anything
