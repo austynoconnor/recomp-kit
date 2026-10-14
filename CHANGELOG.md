@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- 2026-10-14 17:50 CDT — Claude Opus 5.5: a guest thread waiting on a host
+  file read now hands the scheduler baton to another runnable guest thread
+  (new wait kind W_HOSTIO) and takes it back when the read returns. On the
+  web build each streamed chunk is a network round trip; before, the reading
+  thread kept the baton and every guest thread (render, audio, game loop)
+  stopped until the read finished, which showed as long freezes after a race
+  and stutter while track sections streamed. Reads made under an atomic
+  section, from host threads, or with only one guest thread keep the old
+  path. The all-blocked deadlock dump ignores threads in W_HOSTIO. Checked
+  with a local menu-and-input run of 3,700 frames: no deadlock, worst frame
+  after start 132 ms.
 - 2026-10-14 17:25 CDT — Claude Opus 5.5: three diagnostics and one render fix
   for browser hitches.
   - WebGPU present skips frames while the page's canvas is 0x0 (a stage
