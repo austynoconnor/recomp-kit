@@ -287,7 +287,12 @@ void com_destroy(ComObj *o) {
             o->views[i] = 0;
         }
     }
-    o->alive = false;
+    // Ids are never reused, so a dead object keeps its slot; give back
+    // whatever its fields still hold.
+    ComObj dead;
+    dead.id = o->id;
+    dead.kind = o->kind;
+    *o = std::move(dead);
 }
 
 // ---------------------------------------------------------------------------
