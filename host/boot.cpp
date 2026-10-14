@@ -465,7 +465,10 @@ bool boot_load(const BootOptions &opts) {
     g_opt = opts;
     g_window_next_ns = g_primary_present_ns = 0;
 
-    mem_init();
+    // loader_load() sets up the guest arena itself, before it writes any of
+    // it. Doing it here as well reserved a second arena: in a browser the
+    // first one's memory is never given back, which cost a whole extra
+    // guest's worth.
     const char *exe = g_opt.exe;
     if (!exe)
         exe = recomp_env("EXE");
