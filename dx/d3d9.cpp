@@ -581,11 +581,50 @@ extern "C" bool d3d9_display_active(void) {
     return g_presents9 > 0;
 }
 
+// RECOMP_D3D9_MEM=1 prints, every 600 presents, how much memory the guest
+// heap and the host copies of D3D9 resources hold.
+static void memory_report() {
+    static int on = -1;
+    if (on < 0)
+        on = recomp_env("D3D9_MEM") ? 1 : 0;
+    if (!on || g_presents9 % 600 != 1)
+        return;
+    uint64_t host[4] = {0, 0, 0, 0}, staged = 0;
+    uint32_t count[4] = {0, 0, 0, 0};
+    for (uint32_t id = 1; id <= com_object_count(); ++id) {
+        ComObj *o = com_get(id);
+        if (!o || !o->alive)
+            continue;
+        int k = o->kind == K_D3D9TEXTURE   ? 0
+                : o->kind == K_D3D9SURFACE ? 1
+                : o->kind == K_D3D9VB      ? 2
+                : o->kind == K_D3D9IB      ? 3
+                                           : -1;
+        if (k < 0)
+            continue;
+        host[k] += o->blob.capacity();
+        ++count[k];
+        if (o->pixels && o->owns_pixels)
+            staged += heap_size(o->pixels);
+    }
+    HeapStats h = heap_stats();
+    fprintf(stderr,
+            "[d3d9 mem] frame %u: guest heap %llu MB used, %llu MB free; host copies: "
+            "textures %u/%llu MB, surfaces %u/%llu MB, vertex buffers %u/%llu MB, "
+            "index buffers %u/%llu MB; staged %llu MB\n",
+            g_presents9, (unsigned long long)(h.used_bytes >> 20),
+            (unsigned long long)(h.free_bytes >> 20), count[0], (unsigned long long)(host[0] >> 20),
+            count[1], (unsigned long long)(host[1] >> 20), count[2],
+            (unsigned long long)(host[2] >> 20), count[3], (unsigned long long)(host[3] >> 20),
+            (unsigned long long)(staged >> 20));
+}
+
 void Dev_Present(X86 *c) {
     ComObj *dev = this_device9(c);
     if (trace9())
         fprintf(stderr, "d3d9trace f%u present\n", g_presents9);
     ++g_presents9;
+    memory_report();
     ComObj *bb = dev ? device_backbuffer(dev) : nullptr;
     if (bb && gpu_on()) {
         gpu_sync(bb);
