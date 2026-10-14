@@ -72,6 +72,26 @@ OsThreadId os_thread_id_of(const OsThread *t) {
     return (OsThreadId)(uintptr_t)t->handle;
 }
 
+#ifdef __EMSCRIPTEN__
+// Emscripten's anonymous mmap is malloc plus a memset of the whole block, and
+// the memset makes every page of a 1 GB guest resident in the browser before
+// the game has used any of it. Memory the heap has never handed out (above
+// the break before this allocation) is still the zero pages the WebAssembly
+// memory grew with, and its allocator never gives memory back (no trim), so
+// only the part below the old break needs clearing.
+void *os_vm_reserve(size_t bytes) {
+    char *old_break = (char *)sbrk(0);
+    char *p = (char *)aligned_alloc(65536, (bytes + 65535) & ~(size_t)65535);
+    if (!p)
+        return nullptr;
+    if (p < old_break)
+        memset(p, 0, (size_t)(old_break - p) < bytes ? (size_t)(old_break - p) : bytes);
+    return p;
+}
+void os_vm_release(void *p, size_t) {
+    free(p);
+}
+#else
 void *os_vm_reserve(size_t bytes) {
     void *p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     return p == MAP_FAILED ? nullptr : p;
@@ -79,6 +99,7 @@ void *os_vm_reserve(size_t bytes) {
 void os_vm_release(void *p, size_t bytes) {
     munmap(p, bytes);
 }
+#endif
 
 void *os_dlopen(const char *path) {
     return dlopen(path, RTLD_NOW | RTLD_LOCAL);
