@@ -1547,6 +1547,16 @@ static void test_binding_parse_mapped() {
     CHECK(t.buttons[int(PadButton::Circle)].type == Target::Mouse &&
           t.buttons[int(PadButton::Circle)].value == 1);
 
+    // "key:A+B" holds two keys; a bad or repeated second key is an error.
+    CHECK(parse_mapped("square=key:Space+Return", &t, &err));
+    CHECK(t.buttons[int(PadButton::Square)].type == Target::Key);
+    CHECK(t.buttons[int(PadButton::Square)].value == kScanSpace);
+    CHECK(t.buttons[int(PadButton::Square)].value2 != 0);
+    CHECK(target_name(t.buttons[int(PadButton::Square)]) == "key:Space+Return");
+    CHECK(!parse_mapped("square=key:Space+Nope", &t, &err));
+    CHECK(!parse_mapped("square=key:Space+Space", &t, &err));
+    CHECK(parse_mapped("square=none", &t, &err));
+
     MappedTable before = t;
     CHECK(!parse_mapped("cross=key:Nope", &t, &err));
     CHECK(write_mapped(t) == write_mapped(before)); // unchanged on error

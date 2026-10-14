@@ -285,6 +285,14 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 game_config.load(game)
             (game / "game.toml").write_text(
+                base + '\n[controls]\n[controls.mapped]\ncross = "key:Space+Return"\n')  # two keys
+            self.assertEqual(game_config.load(game)["controls"]["mapped"]["cross"], "key:Space+Return")
+            for bad in ("key:Space+Nope", "key:Space+", "key:A+B+C"):
+                (game / "game.toml").write_text(
+                    base + '\n[controls]\n[controls.mapped]\ncross = "%s"\n' % bad)
+                with self.assertRaises(ValueError):
+                    game_config.load(game)
+            (game / "game.toml").write_text(
                 base + '\n[controls]\n[controls.mapped]\nnot_a_button = "key:Space"\n')  # unknown key
             with self.assertRaises(ValueError):
                 game_config.load(game)

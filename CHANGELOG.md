@@ -17,6 +17,15 @@
   and a texture frees its levels with it. New native checks in host_tests
   (ring rebuild) and dx_tests (level references).
 
+- 2026-10-13 22:26 CDT — Claude Opus 5.5: a mapped pad button can hold two
+  keys at once: `key:A+B` (for example `cross = "key:Space+Return"`). This lets
+  a console layout put one button on an action whose PC key differs between
+  races and menus (handbrake in a race, accept in a menu). Parsed and written
+  by host/controls/binding.cpp (Target::value2; the second key must be known
+  and different), validated by tools/game_config.py. Tests: test_game_config,
+  controls_tests parse_mapped. (Cherry-picked from browser-release; its
+  input-hint part needs hint code this branch lacks and is not taken.)
+
 - 2026-10-13 02:36 CDT â€” Claude Opus 5.5: Two code fixes from
   `browser-release` (NFS Most Wanted) on this branch. The web start path
   (web_main) now installs the controls hooks, so a browser controller in
