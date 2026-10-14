@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 2026-10-14 17:40 CDT — Claude Opus 5.5: RaiseException is logged once per
+  code and caller at the normal level, with the C++ type when it is a throw
+  and the return chain. A thread whose own top-level handler swallowed a
+  raise ended silently before; Resident Evil 4 once froze that way after a
+  shot and the log said only that the CRT's thread handler was called.
+
 - 2026-10-13 — Claude Opus 5.5: Generated mipmaps for Direct3D 9
   textures. A texture made with D3DUSAGE_AUTOGENMIPMAP got a full chain of
   levels from the shim but only its top level was ever filled, so anything

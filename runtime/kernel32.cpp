@@ -3740,6 +3740,22 @@ void k_RaiseException(X86 *c) {
              arg(c, 2), arg(c, 2) && gm_valid(arg(c, 3), 4) ? rd32(arg(c, 3)) : 0,
              rd32(c->r[R_ESP]), frames.c_str());
     }
+    // Once per code and caller at the normal level: a raise a thread's own
+    // top-level handler swallows ends that thread silently otherwise.
+    {
+        char key[48];
+        snprintf(key, sizeof key, "raise:%08x:%08x", arg(c, 0), rd32(c->r[R_ESP]));
+        std::string what = win32_describe_cxx_throw(arg(c, 0), arg(c, 2), arg(c, 3));
+        std::vector<uint32_t> chain = win32_return_chain(c->r[R_EBP], 8);
+        std::string frames;
+        for (uint32_t r : chain) {
+            char b[16];
+            snprintf(b, sizeof b, " %08x", r);
+            frames += b;
+        }
+        log_once(key, "RaiseException(code=%08x) from ret=%08x%s%s, frames:%s", arg(c, 0),
+                 rd32(c->r[R_ESP]), what.empty() ? "" : ": ", what.c_str(), frames.c_str());
+    }
     if (recomp_seh_raise(c, arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3)))
         return; // only the testing runtime can return from an unhandled raise
     LOGW("RaiseException(code=%08x flags=%08x nargs=%u args=%08x) at ESP=%08x: "
