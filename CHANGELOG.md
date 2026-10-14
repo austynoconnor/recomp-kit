@@ -13,48 +13,6 @@
   reports one level to the game and GenerateMipSubLevels succeeds (the
   levels are made on the next upload). Render targets are left alone.
 
-- 2026-10-12 19:55 CDT — Claude Opus 5.5: Movies through a game's own
-  DirectShow renderer, and pointer capture for Direct3D 9 games
-  (`giggity-re4`).
-  DirectShow: AddFilter, AddSourceFilter, Connect/ConnectDirect and Render
-  now build the graph a game makes for its own renderer filter (Resident
-  Evil 4's TextureRenderer, the SDK's Texture3D9 sample). An MPEG-1 system
-  stream is split as it is read: its MPEG audio feeds the stream's ordinary
-  host playback (Mp3Source now takes streamed input) and its pictures are
-  decoded by FFmpeg's MPEG-1 decoder and handed to the renderer's
-  IMemInputPin::Receive as bottom-up RGB24, paced by the sound's clock. The
-  source filter, its pin, allocator and sample are one host object
-  (K_DSMOVIE). Without FFmpeg in the build AddSourceFilter still says
-  E_NOTIMPL. Checked in Chrome: RE4's opening movies play with picture and
-  sound at 30 fps and Escape skips them.
-  Build: `RECOMP_FFMPEG_PREBUILT` (environment for tools/build.py, CMake
-  cache otherwise) links an FFmpeg another web build installed, for a
-  Windows host without MSYS2.
-  D3D9: UpdateTexture and UpdateSurface copy whole levels (were stubs).
-  user32: GetQueueStatus (returned through the unknown-import path with no
-  stack cleanup).
-  Pointer capture: a game that presents through Direct3D 9 (or 8 on it)
-  never has a DirectDraw primary, so `pointer_capture_wanted` refused
-  capture and mouse look/aim could not work; a presented D3D9 frame now
-  counts. Pointer lock itself cannot be granted to an automated Chrome, so
-  this is not yet confirmed by hand.
-
-- 2026-10-12 10:30 CDT — Claude Opus 5.5: `giggity-re4` for Resident Evil 4.
-  Kept Codex's uncommitted RE4 kit work (high guest heap, D3D9 shader
-  objects and assembler, d3dx9 quaternions, recursive callback discovery,
-  stack-cleanup gap recovery) and merged `giggity-d3d8` (ff58fdf). Where
-  both had built the same thing, the shared version won: DirectSound8 is
-  d3d8's; the player pages and launcher are d3d8's. D3D9 keeps RE4's shader
-  objects next to d3d8's SetFVF.
-  Translator: packed SSE/SSE2 forms RE4 and its runtime library use with
-  no CPUID check (PSUBD/PSUBQ/PMAXSW, PSLLQ/PSRLQ, PEXTRW/PINSRW,
-  PMOVMSKB/MOVMSKPS, CMPccPS/PD/SS/SD, CVTSD2SI, CVTDQ2PD and others).
-  Fixed MINSS/MINSD/MAXSS/MAXSD, which returned the other operand.
-  Checked against Unicorn (three new differential cases).
-  comctl32: InitCommonControls by name and ordinal 17 (no arguments).
-  Controls: `[controls.native] mouse_aim` lets the mouse drive a virtual
-  pad stick, for games that aim only with a stick: right button holds a pad
-  button and mouse speed deflects the stick; left button presses another.
 - 2026-10-13 — Claude Opus 5.5: Generic fixes from `giggity-re4`
   (Resident Evil 4) brought to `giggity-d3d8`. Pointer capture now also
   starts for Direct3D 9/8 games once they present a frame (it was gated on
