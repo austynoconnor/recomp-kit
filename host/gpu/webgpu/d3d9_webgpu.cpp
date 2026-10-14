@@ -1197,12 +1197,14 @@ class WebGpuRenderer final : public D9Backend {
         if (t.msaa)
             wgpuTextureRelease(t.msaa);
         if (t.texture) {
-            // Destroyed once the work that may still read it has finished.
-            WGPUTexture texture = t.texture;
-            dev_->after_submitted([texture]() {
-                wgpuTextureDestroy(texture);
-                wgpuTextureRelease(texture);
-            });
+            // The open encoder may still use it, so it waits for that submit;
+            // WebGPU itself keeps a destroyed texture until submitted work
+            // that reads it has finished. (Waiting for the queue's work-done
+            // instead could destroy it before the open encoder's submit.)
+            if (encoder_)
+                doomed_textures_.push_back(t.texture);
+            else
+                destroy_texture_now(t.texture);
         }
         t = Tex{};
     }
@@ -1283,6 +1285,9 @@ class WebGpuRenderer final : public D9Backend {
         for (WGPUBuffer b : doomed_)
             destroy_now(b);
         doomed_.clear();
+        for (WGPUTexture t : doomed_textures_)
+            destroy_texture_now(t);
+        doomed_textures_.clear();
         if (readback)
             read_queries(serial_, readback, nq, resolve, qs);
         else if (qs)
@@ -2396,6 +2401,12 @@ class WebGpuRenderer final : public D9Backend {
     static void destroy_now(WGPUBuffer b) {
         wgpuBufferDestroy(b);
         wgpuBufferRelease(b);
+    }
+    // Textures retired while the open encoder may use them.
+    std::vector<WGPUTexture> doomed_textures_;
+    static void destroy_texture_now(WGPUTexture t) {
+        wgpuTextureDestroy(t);
+        wgpuTextureRelease(t);
     }
     std::unordered_map<uint64_t, WGPUShaderModule> modules_;
     std::unordered_map<uint64_t, Layout> layouts_;
