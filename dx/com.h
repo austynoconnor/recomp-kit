@@ -424,6 +424,12 @@ int32_t com_release(ComObj *o);
 void com_destroy(ComObj *o);
 // A module may hook its resource teardown here.
 void com_set_destructor(ComKind kind, void (*fn)(ComObj *));
+// A module may name the object that carries a kind's references instead of
+// the object itself: a texture level's AddRef and Release count on its
+// texture, as Direct3D's do. Null means the object's own count.
+void com_set_ref_owner(ComKind kind, ComObj *(*fn)(ComObj *));
+// The object whose count a reference handed to the game should change.
+ComObj *com_ref_target(ComObj *o);
 
 // ---------------------------------------------------------------------------
 // Vtables

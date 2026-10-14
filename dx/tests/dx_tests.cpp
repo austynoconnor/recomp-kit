@@ -12121,6 +12121,41 @@ static void test_d3d11_texel_copy_software() {
 static void test_d3d11_texel_copy_hardware() {
     test_d3d11_texel_copy(true);
 }
+// A Direct3D 9 texture level counts its references on the texture:
+// releasing the level and then the texture frees both. A texture whose level
+// had been fetched was never freed (Battlefront II's loading movie made a
+// texture a frame and leaked every one of them).
+static void test_d3d9_texture_level_refs() {
+    cpu_reset();
+    uint32_t d3d = call_shim(tramp("d3d9.dll", "Direct3DCreate9"), {32});
+    CHECK(d3d != 0);
+    uint32_t pp = sc(0x100);
+    for (uint32_t i = 0; i < 14; ++i)
+        wr32(pp + 4 * i, 0);
+    wr32(pp + 0, 640);
+    wr32(pp + 4, 480);
+    wr32(pp + 8, 22); // X8R8G8B8
+    wr32(pp + 12, 1);
+    wr32(pp + 24, 1);                                               // DISCARD
+    wr32(pp + 32, 1);                                               // windowed
+    CHECK_EQ(call_method(d3d, 16, {0, 1, 0, 0x40, pp, sc(0)}), 0u); // CreateDevice
+    uint32_t dev = rd32(sc(0));
+    CHECK(dev != 0);
+    if (!dev)
+        return;
+    const uint32_t live = com_live_count();
+    CHECK_EQ(call_method(dev, 23, {64, 32, 1, 0, 21, 1, sc(0x1100), 0}), 0u); // CreateTexture
+    uint32_t tex = rd32(sc(0x1100));
+    CHECK(tex != 0);
+    CHECK_EQ(call_method(tex, 18, {0, sc(0x1104)}), 0u); // GetSurfaceLevel
+    uint32_t level = rd32(sc(0x1104));
+    CHECK(level != 0);
+    CHECK_EQ(call_method(level, 1, {}), 3u); // AddRef: the texture's count
+    CHECK_EQ(call_method(level, 2, {}), 2u);
+    CHECK_EQ(call_method(tex, 2, {}), 1u); // the level keeps it alive
+    CHECK_EQ(call_method(level, 2, {}), 0u);
+    CHECK_EQ(com_live_count(), live);
+}
 static void test_d3d11_resource_bounds() {
     cpu_reset();
     gm_zero(sc(0), 0x4000);
@@ -12835,6 +12870,7 @@ int main() {
         void (*fn)();
     } tests[] = {
         {"D3D11 resource bounds", test_d3d11_resource_bounds},
+        {"D3D9 texture level references", test_d3d9_texture_level_refs},
         {"D3D11 quad pixels", test_d3d11_quad_pixels},
         {"D3D11 alpha pixels", test_d3d11_alpha_pixels},
         {"D3D11 texel copy", test_d3d11_texel_copy_software},

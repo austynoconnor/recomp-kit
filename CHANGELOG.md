@@ -2,11 +2,24 @@
 
 ## Unreleased
 
+- 2026-10-14 17:35 CDT — Claude Opus 5.5: Two generic fixes from `giggity-swbf2`
+  (df1e69c). (1) A DirectSound streaming buffer whose pan or frequency
+  changed while playing looped a stale copy of its data forever (a constant
+  half-second repeat in Battlefront II); the ring is now rebuilt in place,
+  and a pan or rate call that changes nothing no longer stops the channel.
+  (2) Direct3D 9 texture levels (GetSurfaceLevel, GetCubeMapSurface) count
+  their references on the texture, as Direct3D's do (COM ref-owner hook in
+  com.cpp), and a texture frees its levels with it. Before, any texture whose
+  level was fetched was never freed; Battlefront II's loading movie leaked
+  gigabytes. Also reaches Direct3D 8 games, which forward to these.
+  New native checks in host_tests and dx_tests.
+
 - 2026-10-14 17:30 CDT — Claude Opus 5.5: WebGPU present skips frames while
   the page's canvas is 0x0 (a stage hidden or not laid out yet at start) and
   configures the surface once the canvas has a size. Before, the first
   presents asked for a 0x0 swapchain texture and every view, copy and submit
   after it failed validation (seen on the live Need for Speed: Most Wanted).
+
 - 2026-10-13 — Claude Opus 5.5: Generated mipmaps for Direct3D 9
   textures. A texture made with D3DUSAGE_AUTOGENMIPMAP got a full chain of
   levels from the shim but only its top level was ever filled, so anything
