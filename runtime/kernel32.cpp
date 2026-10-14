@@ -1809,6 +1809,18 @@ void k_InterlockedExchange(X86 *c) {
     wr32(p, v);
     set_eax(c, old);
 }
+void k_InterlockedCompareExchange(X86 *c) {
+    uint32_t p = arg(c, 0), exchange = arg(c, 1), comparand = arg(c, 2);
+    uint32_t old = rd32(p);
+    if (old == comparand)
+        wr32(p, exchange);
+    set_eax(c, old);
+}
+// Agrees with recomp_cpuid: no MMX, SSE or other extension is reported, so
+// the CRT and the game keep to the x87 paths the translator covers.
+void k_IsProcessorFeaturePresent(X86 *c) {
+    set_eax(c, 0);
+}
 
 // CRITICAL_SECTION is 24 bytes. The fields the guest can read are kept where
 // Windows keeps them: LockCount at +4, RecursionCount at +8, OwningThread at
@@ -3782,6 +3794,27 @@ void k_lstrlenA(X86 *c) {
     set_eax(c, (uint32_t)gm_str(arg(c, 0)).size());
 }
 
+// lstrcmpiA: case-insensitive, ASCII folding; the sign is what callers test.
+void k_lstrcmpiA(X86 *c) {
+    std::string a = gm_str(arg(c, 0)), b = gm_str(arg(c, 1));
+    int r = 0;
+    for (size_t i = 0;; ++i) {
+        unsigned char x = i < a.size() ? (unsigned char)a[i] : 0;
+        unsigned char y = i < b.size() ? (unsigned char)b[i] : 0;
+        if (x >= 'A' && x <= 'Z')
+            x += 32;
+        if (y >= 'A' && y <= 'Z')
+            y += 32;
+        if (x != y) {
+            r = x < y ? -1 : 1;
+            break;
+        }
+        if (!x)
+            break;
+    }
+    set_eax(c, (uint32_t)r);
+}
+
 void k_lstrcpyA(X86 *c) {
     uint32_t d = arg(c, 0);
     std::string s = gm_str(arg(c, 1));
@@ -5102,6 +5135,8 @@ const ImportShim g_kernel32_shims[] = {
     {"KERNEL32.dll", "InterlockedIncrement", 1, k_InterlockedIncrement},
     {"KERNEL32.dll", "InterlockedDecrement", 1, k_InterlockedDecrement},
     {"KERNEL32.dll", "InterlockedExchange", 2, k_InterlockedExchange},
+    {"KERNEL32.dll", "InterlockedCompareExchange", 3, k_InterlockedCompareExchange},
+    {"KERNEL32.dll", "IsProcessorFeaturePresent", 1, k_IsProcessorFeaturePresent},
     {"KERNEL32.dll", "InitializeCriticalSection", 1, k_InitializeCriticalSection},
     {"KERNEL32.dll", "EnterCriticalSection", 1, k_EnterCriticalSection},
     {"KERNEL32.dll", "LeaveCriticalSection", 1, k_LeaveCriticalSection},
@@ -5138,6 +5173,7 @@ const ImportShim g_kernel32_shims[] = {
     // strings, code pages, locale
     {"KERNEL32.dll", "lstrlenA", 1, k_lstrlenA},
     {"KERNEL32.dll", "lstrcpyA", 2, k_lstrcpyA},
+    {"KERNEL32.dll", "lstrcmpiA", 2, k_lstrcmpiA},
     {"KERNEL32.dll", "lstrcatA", 2, k_lstrcatA},
     {"KERNEL32.dll", "IsDBCSLeadByte", 1, k_IsDBCSLeadByte},
     {"KERNEL32.dll", "GetACP", 0, k_GetACP},
