@@ -764,8 +764,7 @@ bool input_trace() {
 
 void handle_key(const SDL_KeyboardEvent &event, bool down) {
     if (input_trace())
-        fprintf(stderr, "[input] sdl key %d %s window %u
-", int(event.scancode),
+        fprintf(stderr, "[input] sdl key %d %s window %u\n", int(event.scancode),
                 down ? "down" : "up", unsigned(event.windowID));
     // A modifier remapped by [controls.native] keys goes on as its new key.
     if (is_modifier_scancode(event.scancode) &&
