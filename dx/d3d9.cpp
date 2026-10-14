@@ -75,6 +75,7 @@ static void gpu_sync(ComObj *o);
 // One scratch block for structures a method fills in for the guest.
 static uint32_t g_presents9 = 0; // presented frames, for RECOMP_D3D9_TRACE_FRAME
 static bool trace9();
+static std::unordered_map<uint32_t, uint8_t> &level_written();
 static uint32_t g_scratch = 0, g_scratch_size = 0;
 static uint32_t scratch9(uint32_t n) {
     if (g_scratch_size < n) {
@@ -674,6 +675,8 @@ static void stage_unlock(ComObj *o) {
         heap_free(o->pixels);
         o->pixels = 0;
         d9_raster_invalidate(o->id);
+        if (o->kind == K_D3D9SURFACE)
+            level_written()[o->id] = 1;
         gpu_after_unlock(o, 0, (uint32_t)o->blob.size());
     }
 }
@@ -686,6 +689,7 @@ static void d3d9_resource_destroy(ComObj *o) {
     o->pixels_bytes = 0;
     std::vector<uint8_t>().swap(o->blob);
     d9_raster_invalidate(o->id);
+    level_written().erase(o->id);
     gpu_forget(o);
 }
 
@@ -807,6 +811,18 @@ static ComObj *texture_level(ComObj *tex, uint32_t level) {
 // uploaded before the next draw that reads it, and a slot the GPU drew into is
 // read back before the game locks it.
 static const uint32_t USAGE_RENDERTARGET = 1, USAGE_DEPTHSTENCIL = 2;
+// D3DUSAGE_AUTOGENMIPMAP: the texture shows the game one level and the
+// device makes the rest from it.
+static const uint32_t USAGE_AUTOGENMIPMAP = 0x400;
+// Texture levels the game has written (unlocked or copied into), by surface
+// id. A level the game never wrote below one it did is made from the level
+// above it (see mip_fill), as the driver does for an AUTOGENMIPMAP texture;
+// left empty it would sample black and fully transparent wherever the
+// texture is drawn small.
+static std::unordered_map<uint32_t, uint8_t> &level_written() {
+    static auto *m = new std::unordered_map<uint32_t, uint8_t>();
+    return *m;
+}
 
 struct GpuMirror {
     bool defined = false;
@@ -908,11 +924,53 @@ static GpuMirror &gpu_define(ComObj *o) {
     return m;
 }
 
+// Halves one 32-bit level into the next with a 2x2 box filter.
+static void mip_halve32(const ComObj *a, ComObj *b) {
+    const uint8_t *src = a->blob.data();
+    uint8_t *dst = b->blob.data();
+    for (uint32_t y = 0; y < b->height; ++y) {
+        uint32_t y0 = std::min(2 * y, a->height - 1), y1 = std::min(2 * y + 1, a->height - 1);
+        for (uint32_t x = 0; x < b->width; ++x) {
+            uint32_t x0 = std::min(2 * x, a->width - 1), x1 = std::min(2 * x + 1, a->width - 1);
+            const uint8_t *p[4] = {src + (size_t)y0 * a->pitch + x0 * 4,
+                                   src + (size_t)y0 * a->pitch + x1 * 4,
+                                   src + (size_t)y1 * a->pitch + x0 * 4,
+                                   src + (size_t)y1 * a->pitch + x1 * 4};
+            uint8_t *q = dst + (size_t)y * b->pitch + x * 4;
+            for (int ch = 0; ch < 4; ++ch)
+                q[ch] = (uint8_t)((p[0][ch] + p[1][ch] + p[2][ch] + p[3][ch] + 2) >> 2);
+        }
+    }
+}
+// Makes every level of a 2D texture the game did not write from the one
+// above it, when that one changed. A8R8G8B8 and X8R8G8B8 only; a render
+// target's levels are left alone (its level zero is on the GPU).
+static void mip_fill(ComObj *o, GpuMirror &m) {
+    if (o->kind != K_D3D9TEXTURE || o->caps || o->surfaces.size() < 2 ||
+        (o->rmask != 21 && o->rmask != 22) || m.cpu_dirty.size() < o->surfaces.size() ||
+        (resource_usage()[o->id] & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL)))
+        return;
+    auto &written = level_written();
+    for (size_t l = 1; l < o->surfaces.size(); ++l) {
+        if (!m.cpu_dirty[l - 1] || written.count(o->surfaces[l]))
+            continue;
+        ComObj *a = com_get(o->surfaces[l - 1]), *b = com_get(o->surfaces[l]);
+        if (!a || !b || a->bpp != 32 || b->bpp != 32 || a->blob.empty() || b->blob.empty() ||
+            b->lock_count || (l == 1 && !written.count(o->surfaces[0])))
+            return;
+        mip_halve32(a, b);
+        m.cpu_dirty[l] = 1;
+        log_once("d3d9.mipfill", "d3d9: making texture levels the game left empty from the "
+                                 "level above (generated mipmaps)");
+    }
+}
+
 // Uploads every slot the game changed since the GPU last saw it.
 static void gpu_sync(ComObj *o) {
     if (!o)
         return;
     GpuMirror &m = gpu_define(o);
+    mip_fill(o, m);
     for (uint32_t slot = 0; slot < m.cpu_dirty.size(); ++slot) {
         if (!m.cpu_dirty[slot])
             continue;
@@ -1089,7 +1147,10 @@ void Dev_CreateTexture(X86 *c) {
     }
     tex->rmask = fmt;
     uint32_t usage = arg(c, 4);
-    resource_usage()[tex->id] = usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL);
+    resource_usage()[tex->id] =
+        usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL | USAGE_AUTOGENMIPMAP);
+    if (usage & USAGE_AUTOGENMIPMAP)
+        log_once("d3d9.autogenmip", "d3d9: a texture asks for generated mipmaps");
     for (uint32_t l = 0; l < levels && l < 16; ++l) {
         ComObj *s = make_surface(dev, std::max(w >> l, 1u), std::max(h >> l, 1u), fmt);
         if (!s)
@@ -2042,7 +2103,8 @@ RES_STUB(Tex, SetLOD)
 RES_STUB(Tex, GetLOD)
 RES_STUB(Tex, SetAutoGenFilterType)
 RES_STUB(Tex, GetAutoGenFilterType)
-RES_STUB(Tex, GenerateMipSubLevels)
+// The levels are made when the texture is next uploaded (mip_fill).
+void Tex_GenerateMipSubLevels(X86 *c) { com_ret(c, D3D_OK9); }
 RES_STUB(Tex, AddDirtyRect)
 RES_STUB(Tex, AddDirtyRectCube)
 RES_STUB(Surf, GetDC)
@@ -2273,7 +2335,11 @@ void Tex_UnlockRectCube(X86 *c) {
 
 void Tex_GetLevelCount(X86 *c) {
     ComObj *tex = com_this_arg(c);
-    set_eax(c, (tex && !tex->caps && !tex->surfaces.empty()) ? (uint32_t)tex->surfaces.size() : 1);
+    // An AUTOGENMIPMAP texture shows the game only its top level.
+    bool autogen = tex && (resource_usage()[tex->id] & USAGE_AUTOGENMIPMAP);
+    set_eax(c, (tex && !tex->caps && !tex->surfaces.empty() && !autogen)
+                   ? (uint32_t)tex->surfaces.size()
+                   : 1);
 }
 
 // (this, Level, pDesc): the same D3DSURFACE_DESC a surface describes itself
@@ -2324,6 +2390,7 @@ static bool copy_surface_bytes(ComObj *src, ComObj *dst) {
     gpu_before_lock(src);
     memcpy(dst->blob.data(), src->blob.data(), src->blob.size());
     d9_raster_invalidate(dst->id);
+    level_written()[dst->id] = 1;
     gpu_after_unlock(dst, 0, (uint32_t)dst->blob.size());
     return true;
 }
