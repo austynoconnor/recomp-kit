@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- 2026-10-14 17:25 CDT — Claude Opus 5.5: three diagnostics and one render fix
+  for browser hitches.
+  - WebGPU present skips frames while the page's canvas is 0x0 (a stage
+    hidden or not laid out yet at start) and configures the surface once the
+    canvas has a size. Before, the first presents asked for a 0x0 swapchain
+    texture and every view, copy and submit after it failed validation.
+  - A ReadFile whose host read waits 40 ms or more is reported as
+    "[stall] slow read: <file> at <offset>, <bytes>, <ms>, guest thread <n>"
+    (up to 400 lines), so a stall report's file time can be traced to the
+    file and the guest thread that waited.
+  - The web player copies the game's log to the browser console when the
+    page address carries a RECOMP_* flag, so a player can copy it from there.
 - 2026-10-13 22:26 CDT — Claude Opus 5.5: a mapped pad button can hold two
   keys at once: `key:A+B` (for example `cross = "key:Space+Return"`). This lets
   a console layout put one button on an action whose PC key differs between

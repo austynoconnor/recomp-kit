@@ -36,9 +36,13 @@ function status(text, back) {
 }
 const log = [];
 window.recompLog = log; // for tests
+// With diagnostic RECOMP_* flags in the address, the game's own log also goes
+// to the browser console so a player can copy it from there.
+const mirrorLog = /[?&]RECOMP_/.test(location.search);
 // Keep diagnostics bounded during long runs; the browser console need not
 // retain every line emitted by translated code.
 function record(text) {
+  if (mirrorLog) console.log(text);
   if (text.includes("[host] could not prepare streamed game files"))
     status("Game data could not be prepared. Stop and choose Start game to retry.");
   log.push(text);

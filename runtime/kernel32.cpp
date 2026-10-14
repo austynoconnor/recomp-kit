@@ -838,11 +838,17 @@ static void file_drop_read_ahead(const std::string &path) {
 // the read-ahead buffer are not timed; in a browser each clock reading is a
 // call out to JavaScript and a game reading a byte at a time makes hundreds
 // of thousands of them.
+// Host read time on this thread so far; ReadFile compares it before and after
+// to name reads slow enough to be a hitch without reading the clock itself.
+static __thread uint64_t t_host_read_ns = 0;
+
 static int64_t host_read(int fd, uint8_t *dst, size_t want, uint64_t *spent_ns) {
     RecompStallScope stall(RECOMP_STALL_FILE);
     const uint64_t from = os_monotonic_ns();
     int64_t got = os_fd_read(fd, dst, want);
-    *spent_ns += os_monotonic_ns() - from;
+    const uint64_t spent = os_monotonic_ns() - from;
+    *spent_ns += spent;
+    t_host_read_ns += spent;
     return got;
 }
 
@@ -885,6 +891,8 @@ static int64_t file_read(HObj *o, uint8_t *dst, uint32_t want) {
     return (int64_t)n;
 }
 
+extern __thread size_t t_self; // defined with the scheduler below
+
 void k_ReadFile(X86 *c) {
     HObj *o = handle_get(arg(c, 0), H_FILE);
     uint32_t buf = arg(c, 1), want = arg(c, 2), pread = arg(c, 3);
@@ -904,10 +912,25 @@ void k_ReadFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
+    const uint64_t read_before = t_host_read_ns;
     int64_t n = file_read(o, g_mem + buf, want);
+    const uint64_t spent_ms = (t_host_read_ns - read_before) / 1000000;
     static const bool trace_files = recomp_env("TRACE_FILES") != nullptr;
     if (trace_files)
         LOGW("file: read handle=%08x want=%u got=%lld", arg(c, 0), want, (long long)n);
+    // A read that waits long enough to show as a hitch names itself, so a
+    // stall report ("file 830 ms") can be traced to the file, the offset,
+    // and the guest thread that waited (thread 0 is the game's main thread;
+    // every guest thread waits while one holds the baton in a read).
+    static int slow_reported = 0;
+    if (spent_ms >= 40 && slow_reported < 400) {
+        slow_reported++;
+        // The descriptor ends where the guest's read ended.
+        const int64_t at = os_fd_seek(o->fd, 0, OS_SEEK_CUR) - (n > 0 ? n : 0);
+        fprintf(stderr, "[stall] slow read: %s at %lld, %u bytes, %llu ms, guest thread %zu\n",
+                o->guest_name.c_str(), (long long)at, want, (unsigned long long)spent_ms,
+                (size_t)t_self);
+    }
     if (n < 0) {
         set_last_error(ERROR_ACCESS_DENIED_);
         if (pread)
