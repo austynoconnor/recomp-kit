@@ -10,6 +10,9 @@
   and different), validated by tools/game_config.py, and the browser input
   hints match a combined binding to an action bound to either key. Tests:
   test_game_config, test_web_player hints, controls_tests parse_mapped.
+- 2026-10-14 16:15 CDT — Claude Opus 5.5: controller hints name the Select
+  button by pad (Back on Xbox 360, View on Xbox One/Series, Select on
+  PlayStation, − on Nintendo) instead of the raw word SELECT.
 - 2026-10-13 02:45 CDT — Claude Opus 5.5: WS2_32 (Winsock 2) now behaves as a
   machine whose network is down instead of a list of pop counts. WSAStartup
   succeeds and fills WSADATA; socket, bind, connect, send, recv, select and the

@@ -20,9 +20,9 @@ export function inputHintText(id, config) {
       : "Keyboard · Arrow keys: browse · Enter: confirm · Esc: back · Type names · Backspace: delete";
   const playstation = labels?.name.startsWith("PlayStation");
   const nintendo = labels?.name.startsWith("Nintendo");
-  const buttons = playstation ? {cross:"✕",circle:"○",square:"□",triangle:"△",r2:"R2",l2:"L2",r1:"R1",l1:"L1",start:"Options"}
-    : nintendo ? {cross:"B",circle:"A",square:"Y",triangle:"X",r2:"ZR",l2:"ZL",r1:"R",l1:"L",start:"+"}
-    : {cross:"A",circle:"B",square:"X",triangle:"Y",r2:"RT",l2:"LT",r1:"RB",l1:"LB",start:labels?.name === "Xbox controller" ? "Menu" : "Start"};
+  const buttons = playstation ? {cross:"✕",circle:"○",square:"□",triangle:"△",r2:"R2",l2:"L2",r1:"R1",l1:"L1",select:"Select",start:"Options"}
+    : nintendo ? {cross:"B",circle:"A",square:"Y",triangle:"X",r2:"ZR",l2:"ZL",r1:"R",l1:"L",select:"−",start:"+"}
+    : {cross:"A",circle:"B",square:"X",triangle:"Y",r2:"RT",l2:"LT",r1:"RB",l1:"LB",select:labels?.name === "Xbox controller" ? "View" : "Back",start:labels?.name === "Xbox controller" ? "Menu" : "Start"};
   if (labels?.name === "Controller") Object.assign(buttons, {
     cross:"Bottom button",circle:"Right button",square:"Left button",triangle:"Top button",
     r2:"Right trigger",l2:"Left trigger",r1:"Right shoulder",l1:"Left shoulder",
