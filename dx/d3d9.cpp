@@ -795,6 +795,33 @@ static void stage_unlock(ComObj *o) {
     }
 }
 
+// A texture's levels and faces count their references on the texture, as
+// Direct3D's do. Each used to take one of its own as well as one on the
+// texture, and the game's Release of the level dropped only its own, so a
+// texture whose level was ever fetched lived forever. Battlefront II makes a
+// texture for every frame of its loading movie: the leak reached gigabytes
+// within a minute and the campaign load stalled on a black screen.
+static ComObj *level_owner(ComObj *s) {
+    if (s->kind != K_D3D9SURFACE || !s->front_obj)
+        return nullptr;
+    ComObj *tex = com_get(s->front_obj);
+    return tex && tex->kind == K_D3D9TEXTURE ? tex : nullptr;
+}
+
+static void d3d9_resource_destroy(ComObj *o);
+// The texture's own surfaces go with it.
+static void d3d9_texture_destroy(ComObj *o) {
+    std::vector<uint32_t> levels;
+    levels.swap(o->surfaces);
+    for (uint32_t id : levels)
+        if (ComObj *s = com_get(id)) {
+            if (s->front_obj == o->id)
+                s->front_obj = 0;
+            com_release(s);
+        }
+    d3d9_resource_destroy(o);
+}
+
 static void d3d9_resource_destroy(ComObj *o) {
     if (o->pixels)
         heap_free(o->pixels);
@@ -1431,10 +1458,10 @@ void Dev_GetBackBuffer(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
-    com_addref(s);
+    com_addref(com_ref_target(s));
     uint32_t view_ = com_view(s, IF_D3DSURFACE9);
     if (!view_) {
-        com_release(s);
+        com_release(com_ref_target(s));
         com_ret(c, E_OUTOFMEMORY);
         return;
     }
@@ -1450,10 +1477,10 @@ void Dev_GetDepthStencilSurface(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
-    com_addref(s);
+    com_addref(com_ref_target(s));
     uint32_t view_ = com_view(s, IF_D3DSURFACE9);
     if (!view_) {
-        com_release(s);
+        com_release(com_ref_target(s));
         com_ret(c, E_OUTOFMEMORY);
         return;
     }
@@ -1511,10 +1538,10 @@ void Dev_GetRenderTarget(X86 *c) {
         com_ret(c, index == 0 ? D3DERR_INVALIDCALL : 0x88760866u); // D3DERR_NOTFOUND
         return;
     }
-    com_addref(s);
+    com_addref(com_ref_target(s));
     uint32_t view_ = com_view(s, IF_D3DSURFACE9);
     if (!view_) {
-        com_release(s);
+        com_release(com_ref_target(s));
         com_ret(c, E_OUTOFMEMORY);
         return;
     }
@@ -2433,7 +2460,6 @@ void Tex_GetCubeMapSurface(X86 *c) {
         return;
     }
     com_addref(tex);
-    com_addref(s);
     com_out_ptr(out, view);
     com_ret(c, D3D_OK9);
 }
@@ -2489,20 +2515,18 @@ void Tex_GetSurfaceLevel(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
-    // A level is a view into the texture and references it, the same way a
-    // cube face does.
+    // A level is a view into the texture: its references are the texture's
+    // (level_owner), the same way a cube face's are.
     s->front_obj = tex->id;
     if (rt_trace_from() >= 0)
         LOGW("d3d9 rt: frame %u: GetSurfaceLevel %u of texture %u -> %s", g_presents9, arg(c, 1),
              tex->id, rt_name(s).c_str());
-    com_addref(tex);
-    com_addref(s);
     uint32_t view_ = com_view(s, IF_D3DSURFACE9);
     if (!view_) {
-        com_release(s);
         com_ret(c, E_OUTOFMEMORY);
         return;
     }
+    com_addref(tex);
     com_out_ptr(out, view_);
     com_ret(c, D3D_OK9);
 }
@@ -3532,8 +3556,10 @@ void d3d9_register() {
     com_bind(IF_D3DINDEXBUFFER9, K_D3D9IB);
     com_bind(IF_D3DVERTEXDECL9, K_D3D9DECL);
     com_bind(IF_D3DQUERY9, K_D3D9QUERY);
-    for (ComKind k : {K_D3D9TEXTURE, K_D3D9SURFACE, K_D3D9VB, K_D3D9IB})
+    for (ComKind k : {K_D3D9SURFACE, K_D3D9VB, K_D3D9IB})
         com_set_destructor(k, d3d9_resource_destroy);
+    com_set_destructor(K_D3D9TEXTURE, d3d9_texture_destroy);
+    com_set_ref_owner(K_D3D9SURFACE, level_owner);
     com_set_destructor(K_D3D9QUERY, query_destroy);
     com_bind(IF_D3DVERTEXSHADER9, K_D3D9SHADER);
     com_bind(IF_D3DPIXELSHADER9, K_D3D9SHADER);
