@@ -50,9 +50,10 @@ KEY_NAMES = (
     "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Home", "PageUp", "Delete",
     "End", "PageDown", "Right", "Left", "Down", "Up", "LCtrl", "LShift", "LAlt",
 )
-# key:<name>, mouse_left/right/middle, wheel_up/down, action:<name> or none.
+# key:<name> (or key:<name>+<name>, two keys held together), mouse_left/right/middle,
+# wheel_up/down, action:<name> or none.
 BUTTON_TARGET_RE = re.compile(
-    r"^(key:[A-Za-z0-9]+|mouse_(left|right|middle)|wheel_(up|down)|"
+    r"^(key:[A-Za-z0-9]+(\+[A-Za-z0-9]+)?|mouse_(left|right|middle)|wheel_(up|down)|"
     r"action:(settings|system_keyboard|edit_layout)|none)$")
 HEAP_END = 0x0e000000        # runtime/x86.h GUEST_HEAP_END; the mods' heap starts there
 GUEST_SIZE_DEFAULT = 0x10000000   # runtime/x86.h GUEST_SIZE: the arena, 256 MB unless a module needs more
@@ -121,7 +122,8 @@ def load_controls(controls, touch, source):
                                  % (source, value))
         elif not isinstance(value, str) or not BUTTON_TARGET_RE.match(value):
             raise ValueError("%s: [controls.mapped] %s is not a valid target: %r" % (source, key, value))
-        elif value.startswith("key:") and value[len("key:"):] not in KEY_NAMES:
+        elif value.startswith("key:") and any(
+                name not in KEY_NAMES for name in value[len("key:"):].split("+")):
             raise ValueError("%s: [controls.mapped] %s names no key: %r" % (source, key, value))
     controls["mapped"] = mapped
 

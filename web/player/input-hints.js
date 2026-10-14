@@ -28,7 +28,12 @@ export function inputHintText(id, config) {
     r2:"Right trigger",l2:"Left trigger",r1:"Right shoulder",l1:"Left shoulder",
   });
   const named = value => ({"key:Return":"Enter", "key:Escape":"Esc", "key:Up":"↑", "key:Down":"↓",
-    "key:Space":"Space", "key:LShift":"Shift", "key:RShift":"Shift", "horizontal_arrows":"←/→"})[value] || value.replace(/^key:/, "");
+    "key:Space":"Space", "key:LShift":"Shift", "key:RShift":"Shift", "key:LCtrl":"Ctrl", "key:LAlt":"Alt",
+    "horizontal_arrows":"←/→"})[value] || value.replace(/^key:/, "");
+  // A pad button bound to "key:Space+Return" presses both keys, so it serves
+  // an action bound to either one.
+  const serves = (binding, value) => binding === value || (typeof binding === "string" &&
+    binding.startsWith("key:") && value.startsWith("key:") && binding.slice(4).split("+").includes(value.slice(4)));
   // [controls] key_aliases ({W: "Up"}): holding the key also holds its target.
   const aliases = {};
   for (const [key, target] of Object.entries(config.aliases || {})) aliases[target] ??= key;
@@ -44,7 +49,7 @@ export function inputHintText(id, config) {
   for (const [action, value] of Object.entries(config.actions)) {
     let button = keyboard(value);
     if (labels) {
-      const binding = order.find(name => config.bindings?.[name] === value);
+      const binding = order.find(name => serves(config.bindings?.[name], value));
       if (binding) button = buttons[binding] || binding.toUpperCase();
       else if (config.bindings?.left_stick === value) button = "Left stick";
       else if (config.bindings?.right_stick === value) button = "Right stick";

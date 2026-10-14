@@ -41,10 +41,19 @@ bool parse_target(const std::string &v, Target *out) {
         return true;
     }
     if (v.rfind("key:", 0) == 0) {
-        const int sc = scancode_from_name(v.substr(4));
+        // "key:A" or "key:A+B" (two keys held together).
+        const std::string names = v.substr(4);
+        const size_t plus = names.find('+');
+        const int sc = scancode_from_name(names.substr(0, plus));
         if (sc == 0)
             return false;
-        *out = Target{Target::Key, sc, ""};
+        Target t{Target::Key, sc, ""};
+        if (plus != std::string::npos) {
+            t.value2 = scancode_from_name(names.substr(plus + 1));
+            if (t.value2 == 0 || t.value2 == sc)
+                return false;
+        }
+        *out = t;
         return true;
     }
     if (v.rfind("action:", 0) == 0) {
@@ -140,7 +149,12 @@ std::string target_name(const Target &t) {
     switch (t.type) {
     case Target::Key: {
         const char *nm = scancode_name(t.value);
-        return std::string("key:") + (nm ? nm : "");
+        std::string s = std::string("key:") + (nm ? nm : "");
+        if (t.value2) {
+            const char *nm2 = scancode_name(t.value2);
+            s += std::string("+") + (nm2 ? nm2 : "");
+        }
+        return s;
     }
     case Target::Mouse:
         return t.value == 1 ? "mouse_right" : t.value == 2 ? "mouse_middle" : "mouse_left";
@@ -359,10 +373,13 @@ void Binding::apply_button_edge(const Target &t, bool down, std::vector<TouchAct
                                 std::vector<std::string> *actions) {
     switch (t.type) {
     case Target::Key:
-        if (down)
+        if (down) {
             press_key(t.value, out);
-        else
+            press_key(t.value2, out); // press_key ignores 0
+        } else {
             release_key(t.value, out);
+            release_key(t.value2, out);
+        }
         break;
     case Target::Mouse:
         // Ref-counted: a second button also mapped to this one is a no-op

@@ -297,6 +297,8 @@ class WebPlayerTests(unittest.TestCase):
         page.wait_for_timeout(200)
         page.evaluate("window.pads[0].buttons[0].pressed=true")
         page.wait_for_function("document.querySelector('#hints').textContent.includes('R: shift up')")
+        page.evaluate("window.config.bindings.cross='key:Space+Return'; delete window.config.bindings.triangle")
+        page.wait_for_function("document.querySelector('#hints').textContent.includes('B: confirm')")  # Switch: bottom button is B
         page.evaluate("window.pads=[]")
         page.wait_for_function("document.querySelector('#hints').textContent.startsWith('Keyboard')")
         self.assertIn("↑: accelerate", page.locator("#hints").inner_text())

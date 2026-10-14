@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-13 22:26 CDT — Claude Opus 5.5: a mapped pad button can hold two
+  keys at once: `key:A+B` (for example `cross = "key:Space+Return"`). This lets
+  a console layout put one button on an action whose PC key differs between
+  races and menus (handbrake in a race, accept in a menu). Parsed and written
+  by host/controls/binding.cpp (Target::value2; the second key must be known
+  and different), validated by tools/game_config.py, and the browser input
+  hints match a combined binding to an action bound to either key. Tests:
+  test_game_config, test_web_player hints, controls_tests parse_mapped.
 - 2026-10-13 02:45 CDT — Claude Opus 5.5: WS2_32 (Winsock 2) now behaves as a
   machine whose network is down instead of a list of pop counts. WSAStartup
   succeeds and fills WSADATA; socket, bind, connect, send, recv, select and the
