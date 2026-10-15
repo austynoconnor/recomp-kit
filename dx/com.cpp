@@ -3,16 +3,42 @@
 #include "../runtime/memory.h"
 
 #include <string.h>
-#include <deque>
+#include <vector>
 
 namespace {
 
-// Objects are held in a deque so a pointer stays valid while another object is
-// created during a shim call (CreateSurface makes a back buffer, and the
-// caller still holds the ComObj* for the primary).
-std::deque<ComObj> &objects() {
-    static auto *v = new std::deque<ComObj>();
+// Each object is allocated on its own so a pointer stays valid while another
+// object is created during a shim call (CreateSurface makes a back buffer, and
+// the caller still holds the ComObj* for the primary). Slot id - 1 holds it;
+// ids are never reused, and a dead object's slot is null once it is freed.
+std::vector<ComObj *> &objects() {
+    static auto *v = new std::vector<ComObj *>();
     return *v;
+}
+
+// Destroyed objects, freed only after many more have died, so a caller still
+// holding the pointer within the same call sees a dead object, not freed
+// memory. Games that make and drop textures every frame created hundreds of
+// objects a second, and kept every dead one (some 4 KB each) forever.
+struct Graveyard {
+    std::vector<uint32_t> dying, dead;
+};
+Graveyard &graveyard() {
+    static auto *g = new Graveyard();
+    return *g;
+}
+void bury(uint32_t id) {
+    Graveyard &g = graveyard();
+    g.dying.push_back(id);
+    if (g.dying.size() < 256)
+        return;
+    for (uint32_t old : g.dead) {
+        ComObj *&slot = objects()[old - 1];
+        delete slot;
+        slot = nullptr;
+    }
+    g.dead.clear();
+    g.dead.swap(g.dying);
 }
 
 uint32_t g_vtable[IF_COUNT] = {0};
@@ -66,7 +92,11 @@ uint32_t build_vtable(const VtDef &d) {
 // Lifetime
 // ---------------------------------------------------------------------------
 void com_reset() {
+    for (ComObj *o : objects())
+        delete o;
     objects().clear();
+    graveyard().dying.clear();
+    graveyard().dead.clear();
     // Objects held guest heap blocks that mem_init() already discarded; the
     // vtables did too, so rebuild them at their new addresses.
     for (uint32_t i = 0; i < IF_COUNT; ++i)
@@ -76,8 +106,8 @@ void com_reset() {
 }
 
 ComObj *com_new(ComKind kind) {
-    objects().emplace_back();
-    ComObj &o = objects().back();
+    objects().push_back(new ComObj());
+    ComObj &o = *objects().back();
     o.id = (uint32_t)objects().size(); // ids are 1-based; 0 means none
     o.kind = kind;
     o.refs = 1;
@@ -88,8 +118,8 @@ ComObj *com_new(ComKind kind) {
 ComObj *com_get(uint32_t id) {
     if (!id || id > objects().size())
         return nullptr;
-    ComObj &o = objects()[id - 1];
-    return o.alive ? &o : nullptr;
+    ComObj *o = objects()[id - 1];
+    return o && o->alive ? o : nullptr;
 }
 
 ComIface com_iface_of(uint32_t addr) {
@@ -287,12 +317,13 @@ void com_destroy(ComObj *o) {
             o->views[i] = 0;
         }
     }
-    // Ids are never reused, so a dead object keeps its slot; give back
-    // whatever its fields still hold.
+    // Give back whatever its fields still hold now; the object itself is
+    // freed later (bury).
     ComObj dead;
     dead.id = o->id;
     dead.kind = o->kind;
     *o = std::move(dead);
+    bury(o->id);
 }
 
 // ---------------------------------------------------------------------------
@@ -816,8 +847,8 @@ uint32_t com_object_count() {
 
 uint32_t com_live_count() {
     uint32_t n = 0;
-    for (const ComObj &o : objects())
-        if (o.alive)
+    for (const ComObj *o : objects())
+        if (o && o->alive)
             ++n;
     return n;
 }
@@ -827,9 +858,10 @@ void com_dump(FILE *out) {
                                   "d3ddevice", "viewport", "material", "light",   "dsound",
                                   "dsbuffer",  "dinput",   "didevice"};
     fprintf(out, "live COM objects (%u of %zu created):\n", com_live_count(), objects().size());
-    for (const ComObj &o : objects()) {
-        if (!o.alive)
+    for (const ComObj *p : objects()) {
+        if (!p || !p->alive)
             continue;
+        const ComObj &o = *p;
         const char *k = (size_t)o.kind < sizeof kinds / sizeof *kinds ? kinds[o.kind] : "?";
         fprintf(out, "  #%-3u %-10s refs=%-3d", o.id, k, o.refs);
         if (o.kind == K_SURFACE)
