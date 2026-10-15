@@ -43,6 +43,7 @@ LISTINGS = FUNCS_TSV = BINARY = CURATED = None
 ANIMATION_COUNTER = 0
 VISUAL_ANIMATION_READS = frozenset()
 EXTRA_ENTRY_POINTS = frozenset()
+NOT_FUNCTIONS = frozenset()
 RESUMABLE_STACKS = False
 FUNCTION_ALIGNMENT = 16
 
@@ -131,6 +132,10 @@ def configure(cfg):
     global RESUMABLE_STACKS
     RESUMABLE_STACKS = cfg["translate"].get("resumable_stacks", False)
     EXTRA_ENTRY_POINTS = frozenset(int(a) for a in cfg["translate"].get("entry_points", ()))
+    # Listed "functions" a game has audited as data (Ghidra decoding zeros in
+    # .data, say): dropped as --forget drops them, on every regeneration.
+    global NOT_FUNCTIONS
+    NOT_FUNCTIONS = frozenset(int(a) for a in cfg["translate"].get("not_functions", ()))
     FUNCTION_ALIGNMENT = cfg["translate"].get("function_alignment", 16)
     # The CRT's __setjmp3/longjmp pair, when the game links one; the defaults
     # are Populous's. Rebuilt in place so every holder of INTRINSIC_BODY sees it.
@@ -4145,7 +4150,7 @@ def main():
     # --forget with --discovered a loop rather than a contradiction. A run
     # reports the gap, and the regeneration that reads its file closes it.
     forget = frozenset(int(a, 16) for a in args.forget.split(",")) if args.forget else frozenset()
-    forget = forget - EXTRA_ENTRY_POINTS
+    forget = (forget | NOT_FUNCTIONS) - EXTRA_ENTRY_POINTS
     if forget:
         print("  --forget: %s dropped as if the listing had never named them"
               % ", ".join("%08x" % a for a in sorted(forget)), file=sys.stderr)
