@@ -70,6 +70,13 @@ int os_chdir(const char *path);
 // opened, 0 otherwise.
 typedef int (*OsListDirFn)(const char *name, void *user);
 int os_listdir(const char *dir, OsListDirFn fn, void *user);
+// Paths under `prefix` (e.g. "/stream/") never change from now on: a read-only
+// view such as the web build's streamed game files. Their stat answers (found
+// or not), listings and open files' sizes are then remembered, so asking again
+// costs nothing. In a browser each such question about a streamed file is a
+// round trip through another worker and the page's main thread, a few ms
+// each, and a game opening one file asks a dozen. NULL or "" turns it off.
+void os_set_immutable_prefix(const char *prefix);
 // The trailing XXXXXX of `template_path` is replaced in place; returns an open
 // read-write descriptor for the new file, or -1.
 int os_mkstemp(char *template_path);
