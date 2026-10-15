@@ -3,6 +3,11 @@
 #include "../mods/mods_internal.h"
 #include "../platform/stall.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/threading.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -62,7 +67,7 @@ void PerformanceOverlay::update(gpu::Device *device, const FramePacingSnapshot &
     if (limit)
         snprintf(cap, sizeof cap, "CAP %d", limit);
     else
-        snprintf(cap, sizeof cap, "ORIGINAL");
+        snprintf(cap, sizeof cap, "NO CAP"); // not "ORIGINAL": players read it as the game mode
     snprintf(line, sizeof line, "RPT %3.0f%% DROP %llu %s", s.repeat_percent,
              (unsigned long long)s.drops, cap);
     line[26] = 0;
@@ -77,6 +82,23 @@ void PerformanceOverlay::update(gpu::Device *device, const FramePacingSnapshot &
         snprintf(line, sizeof line, "STALL 0");
     line[26] = 0;
     c.text(10, 78, line, st.stalls ? 255 : 204, st.stalls ? 196 : 217, st.stalls ? 128 : 237);
+#ifdef __EMSCRIPTEN__
+    // The same numbers for the page's diagnostics (runtime.html
+    // recompDiagnostics). The presenter runs on the page's main thread.
+    // clang-format off
+    // No commas inside the EM_ASM code: the macro would split it there.
+    if (emscripten_is_main_runtime_thread())
+        EM_ASM({
+            var m = {};
+            m.newFps = $0; m.displayFps = $1; m.frameMs = $2; m.p95Ms = $3;
+            m.gpuMs = $4; m.ageMs = $5; m.repeatPercent = $6; m.drops = $7;
+            m.stalls = $8; m.lastStallMs = $9; m.stallCause = UTF8ToString($10);
+            m.worstStallMs = $11;
+            Module['recompStats'] = m;
+        }, s.new_fps, s.display_fps, s.median_ms, s.p95_ms, s.gpu_ms, s.age_ms, s.repeat_percent,
+               double(s.drops), double(st.stalls), st.last_ms, st.last_cause, st.worst_ms);
+    // clang-format on
+#endif
     if (mode == 2) {
         // Fixed 0..50ms axis from the bottom edge. A red bar means a missed budget.
         const double budget = 1000.0 / (limit ? limit : 60);
