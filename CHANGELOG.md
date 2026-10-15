@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- 2026-10-14 19:35 CDT — Claude Opus 5.5: Browser memory cuts (Bully
+  would not load on PCs with about 4 GB free). The web build no longer
+  zero-fills the 1 GB guest arena by hand (Emscripten's anonymous mmap
+  memsets the whole block, so every page became resident at start), and
+  the arena is set up once, by the loader: boot_load() reserved a second one
+  first, and a browser never gives that memory back (WebAssembly memory was
+  2.1 GB at start). Direct3D 9 texture levels count their references on
+  their texture (df1e69c from `giggity-swbf2`; on this branch the device's
+  GetRenderTarget, GetBackBuffer and GetDepthStencilSurface follow it too):
+  Bully had kept 15,000 textures and 120,000 surfaces, 400 MB of copies,
+  after four minutes of play; now about 1,900 and 11,000 (70 MB), steady.
+  Dead COM objects are freed (every object ever made kept its 4 KB slot,
+  and Bully makes hundreds a second, so memory grew 4 to 5 MB a second);
+  a destroyed one is freed once 256 more have died, so a pointer still
+  held within the same call stays readable. WebGPU destroys
+  a retired texture after the open encoder's submit, not before it
+  ("Destroyed texture used in a submit"). RECOMP_D3D9_MEM=1 prints the guest
+  heap and the D3D9 copies every 600 frames. Measured in Chrome over 400 s
+  of play: WebAssembly memory 1.5 GB and the tab's renderer process about
+  1.5 GB in RAM, flat (before: 2.1 GB at start, and the renderer passed
+  2.5 GB and kept growing).
+
 - 2026-10-14 16:34 CDT — Claude Opus 5.5: Two Battlefront II live-site fixes.
   (1) A constant half-second repeating sound: a SetPan or SetFrequency on a
   playing DirectSound streaming buffer re-planned it from a copy of its
