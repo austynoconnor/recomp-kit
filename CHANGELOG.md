@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 2026-10-15 18:20 CDT — Claude Opus 5.5 (perf pass): browsers keep two
+  display submissions in flight instead of three (from giggity-mgs2
+  7c9fa01; RECOMP_HOST_PRESENT_FRAMES=3 restores three). A game held at its
+  frame rate kept all three full, so frames reached a 60 Hz screen about
+  70 ms after they were drawn; two cut one frame (about 17 ms) of that wait.
+  Players on 60 Hz screens reported lag.
 - 2026-10-15 17:20 CDT — Claude Opus 5.5 (perf pass, MGS2 first): shorter
   pauses when a web game opens files. A browser recording of MGS2 loading a
   new area showed the game thread mostly waiting, not working: each question
