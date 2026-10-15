@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 2026-10-15 08:45 CDT — Claude Opus 5.5 (NFS Underground 2 bring-up):
+  Direct3D 9 state blocks. CreateStateBlock, BeginStateBlock and
+  EndStateBlock were stubs, so D3DX effects (Underground 2's whole renderer)
+  got a null block and called through it. They now use the snapshot model
+  d3d8 already had: a recording snapshots the pipeline, End keeps what
+  changed and puts the device back, Capture and Apply copy the covered
+  parts. A nested Begin fails as it does in Windows (D3DX relies on that).
+  ValidateDevice reports one pass. The first Begin/End calls are logged
+  with their caller, and DirectSound buffer creation is logged at powers of
+  two with its caller, which is how a create-without-release loop shows
+  itself. On Linux the host exports its symbols, so a lazy_static library
+  (RECOMP_EXTRA_CODE) can resolve runtime functions instead of failing to
+  load on recomp_resumable_stacks.
+
 - 2026-10-14 16:34 CDT — Claude Opus 5.5: Two Battlefront II live-site fixes.
   (1) A constant half-second repeating sound: a SetPan or SetFrequency on a
   playing DirectSound streaming buffer re-planned it from a copy of its

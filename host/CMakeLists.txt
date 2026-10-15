@@ -152,6 +152,11 @@ function(pop_host target)
   if(ARG_GEN)
     pop_link_gen(${target})
   endif()
+  # RECOMP_EXTRA_CODE libraries (tools/lazy_static.py) resolve the runtime's
+  # symbols from the host executable; on Linux those must be exported.
+  if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN)
+    set_target_properties(${target} PROPERTIES ENABLE_EXPORTS ON)
+  endif()
 endfunction()
 
 # The mixer, its output device and the synth: portable, over SDL audio.

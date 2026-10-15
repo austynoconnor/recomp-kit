@@ -144,6 +144,7 @@ enum ComIface : uint16_t {
     IF_D3DPIXELSHADER9,
     IF_D3DVOLUMETEXTURE9,
     IF_D3DVOLUME9,
+    IF_D3DSTATEBLOCK9,
     // DirectInput 8: the same objects as DirectInput, reached through the
     // version 8 vtables.
     IF_DINPUT8,
@@ -233,6 +234,7 @@ enum ComKind : uint16_t {
     K_D3D9PSHADER,    // a pixel shader, likewise
     K_D3D9VOLTEX,     // a volume texture: its levels are K_D3D9VOLUME objects
     K_D3D9VOLUME,     // one level of a volume texture
+    K_D3D9STATEBLOCK, // a state block: the parts of the pipeline it covers
 };
 
 // A DirectInput joystick axis's DIPROP_RANGE, DIPROP_DEADZONE and

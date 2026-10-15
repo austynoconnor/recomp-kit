@@ -1501,6 +1501,13 @@ const ComMethod g_dsnotify[] = {
 // ===========================================================================
 void DS_CreateSoundBuffer(X86 *c) {
     ComObj *ds = this_dsound(c);
+    {
+        // Logged at powers of two with the caller: a game that creates
+        // buffers without releasing them shows up as a climbing count.
+        static uint32_t n;
+        if (((++n) & (n - 1)) == 0)
+            LOGW("dsound: %s call %u from %08x", "CreateSoundBuffer", n, rd32(c->r[R_ESP]));
+    }
     uint32_t desc = arg(c, 1), out = arg(c, 2), outer = arg(c, 3);
     if (!ds || !out) {
         com_ret(c, DSERR_INVALIDPARAM);
@@ -1592,6 +1599,13 @@ void DS_GetCaps(X86 *c) {
 
 void DS_DuplicateSoundBuffer(X86 *c) {
     ComObj *ds = this_dsound(c);
+    {
+        // Logged at powers of two with the caller: a game that creates
+        // buffers without releasing them shows up as a climbing count.
+        static uint32_t n;
+        if (((++n) & (n - 1)) == 0)
+            LOGW("dsound: %s call %u from %08x", "DuplicateSoundBuffer", n, rd32(c->r[R_ESP]));
+    }
     uint32_t src_ptr = arg(c, 1), out = arg(c, 2);
     ComObj *src = src_ptr ? com_this(src_ptr) : nullptr;
     if (!ds || !src || src->kind != K_DSBUFFER || !out) {

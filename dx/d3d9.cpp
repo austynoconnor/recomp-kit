@@ -401,12 +401,15 @@ D9_STUB(SetDialogBoxMode, 2)
 D9_STUB(GetRenderTargetData, 3)
 D9_STUB(GetFrontBufferData, 3)
 D9_STUB(ColorFill, 4)
-D9_STUB(CreateStateBlock, 3)
-D9_STUB(BeginStateBlock, 1)
-D9_STUB(EndStateBlock, 2)
 D9_STUB(SetClipStatus, 2)
 D9_STUB(GetClipStatus, 2)
-D9_STUB(ValidateDevice, 2)
+// (this, pNumPasses): every state this device accepts draws in one pass.
+void Dev_ValidateDevice(X86 *c) {
+    uint32_t out = arg(c, 1);
+    if (out && gm_valid(out, 4))
+        wr32(out, 1);
+    com_ret(c, this_device9(c) ? D3D_OK9 : D3DERR_INVALIDCALL);
+}
 D9_STUB(SetPaletteEntries, 3)
 D9_STUB(GetPaletteEntries, 3)
 D9_STUB(SetCurrentTexturePalette, 2)
@@ -2606,6 +2609,223 @@ static const ComMethod g_query9[] = {
 };
 
 // ---------------------------------------------------------------------------
+// State blocks: snapshots of the pipeline record, as dx/d3d8.cpp keeps them.
+// BeginStateBlock remembers the record and the setters write it as usual;
+// EndStateBlock marks what changed, keeps those values in the block and puts
+// the device back, since recording does not change the device.
+// ---------------------------------------------------------------------------
+namespace {
+struct Block9 {
+    D9Pipeline snap;
+    bool rs[256] = {};
+    bool tss[8][33] = {};
+    bool samp[16][14] = {};
+    bool xf[32] = {};
+    bool material = false, lights = false, textures = false, viewport = false, vs = false,
+         ps = false, streams = false, vconst = false, pconst = false;
+};
+std::map<uint32_t, Block9> &blocks9() {
+    static auto *m = new std::map<uint32_t, Block9>();
+    return *m;
+}
+std::map<uint32_t, D9Pipeline> &recordings9() {
+    static auto *m = new std::map<uint32_t, D9Pipeline>();
+    return *m;
+}
+void block9_all(Block9 &b, bool vertex, bool pixel) {
+    for (auto &x : b.rs)
+        x = true;
+    for (auto &s : b.tss)
+        for (auto &x : s)
+            x = true;
+    for (auto &s : b.samp)
+        for (auto &x : s)
+            x = true;
+    if (vertex)
+        b.lights = b.vs = b.vconst = b.streams = true;
+    if (pixel)
+        b.ps = b.pconst = true;
+    if (vertex && pixel) {
+        for (auto &x : b.xf)
+            x = true;
+        b.material = b.textures = b.viewport = true;
+    }
+}
+void block9_copy(const Block9 &b, const D9Pipeline &from, D9Pipeline &to) {
+    for (int i = 0; i < 256; ++i)
+        if (b.rs[i]) {
+            to.rs[i] = from.rs[i];
+            to.rs_set[i] = from.rs_set[i];
+        }
+    for (int s = 0; s < 8; ++s)
+        for (int t = 0; t < 33; ++t)
+            if (b.tss[s][t])
+                to.tss[s][t] = from.tss[s][t];
+    for (int s = 0; s < 16; ++s)
+        for (int t = 0; t < 14; ++t)
+            if (b.samp[s][t])
+                to.sampler_state[s][t] = from.sampler_state[s][t];
+    for (int i = 0; i < 32; ++i)
+        if (b.xf[i])
+            memcpy(to.transform[i], from.transform[i], sizeof to.transform[i]);
+    if (b.material)
+        memcpy(to.material, from.material, sizeof to.material);
+    if (b.lights)
+        to.lights = from.lights;
+    if (b.textures)
+        memcpy(to.sampler_tex, from.sampler_tex, sizeof to.sampler_tex);
+    if (b.viewport) {
+        memcpy(to.viewport, from.viewport, sizeof to.viewport);
+        memcpy(to.viewport_z, from.viewport_z, sizeof to.viewport_z);
+        to.viewport_set = from.viewport_set;
+    }
+    if (b.vs) {
+        to.vs = from.vs;
+        to.vs_key = from.vs_key;
+        to.declaration = from.declaration;
+        to.fvf = from.fvf;
+    }
+    if (b.ps) {
+        to.ps = from.ps;
+        to.ps_key = from.ps_key;
+    }
+    if (b.streams) {
+        memcpy(to.stream, from.stream, sizeof to.stream);
+        to.index_buffer = from.index_buffer;
+    }
+    if (b.vconst)
+        memcpy(to.vconst, from.vconst, sizeof to.vconst);
+    if (b.pconst)
+        memcpy(to.pconst, from.pconst, sizeof to.pconst);
+    to.states_changed();
+}
+void block9_mark(Block9 &b, const D9Pipeline &x, const D9Pipeline &y) {
+    for (int i = 0; i < 256; ++i)
+        b.rs[i] = x.rs[i] != y.rs[i] || x.rs_set[i] != y.rs_set[i];
+    for (int s = 0; s < 8; ++s)
+        for (int t = 0; t < 33; ++t)
+            b.tss[s][t] = x.tss[s][t] != y.tss[s][t];
+    for (int s = 0; s < 16; ++s)
+        for (int t = 0; t < 14; ++t)
+            b.samp[s][t] = x.sampler_state[s][t] != y.sampler_state[s][t];
+    for (int i = 0; i < 32; ++i)
+        b.xf[i] = memcmp(x.transform[i], y.transform[i], sizeof x.transform[i]) != 0;
+    b.material = memcmp(x.material, y.material, sizeof x.material) != 0;
+    b.lights = x.lights.size() != y.lights.size();
+    for (auto i = x.lights.begin(), j = y.lights.begin(); !b.lights && i != x.lights.end();
+         ++i, ++j)
+        b.lights = i->first != j->first || i->second.enabled != j->second.enabled ||
+                   memcmp(i->second.raw, j->second.raw, sizeof i->second.raw) != 0;
+    b.textures = memcmp(x.sampler_tex, y.sampler_tex, sizeof x.sampler_tex) != 0;
+    b.viewport =
+        memcmp(x.viewport, y.viewport, sizeof x.viewport) != 0 || x.viewport_set != y.viewport_set;
+    b.vs = x.vs.bytes != y.vs.bytes || x.declaration != y.declaration || x.fvf != y.fvf;
+    b.ps = x.ps.bytes != y.ps.bytes;
+    b.streams =
+        memcmp(x.stream, y.stream, sizeof x.stream) != 0 || x.index_buffer != y.index_buffer;
+    b.vconst = memcmp(x.vconst, y.vconst, sizeof x.vconst) != 0;
+    b.pconst = memcmp(x.pconst, y.pconst, sizeof x.pconst) != 0;
+}
+bool block9_out(ComObj *dev, Block9 &&b, uint32_t out) {
+    ComObj *sb = com_new(K_D3D9STATEBLOCK);
+    if (!sb)
+        return false;
+    sb->dev_d3d = dev->id;
+    uint32_t view_ = com_view(sb, IF_D3DSTATEBLOCK9);
+    if (!view_) {
+        com_release(sb);
+        return false;
+    }
+    blocks9()[sb->id] = std::move(b);
+    com_out_ptr(out, view_);
+    return true;
+}
+void stateblock9_destroy(ComObj *o) {
+    blocks9().erase(o->id);
+}
+} // namespace
+
+// The first few recordings are logged with their caller, which is how a
+// Begin with no matching End shows itself.
+static int g_sb_traced;
+void Dev_BeginStateBlock(X86 *c) {
+    ComObj *dev = this_device9(c);
+    if (g_sb_traced < 48 && ++g_sb_traced)
+        LOGW("d3d9: BeginStateBlock from %08x%s", rd32(c->r[R_ESP]),
+             dev && recordings9().count(dev->id) ? " (a recording is open)" : "");
+    if (!dev || recordings9().count(dev->id)) {
+        log_once("d3d9.sb.nested", dev ? "d3d9: BeginStateBlock while a recording is open"
+                                       : "d3d9: BeginStateBlock on no device");
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    recordings9()[dev->id] = d9_pipeline(dev->id);
+    com_ret(c, D3D_OK9);
+}
+// (this, ppSB)
+void Dev_EndStateBlock(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t out = arg(c, 1);
+    auto it = dev ? recordings9().find(dev->id) : recordings9().end();
+    if (g_sb_traced < 48 && ++g_sb_traced)
+        LOGW("d3d9: EndStateBlock from %08x, out %08x%s", rd32(c->r[R_ESP]), out,
+             it == recordings9().end() ? " (no recording)" : "");
+    if (it == recordings9().end() || !out || !gm_valid(out, 4)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    D9Pipeline &pl = d9_pipeline(dev->id);
+    Block9 b;
+    block9_mark(b, it->second, pl);
+    b.snap = pl;
+    block9_copy(b, it->second, pl); // the device goes back to how it was
+    recordings9().erase(it);
+    com_ret(c, block9_out(dev, std::move(b), out) ? D3D_OK9 : E_OUTOFMEMORY);
+}
+// (this, Type, ppSB): D3DSBT_ALL 1, PIXELSTATE 2, VERTEXSTATE 3.
+void Dev_CreateStateBlock(X86 *c) {
+    ComObj *dev = this_device9(c);
+    uint32_t type = arg(c, 1), out = arg(c, 2);
+    if (!dev || type < 1 || type > 3 || !out || !gm_valid(out, 4)) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    Block9 b;
+    block9_all(b, type != 2, type != 3);
+    b.snap = d9_pipeline(dev->id);
+    com_ret(c, block9_out(dev, std::move(b), out) ? D3D_OK9 : E_OUTOFMEMORY);
+}
+void SB_Apply(X86 *c) {
+    ComObj *sb = com_this_arg(c);
+    auto it = sb ? blocks9().find(sb->id) : blocks9().end();
+    if (it == blocks9().end()) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    block9_copy(it->second, it->second.snap, d9_pipeline(sb->dev_d3d));
+    com_ret(c, D3D_OK9);
+}
+void SB_Capture(X86 *c) {
+    ComObj *sb = com_this_arg(c);
+    auto it = sb ? blocks9().find(sb->id) : blocks9().end();
+    if (it == blocks9().end()) {
+        com_ret(c, D3DERR_INVALIDCALL);
+        return;
+    }
+    block9_copy(it->second, d9_pipeline(sb->dev_d3d), it->second.snap);
+    com_ret(c, D3D_OK9);
+}
+
+static const ComMethod g_stateblock9[] = {
+    {"QueryInterface", 3, com_QueryInterface},
+    {"AddRef", 1, com_AddRef},
+    {"Release", 1, com_Release},
+    {"GetDevice", 2, Res_GetDevice},
+    {"Capture", 1, SB_Capture},
+    {"Apply", 1, SB_Apply},
+};
+
+// ---------------------------------------------------------------------------
 // The pipeline record, and the device setters that write it
 // ---------------------------------------------------------------------------
 D9Pipeline &d9_pipeline(uint32_t device_id) {
@@ -3707,6 +3927,10 @@ void d3d9_register() {
     com_bind(IF_D3DINDEXBUFFER9, K_D3D9IB);
     com_bind(IF_D3DVERTEXDECL9, K_D3D9DECL);
     com_bind(IF_D3DQUERY9, K_D3D9QUERY);
+    com_define(IF_D3DSTATEBLOCK9, "d3d9.dll", "IDirect3DStateBlock9", g_stateblock9,
+               std::size(g_stateblock9));
+    com_bind(IF_D3DSTATEBLOCK9, K_D3D9STATEBLOCK);
+    com_set_destructor(K_D3D9STATEBLOCK, stateblock9_destroy);
     com_define(IF_D3DVERTEXSHADER9, "d3d9.dll", "IDirect3DVertexShader9", g_shader9,
                std::size(g_shader9));
     com_define(IF_D3DPIXELSHADER9, "d3d9.dll", "IDirect3DPixelShader9", g_shader9,
