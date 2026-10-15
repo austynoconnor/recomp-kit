@@ -291,6 +291,7 @@ if(TARGET recomp_gen)
       message(FATAL_ERROR "RECOMP_WEB_LINK_OPT_LEVEL must be 0, 1 or 2")
     endif()
     configure_file(${POP_ROOT}/web/player/input-hints.js ${POP_OUT}/input-hints.js COPYONLY)
+    configure_file(${POP_ROOT}/web/player/pad-filter.js ${POP_OUT}/pad-filter.js COPYONLY)
     target_link_options(recomp_app PRIVATE
       # Emscripten also optimizes at link time. Release's per-target compile
       # flags do not reach this step; without -g0 every translated function's

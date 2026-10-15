@@ -15,11 +15,16 @@
   #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
             text-align: center; padding: 0 16px; white-space: pre-line; pointer-events: none; }
   #status a { pointer-events: auto; color: #8cf; }
+  #warning { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); max-width: min(720px, 92vw);
+             background: #3a2a08; color: #ffe2a8; border: 1px solid #a07b22; border-radius: 8px;
+             padding: 10px 14px; line-height: 1.4; cursor: pointer; z-index: 2; }
 </style>
 </head>
 <body>
 <canvas id="canvas" tabindex="-1"></canvas>
 <div id="status">Loading…</div>
+<div id="warning" role="alert" hidden></div>
+<script src="pad-filter.js"></script>
 <script>
 "use strict";
 const statusEl = document.getElementById("status");
@@ -43,6 +48,64 @@ function record(text) {
     status("Game data could not be prepared. Stop and choose Start game to retry.");
   log.push(text);
   if (log.length > 1000) log.splice(0, log.length - 1000);
+}
+window.recompPadLog = record; // pad-filter.js: each pad and how it is read
+
+// What a player can copy and send when the game runs badly
+// (window.recompDiagnostics(); the player page's "Copy diagnostics" button).
+const diagnostics = { adapter: null };
+function adapterInfo(adapter) {
+  const i = adapter.info || {};
+  const text = `${i.vendor || ""} ${i.architecture || ""} ${i.device || ""} ${i.description || ""}`;
+  return { vendor: i.vendor || "", architecture: i.architecture || "", device: i.device || "",
+           description: i.description || "",
+           software: !!(adapter.isFallbackAdapter || i.isFallbackAdapter ||
+                        /swiftshader|llvmpipe|lavapipe|basic render|software/i.test(text)) };
+}
+function warn(text) {
+  const el = document.getElementById("warning");
+  el.textContent = text;
+  el.hidden = false;
+  el.onclick = () => { el.hidden = true; };
+  setTimeout(() => { el.hidden = true; }, 20000);
+  record(`[web] warning: ${text}`);
+  try { parent.postMessage({ type: "recomp-warning", text }, location.origin); } catch {}
+}
+function refreshEstimate() {
+  return new Promise((done) => {
+    const times = [];
+    const step = (t) => {
+      times.push(t);
+      if (times.length < 61) requestAnimationFrame(step);
+      else {
+        const gaps = times.slice(1).map((v, i) => v - times[i]).sort((a, b) => a - b);
+        done(Math.round(1000 / gaps[gaps.length >> 1]));
+      }
+    };
+    requestAnimationFrame(step);
+  });
+}
+window.recompDiagnostics = async () => {
+  const ua = navigator.userAgentData;
+  const s = window.Module?.recompStats || null;
+  return {
+    page: location.pathname, time: new Date().toISOString(),
+    browser: ua ? ua.brands.map(b => `${b.brand} ${b.version}`).join(", ") + ` (${ua.platform})` : "",
+    userAgent: navigator.userAgent,
+    adapter: diagnostics.adapter,
+    refreshHz: await refreshEstimate(),
+    canvas: `${canvas.width}x${canvas.height} drawn, ${canvas.clientWidth}x${canvas.clientHeight} shown, ` +
+            `pixel ratio ${devicePixelRatio}`,
+    screen: `${screen.width}x${screen.height}`,
+    cores: navigator.hardwareConcurrency, memoryGB: navigator.deviceMemory,
+    crossOriginIsolated, streamed: !!diagnostics.streamed,
+    game: s, pads: window.recompPads ? window.recompPads() : [],
+    recentLog: log.filter(l => /stall|warning|error|fault|gamepad|pads|background/i.test(l)).slice(-30),
+  };
+};
+
+function extraParam(name) {
+  return new URLSearchParams(location.search).get(name);
 }
 
 async function gameId() {
@@ -94,6 +157,28 @@ async function prepareGame(game) {
   }
 }
 
+// A streamed game reads each file over the network as the game asks for it,
+// and the game waits for every read it has not seen before (the overlay's
+// FILE stalls). Once it is running, a game that fits the budget downloads the
+// rest of its files in the background, one at a time and at low priority;
+// when that finishes, the next visit plays entirely from local storage.
+const BACKGROUND_DOWNLOAD_BYTES = 768 * 1024 ** 2;
+function backgroundDownload(game) {
+  if (!game.hostedAssets) return;
+  const worker = new Worker("../worker.js", { type: "module" });
+  const manifestUrl = new URL(game.hostedAssets, new URL("../games.json", location.href)).href;
+  worker.onmessage = ({ data }) => {
+    if (data.progress) return;
+    const r = data.result || {};
+    record(`[web] background download: ${data.error || r.result || "?"}` +
+           (r.copied !== undefined ? ` (${r.copied} files fetched, ${r.skipped} already here)` : ""));
+    worker.terminate();
+  };
+  worker.onerror = () => worker.terminate();
+  worker.postMessage({ id: 1, cmd: "import", game, kind: "hosted", manifestUrl,
+                       background: true, maxBytes: BACKGROUND_DOWNLOAD_BYTES });
+}
+
 // The program (.wasm) is far larger than a browser's HTTP cache keeps per
 // entry, so it lives in Cache Storage instead: one cheap If-Modified-Since
 // check per visit, a full download only when the build changed, and the
@@ -136,10 +221,16 @@ async function start() {
 
   // Hosted games populate OPFS automatically; existing imported copies work too.
   const streamed = await prepareGame(game);
+  diagnostics.streamed = streamed;
   status("Starting game…");
 
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
   if (!adapter) throw new Error("WebGPU gave no adapter.");
+  diagnostics.adapter = adapterInfo(adapter);
+  if (diagnostics.adapter.software)
+    warn("This browser is drawing the game without your graphics card (hardware acceleration " +
+         "is off or blocked), so it will run slowly. Turn on \"Use graphics acceleration when " +
+         "available\" in the browser's settings and restart the browser. (Click to hide.)");
   const wanted = ["texture-compression-bc", "depth32float-stencil8", "float32-filterable",
                   "unorm16-texture-formats", "rg11b10ufloat-renderable"];
   const requiredFeatures = wanted.filter((f) => adapter.features.has(f));
@@ -185,6 +276,8 @@ async function start() {
       status("");
       canvas.focus();
       Module.callMain([`--exe=${exe}`]);
+      if (streamed && extraParam("RECOMP_BACKGROUND_DOWNLOAD") !== "0")
+        setTimeout(() => backgroundDownload(game), 20000);
     },
   };
   window.Module = Module;
