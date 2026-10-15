@@ -1755,8 +1755,12 @@ bool web_stream_files() {
     valid = valid && !ferror(source);
     fclose(source);
     os_fd_close(fd);
-    if (valid)
+    if (valid) {
         g_web_exe = exe;
+        // Nothing under /stream changes from here on (writes go to the OPFS
+        // profile), so its stat answers, listings and sizes can be kept.
+        os_set_immutable_prefix("/stream/");
+    }
     return valid;
 }
 
