@@ -2113,6 +2113,10 @@ struct GuestThread {
     double deadline = 0.0;    // monotonic seconds
     uint32_t wait_result = 0; // what the wait returns once released
     double last_yield = 0.0;  // for the bounded scheduling checkpoint
+    // The last import this thread called and where from, for
+    // RECOMP_SCHED_REPORT (sched_note_import).
+    uint32_t last_import = 0xffffffffu, last_ret = 0;
+    uint64_t import_calls = 0;
     jmp_buf exit_jmp;
     uint32_t exit_code = 0;
     // TerminateThread from another thread: this one ends with exit_code the
@@ -3049,6 +3053,71 @@ void sched_host_io_end() {
 }
 
 } // namespace
+
+const char *imports_trampoline_desc(uint32_t idx);
+
+// Notes each import a guest thread calls. With RECOMP_SCHED_REPORT=<seconds>
+// every thread's state and last import is logged that often, which is how a
+// hang that keeps calling into the runtime (a spin on a flag another thread
+// should set) is told from a wait, and which thread is doing which - on the
+// web, where there is no debugger to attach.
+void sched_note_import(X86 *c, uint32_t idx) {
+    uint32_t ret = rd32(c->r[R_ESP]);
+    if (!sched_is_guest_thread())
+        return;
+    GuestThread *me = cur_thread();
+    me->last_import = idx;
+    me->last_ret = ret;
+    ++me->import_calls;
+    static const double period = [] {
+        const char *e = recomp_env("SCHED_REPORT");
+        return e ? atof(e) : 0.0;
+    }();
+    if (period <= 0.0)
+        return;
+    static double next = 0.0;
+    double now = sched_now();
+    if (now < next)
+        return;
+    bool first = next == 0.0;
+    next = now + period;
+    if (first)
+        return;
+    // The caller holds the baton, so no other guest thread changes the list.
+    for (GuestThread *t : threads())
+        LOGW("[sched] thread %zu id %u%s%s%s%s: %llu imports, last %s from %08x%s", t->index,
+             t->id, t->is_main ? " main" : "", t->finished ? " finished" : "",
+             t->blocked ? " blocked on " : "", t->blocked ? wait_kind_name(t->wait_kind) : "",
+             (unsigned long long)t->import_calls,
+             t->last_import == 0xffffffffu ? "-" : imports_trampoline_desc(t->last_import),
+             t->last_ret, t == me ? " (reporting)" : "");
+    // The reporting thread's guest stack, read for return addresses: values
+    // inside the image that a CALL instruction precedes. A heuristic, but
+    // enough to name the loop a spinning thread is in.
+    {
+        char line[400];
+        int n = snprintf(line, sizeof line, "[sched] thread %zu stack:", me->index);
+        uint32_t esp = c->r[R_ESP];
+        int found = 0;
+        for (uint32_t a = esp; a < esp + 4096 && found < 16 && n < (int)sizeof line - 10; a += 4) {
+            if (!gm_valid(a, 4))
+                break;
+            uint32_t v = rd32(a);
+            if (v < RECOMP_IMAGE_BASE + 0x1000u || v >= RECOMP_IMAGE_BASE + 0x00400000u ||
+                !gm_valid(v - 6, 6))
+                continue;
+            bool call = rd8(v - 5) == 0xe8 || (rd8(v - 6) == 0xff && rd8(v - 5) == 0x15) ||
+                        (rd8(v - 2) == 0xff && (rd8(v - 1) & 0x38) == 0x10) ||
+                        (rd8(v - 3) == 0xff && (rd8(v - 2) & 0x38) == 0x10) ||
+                        (rd8(v - 6) == 0xff && (rd8(v - 5) & 0x38) == 0x10);
+            if (!call)
+                continue;
+            n += snprintf(line + n, sizeof line - n, " %08x", v);
+            ++found;
+        }
+        LOGW("%s", line);
+    }
+}
 
 void sched_checkpoint() {
     // Drain first and unconditionally: a guest with no worker threads never

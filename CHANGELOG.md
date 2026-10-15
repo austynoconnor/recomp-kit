@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 2026-10-15 12:27 CDT — Claude Opus 5.5 (NFS Underground 2): a hang
+  diagnostic for the web. With `RECOMP_SCHED_REPORT=<seconds>` in the page
+  address (or the environment) every guest thread's state, import count and
+  last import with its return address is logged that often, plus the
+  reporting thread's guest stack read for return addresses. That tells a
+  spin (a thread calling into the runtime millions of times) from a wait,
+  and names the loop, where no debugger can attach. Off, it costs two
+  stores per import.
+
 - 2026-10-15 12:05 CDT — Claude Opus 5.5 (NFS Underground 2): three fixes
   found bringing up Underground 2.
   (1) Web tail calls. A literal jump to another translated function is a C

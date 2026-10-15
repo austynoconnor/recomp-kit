@@ -8,6 +8,7 @@
 
 // Defined in kernel32.cpp with the scheduler.
 void sched_checkpoint();
+void sched_note_import(X86 *c, uint32_t idx);
 #include "memory.h"
 
 #include <map>
@@ -417,6 +418,12 @@ void imports_call_leaves_surfaces() {
     --g_import_calls;
 }
 
+// The name a trampoline was allocated under ("KERNEL32.dll!Sleep"), for
+// diagnostics; "?" past the end.
+const char *imports_trampoline_desc(uint32_t idx) {
+    return idx < tramps().size() ? tramps()[idx].desc.c_str() : "?";
+}
+
 bool imports_dispatch(X86 *c, uint32_t target) {
     if (!imports_is_trampoline(target))
         return false;
@@ -428,6 +435,7 @@ bool imports_dispatch(X86 *c, uint32_t target) {
     // runs before the shim so the guest state is a consistent call boundary -
     // except at an atomic import, and inside a sched_atomic_enter stretch.
     uint32_t idx = (target - TRAMP_BASE) / TRAMP_STRIDE;
+    sched_note_import(c, idx);
     if (idx >= tramps().size() || !tramps()[idx].atomic)
         sched_checkpoint();
     if (idx >= tramps().size()) {
