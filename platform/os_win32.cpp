@@ -242,6 +242,7 @@ int os_getcwd(char *buf, size_t cap) {
 int os_chdir(const char *path) {
     return SetCurrentDirectoryW(widen(path).c_str()) ? 0 : -1;
 }
+void os_set_immutable_prefix(const char *) {} // only the web build streams files
 int os_listdir(const char *dir, OsListDirFn fn, void *user) {
     std::wstring pattern = widen(dir) + L"\\*";
     WIN32_FIND_DATAW f;

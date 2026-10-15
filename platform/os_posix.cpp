@@ -23,6 +23,10 @@
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #ifndef MAP_ANON
 #define MAP_ANON MAP_ANONYMOUS
 #endif
@@ -114,19 +118,89 @@ static void fill_stat(const struct stat &st, OsStat *out) {
     out->is_symlink = S_ISLNK(st.st_mode) ? 1 : 0;
     out->is_readonly = (st.st_mode & S_IWUSR) ? 0 : 1;
 }
-int os_stat(const char *path, OsStat *out) {
+// Remembered answers for paths that cannot change (os_set_immutable_prefix).
+// Only questions are remembered; a path outside the prefix is always asked.
+} // extern "C" (C++ helpers below)
+namespace {
+struct ImmStat {
+    int rc;
+    OsStat st;
+};
+struct ImmCache {
+    std::mutex m;
+    std::string prefix;
+    std::unordered_map<std::string, ImmStat> stats, lstats;
+    std::unordered_map<std::string, std::vector<std::string>> lists;
+    std::unordered_map<int, OsStat> fds; // open descriptors of immutable files
+};
+ImmCache &imm() {
+    static ImmCache *c = new ImmCache(); // never destroyed: host threads may ask late
+    return *c;
+}
+// Caller holds c.m.
+bool imm_path(const ImmCache &c, const char *path) {
+    return !c.prefix.empty() && path && strncmp(path, c.prefix.c_str(), c.prefix.size()) == 0;
+}
+int stat_uncached(const char *path, OsStat *out, bool follow) {
     struct stat st;
-    if (stat(path, &st) != 0)
+    if ((follow ? stat(path, &st) : lstat(path, &st)) != 0)
         return -1;
     fill_stat(st, out);
     return 0;
 }
+int stat_cached(const char *path, OsStat *out, bool follow) {
+    ImmCache &c = imm();
+    bool immutable;
+    {
+        std::lock_guard<std::mutex> lock(c.m);
+        immutable = imm_path(c, path);
+        if (immutable) {
+            const auto &map = follow ? c.stats : c.lstats;
+            auto it = map.find(path);
+            if (it != map.end()) {
+                if (it->second.rc == 0)
+                    *out = it->second.st;
+                return it->second.rc;
+            }
+        }
+    }
+    OsStat st{};
+    const int rc = stat_uncached(path, &st, follow);
+    if (immutable) {
+        std::lock_guard<std::mutex> lock(c.m);
+        if (imm_path(c, path))
+            (follow ? c.stats : c.lstats)[path] = {rc, st};
+    }
+    if (rc == 0)
+        *out = st;
+    return rc;
+}
+// A descriptor number is reused once closed, so every call that hands one out
+// forgets whatever was remembered for that number.
+void imm_forget_fd(int fd) {
+    if (fd < 0)
+        return;
+    ImmCache &c = imm();
+    std::lock_guard<std::mutex> lock(c.m);
+    c.fds.erase(fd);
+}
+} // namespace
+extern "C" {
+
+void os_set_immutable_prefix(const char *prefix) {
+    ImmCache &c = imm();
+    std::lock_guard<std::mutex> lock(c.m);
+    c.prefix = prefix ? prefix : "";
+    c.stats.clear();
+    c.lstats.clear();
+    c.lists.clear();
+    c.fds.clear();
+}
+int os_stat(const char *path, OsStat *out) {
+    return stat_cached(path, out, true);
+}
 int os_lstat(const char *path, OsStat *out) {
-    struct stat st;
-    if (lstat(path, &st) != 0)
-        return -1;
-    fill_stat(st, out);
-    return 0;
+    return stat_cached(path, out, false);
 }
 int os_mkdir(const char *path) {
     return mkdir(path, 0755);
@@ -147,20 +221,59 @@ int os_chdir(const char *path) {
     return chdir(path);
 }
 int os_listdir(const char *dir, OsListDirFn fn, void *user) {
-    DIR *d = opendir(dir);
-    if (!d)
-        return -1;
-    while (struct dirent *e = readdir(d)) {
-        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
-            continue;
-        if (fn(e->d_name, user) != 0)
-            break;
+    ImmCache &c = imm();
+    bool immutable;
+    {
+        std::lock_guard<std::mutex> lock(c.m);
+        immutable = imm_path(c, dir);
     }
-    closedir(d);
+    if (!immutable) {
+        DIR *d = opendir(dir);
+        if (!d)
+            return -1;
+        while (struct dirent *e = readdir(d)) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+                continue;
+            if (fn(e->d_name, user) != 0)
+                break;
+        }
+        closedir(d);
+        return 0;
+    }
+    std::vector<std::string> names;
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(c.m);
+        auto it = c.lists.find(dir);
+        if (it != c.lists.end()) {
+            names = it->second;
+            cached = true;
+        }
+    }
+    if (!cached) {
+        DIR *d = opendir(dir);
+        if (!d)
+            return -1;
+        while (struct dirent *e = readdir(d)) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+                continue;
+            names.push_back(e->d_name);
+        }
+        closedir(d);
+        std::lock_guard<std::mutex> lock(c.m);
+        if (imm_path(c, dir))
+            c.lists[dir] = names;
+    }
+    // Without the lock: a callback may ask the file system again.
+    for (const std::string &name : names)
+        if (fn(name.c_str(), user) != 0)
+            break;
     return 0;
 }
 int os_mkstemp(char *template_path) {
-    return mkstemp(template_path);
+    const int fd = mkstemp(template_path);
+    imm_forget_fd(fd);
+    return fd;
 }
 
 int os_mkdtemp(char *template_path) {
@@ -266,7 +379,22 @@ static int native_flags(int flags) {
     return f;
 }
 int os_fd_open(const char *path, int flags) {
-    return open(path, native_flags(flags), 0644);
+    const int fd = open(path, native_flags(flags), 0644);
+    imm_forget_fd(fd);
+    if (fd < 0 || (flags & 3) != OS_O_RDONLY || (flags & (OS_O_CREAT | OS_O_TRUNC)))
+        return fd;
+    ImmCache &c = imm();
+    bool immutable;
+    {
+        std::lock_guard<std::mutex> lock(c.m);
+        immutable = imm_path(c, path);
+    }
+    OsStat st{};
+    if (immutable && os_stat(path, &st) == 0 && st.is_regular) {
+        std::lock_guard<std::mutex> lock(c.m);
+        c.fds[fd] = st;
+    }
+    return fd;
 }
 int64_t os_fd_read(int fd, void *buf, size_t n) {
     return (int64_t)read(fd, buf, n);
@@ -275,13 +403,39 @@ int64_t os_fd_write(int fd, const void *buf, size_t n) {
     return (int64_t)write(fd, buf, n);
 }
 int64_t os_fd_seek(int fd, int64_t off, int whence) {
+    // From the end means asking the size, a worker trip for a streamed file;
+    // an immutable file's size is already known.
+    if (whence == OS_SEEK_END) {
+        ImmCache &c = imm();
+        std::unique_lock<std::mutex> lock(c.m);
+        auto it = c.fds.find(fd);
+        if (it != c.fds.end()) {
+            const int64_t to = (int64_t)it->second.size + off;
+            lock.unlock();
+            if (to < 0) {
+                errno = EINVAL;
+                return -1;
+            }
+            return (int64_t)lseek(fd, (off_t)to, SEEK_SET);
+        }
+    }
     return (int64_t)lseek(fd, (off_t)off, whence);
 }
 int os_fd_close(int fd) {
+    imm_forget_fd(fd);
     return close(fd);
 }
 int os_fd_dup(int fd) {
-    return dup(fd);
+    const int copy = dup(fd);
+    imm_forget_fd(copy);
+    if (copy >= 0) {
+        ImmCache &c = imm();
+        std::lock_guard<std::mutex> lock(c.m);
+        auto it = c.fds.find(fd);
+        if (it != c.fds.end())
+            c.fds[copy] = it->second;
+    }
+    return copy;
 }
 int os_fd_fsync(int fd) {
     return fsync(fd);
@@ -290,6 +444,15 @@ int os_fd_truncate(int fd, int64_t length) {
     return ftruncate(fd, (off_t)length);
 }
 int os_fd_stat(int fd, OsStat *out) {
+    {
+        ImmCache &c = imm();
+        std::lock_guard<std::mutex> lock(c.m);
+        auto it = c.fds.find(fd);
+        if (it != c.fds.end()) {
+            *out = it->second;
+            return 0;
+        }
+    }
     struct stat st;
     if (fstat(fd, &st) != 0)
         return -1;
