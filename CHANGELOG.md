@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 2026-10-15 12:56 CDT — Claude Opus 5.5: a two-key pad button (`key:A+B`) presses
+  its second key 80 ms after the first instead of at the same moment.
+  Battlefront II ignores two keys that go down in the same keyboard poll, so
+  pad A as Space+Enter did nothing on the profile screen (Enter alone, or
+  either key 50 ms apart, works). Release lifts both; a tap shorter than the
+  delay still sends the second key, held 80 ms (host/controls/binding.cpp,
+  Binding::apply_second_keys). New controls_tests check
+  test_binding_button_two_keys.
+
 - 2026-10-15 12:26 CDT — Claude Opus 5.5: QueryPerformanceCounter never
   returns the same value twice. It was host_millis()*1000, so two calls in one
   millisecond matched. Battlefront II's 30 Hz input tick (00413340) computes

@@ -1598,6 +1598,52 @@ static void test_binding_button_mouse() {
     CHECK(out[0].kind == TouchAction::Button && out[0].button == 0 && !out[0].down);
 }
 
+// "key:Space+Return": the first key goes down on the press, the second 80 ms
+// later (Battlefront II drops two keys pressed in the same poll); a release
+// lifts both. A tap shorter than the delay still sends the second key.
+static void test_binding_button_two_keys() {
+    MappedTable t;
+    std::string err;
+    CHECK(parse_mapped("cross=key:Space+Return", &t, &err));
+    const int sp = t.buttons[int(PadButton::Cross)].value;
+    const int ret = t.buttons[int(PadButton::Cross)].value2;
+    const uint64_t ms = 1000000ull;
+    Binding b;
+    b.set_table(t);
+    PadState p;
+    std::vector<TouchAction> out;
+    std::vector<std::string> actions;
+    p.buttons = kPadCross;
+    b.tick(p, 1000 * ms, &out, &actions);
+    CHECK(out.size() == 1 && out[0].scancode == sp && out[0].down);
+    out.clear();
+    b.tick(p, 1050 * ms, &out, &actions);
+    CHECK(out.empty());
+    b.tick(p, 1080 * ms, &out, &actions);
+    CHECK(out.size() == 1 && out[0].scancode == ret && out[0].down);
+    out.clear();
+    p.buttons = 0;
+    b.tick(p, 1200 * ms, &out, &actions);
+    CHECK(out.size() == 2 && !out[0].down && !out[1].down);
+    out.clear();
+
+    // A 20 ms tap: Space up at once, Return down at +80 ms and up at +160 ms.
+    p.buttons = kPadCross;
+    b.tick(p, 2000 * ms, &out, &actions);
+    p.buttons = 0;
+    b.tick(p, 2020 * ms, &out, &actions);
+    CHECK(out.size() == 2 && out[0].scancode == sp && out[0].down && out[1].scancode == sp &&
+          !out[1].down);
+    out.clear();
+    b.tick(p, 2080 * ms, &out, &actions);
+    CHECK(out.size() == 1 && out[0].scancode == ret && out[0].down);
+    out.clear();
+    b.tick(p, 2120 * ms, &out, &actions);
+    CHECK(out.empty());
+    b.tick(p, 2160 * ms, &out, &actions);
+    CHECK(out.size() == 1 && out[0].scancode == ret && !out[0].down);
+}
+
 // Right stick on Cursor (the default), speed 900, bounds 1000x800: the
 // cursor moves by cursor_speed * |v|^2 * dt each tick and clamps at the edge.
 static void test_binding_cursor_stick() {
@@ -4256,6 +4302,7 @@ int main(int argc, char **argv) {
     test_raster_shape_bounds_are_clamped();
     test_binding_parse_mapped();
     test_binding_button_mouse();
+    test_binding_button_two_keys();
     test_binding_cursor_stick();
     test_binding_arrows_stick();
     test_binding_horizontal_arrows();

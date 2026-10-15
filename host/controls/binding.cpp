@@ -369,16 +369,30 @@ void Binding::emit_wheel(int notches, std::vector<TouchAction> *out) {
     out->push_back(a);
 }
 
-void Binding::apply_button_edge(const Target &t, bool down, std::vector<TouchAction> *out,
-                                std::vector<std::string> *actions) {
+void Binding::apply_button_edge(int button, const Target &t, bool down, uint64_t now_ns,
+                                std::vector<TouchAction> *out, std::vector<std::string> *actions) {
     switch (t.type) {
     case Target::Key:
         if (down) {
             press_key(t.value, out);
-            press_key(t.value2, out); // press_key ignores 0
+            // The second key follows a moment later (see kSecondKeyDelayNs).
+            if (t.value2) {
+                second_release_ns_[button] = 0;
+                if (!second_held_[button])
+                    second_press_ns_[button] = (now_ns ? now_ns : 1) + kSecondKeyDelayNs;
+            }
         } else {
             release_key(t.value, out);
-            release_key(t.value2, out);
+            if (t.value2) {
+                if (second_held_[button]) {
+                    release_key(t.value2, out);
+                    second_held_[button] = false;
+                } else if (second_press_ns_[button]) {
+                    // A tap shorter than the delay still sends the second key,
+                    // held for the same short time.
+                    second_release_ns_[button] = second_press_ns_[button] + kSecondKeyDelayNs;
+                }
+            }
         }
         break;
     case Target::Mouse:
@@ -586,17 +600,43 @@ void Binding::tick(const PadState &pad, uint64_t now_ns, std::vector<TouchAction
         }
         const bool was = (prev_buttons_ & bit) != 0;
         if (was != now_down) {
-            apply_button_edge(table_.buttons[i], now_down, out, actions);
+            apply_button_edge(i, table_.buttons[i], now_down, now_ns, out, actions);
             prev_buttons_ = now_down ? (prev_buttons_ | bit) : uint16_t(prev_buttons_ & ~bit);
         }
     }
+    apply_second_keys(now_ns, out);
 
     apply_dpad(pad.hat, out);
     apply_stick(0, pad.lx, pad.ly, dt, out);
     apply_stick(1, pad.rx, pad.ry, dt, out);
 }
 
+void Binding::apply_second_keys(uint64_t now_ns, std::vector<TouchAction> *out) {
+    for (int i = 0; i < int(PadButton::Count); ++i) {
+        const int sc = table_.buttons[i].type == Target::Key ? table_.buttons[i].value2 : 0;
+        if (!sc) {
+            second_press_ns_[i] = second_release_ns_[i] = 0;
+            second_held_[i] = false;
+            continue;
+        }
+        if (second_press_ns_[i] && now_ns >= second_press_ns_[i]) {
+            press_key(sc, out);
+            second_held_[i] = true;
+            second_press_ns_[i] = 0;
+        }
+        if (second_release_ns_[i] && second_held_[i] && now_ns >= second_release_ns_[i]) {
+            release_key(sc, out);
+            second_held_[i] = false;
+            second_release_ns_[i] = 0;
+        }
+    }
+}
+
 void Binding::release_all(std::vector<TouchAction> *out) {
+    for (int i = 0; i < int(PadButton::Count); ++i) {
+        second_press_ns_[i] = second_release_ns_[i] = 0;
+        second_held_[i] = false;
+    }
     for (const KeyHold &h : held_keys_) {
         TouchAction a;
         a.kind = TouchAction::Key;

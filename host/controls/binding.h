@@ -111,8 +111,10 @@ class Binding {
   private:
     enum class AxisDir { None, Neg, Pos };
 
-    void apply_button_edge(const Target &t, bool down, std::vector<TouchAction> *out,
-                           std::vector<std::string> *actions);
+    void apply_button_edge(int button, const Target &t, bool down, uint64_t now_ns,
+                           std::vector<TouchAction> *out, std::vector<std::string> *actions);
+    // Presses or releases a two-key target's second key once its time comes.
+    void apply_second_keys(uint64_t now_ns, std::vector<TouchAction> *out);
     void apply_dpad(uint8_t hat, std::vector<TouchAction> *out);
     void apply_stick(int index, float vx, float vy, double dt, std::vector<TouchAction> *out);
     // Arrows/Wasd: one axis' hysteresis press/release, tracked per stick.
@@ -165,6 +167,17 @@ class Binding {
     };
     std::vector<KeyHold> held_keys_;
     int mouse_hold_[3] = {0, 0, 0}; // ref-counted, one per mouse button
+
+    // A two-key target ("key:Space+Return") presses its second key
+    // kSecondKeyDelayNs after the first. Battlefront II drops both keys when
+    // they go down in the same keyboard poll, so a pad A that is Space and
+    // Enter at once did nothing on the profile screen. Per pad button: when
+    // the second key is due down (0: not pending), when it is due up after a
+    // tap shorter than the delay (0: none), and whether it is down now.
+    static constexpr uint64_t kSecondKeyDelayNs = 80000000ull; // 80 ms
+    uint64_t second_press_ns_[int(PadButton::Count)] = {};
+    uint64_t second_release_ns_[int(PadButton::Count)] = {};
+    bool second_held_[int(PadButton::Count)] = {};
 };
 
 } // namespace controls
