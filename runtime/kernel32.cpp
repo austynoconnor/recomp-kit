@@ -1906,14 +1906,28 @@ void k_QueryPerformanceFrequency(X86 *c) {
     set_eax(c, 1);
 }
 
+// The counter never repeats a value. The clock under it moves in whole
+// milliseconds, but a real counter ticks millions of times a second, so two
+// reads never match there. Games compare 64-bit stamps with "now <= last
+// means it wrapped": Star Wars Battlefront II's 30 Hz input tick then took a
+// repeated stamp as a wrap of 2^32 ticks, saw 4295 seconds pass, and
+// auto-repeated every held key at once (double letters, a doubled Enter that
+// pushed two profile loads and left a black screen). A read in the same
+// millisecond as the last one returns one tick later instead. Only one guest
+// thread runs at a time, so the last value needs no lock.
 void k_QueryPerformanceCounter(X86 *c) {
     host_note_cadence("QueryPerformanceCounter");
     uint32_t p = arg(c, 0);
     if (p) {
         // Microseconds, at the frequency QueryPerformanceFrequency reports.
         // It counted whole milliseconds before, so a frame limiter waiting for
-        // 33 333 ticks saw time arrive in 1000-tick steps.
+        // 33 333 ticks saw time arrive in 1000-tick steps. Never the same
+        // value twice: "now <= last" reads as a wrap in some games.
+        static uint64_t last = 0;
         uint64_t ticks = host_micros();
+        if (ticks <= last)
+            ticks = last + 1;
+        last = ticks;
         wr32(p, (uint32_t)ticks);
         wr32(p + 4, (uint32_t)(ticks >> 32));
     }
