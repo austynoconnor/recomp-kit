@@ -1,6 +1,7 @@
 // Bounded FetchFS reads for large games. Emscripten's default backend retains
 // every fetched chunk for the lifetime of each file. This replacement uses a
-// shared 64 MiB LRU; guest reads remain synchronous through the SDK proxy worker.
+// shared 64 MiB LRU that also outlives a file's close; guest reads remain
+// synchronous through the SDK proxy worker.
 // Pieces are also kept in the browser's Cache Storage, keyed by the file's
 // validator (ETag, else Last-Modified, else size), so a second visit reads
 // them from disk instead of the network. A changed file gets new keys; the
@@ -62,25 +63,29 @@ addToLibrary({
     // retries a failed read in a loop (Bully reads text a byte at a time)
     // must not send a request for every retry.
     const refused = new Set();
+    // Sizes, refusals and pieces are keyed by URL, not by the WasmFS file
+    // (whose address is reused once freed), so they outlive a close: a game
+    // that opens a file again reads it from memory instead of asking the
+    // network for its size and bytes.
     async function details(file) {
-      if (info.has(file)) return info.get(file);
-      if (refused.has(file)) throw new Error('Game file is not on the server.');
       const path = UTF8ToString(__wasmfs_fetch_get_file_url(file));
       const url = new URL(path, self.location.origin).href;
+      if (info.has(url)) return info.get(url);
+      if (refused.has(url)) throw new Error('Game file is not on the server.');
       const response = await fetch(url, {method: 'HEAD'});
       const size = Number(response.headers.get('Content-Length'));
-      if (response.status === 404 || response.status === 410) refused.add(file);
+      if (response.status === 404 || response.status === 410) refused.add(url);
       if (!response.ok || !response.headers.has('Content-Length') ||
           !Number.isSafeInteger(size) || size < 0 || response.headers.get('Accept-Ranges') !== 'bytes')
         throw new Error('Game server must support sized HTTP ranges.');
       const version = response.headers.get('ETag') || response.headers.get('Last-Modified') || String(size);
       const result = {url, size, version,
                       chunkSize: Math.min(__wasmfs_fetch_get_chunk_size(file), 1024 * 1024)};
-      info.set(file, result);
+      info.set(url, result);
       return result;
     }
-    async function chunk(file, meta, index) {
-      const key = file + ':' + index;
+    async function chunk(meta, index) {
+      const key = meta.url + '#' + index;
       if (cache.has(key)) {
         const data = cache.get(key);
         cache.delete(key);
@@ -109,14 +114,7 @@ addToLibrary({
     }
     wasmFS$backends[backend] = {
       allocFile: async () => {},
-      freeFile: async file => {
-        info.delete(file);
-        refused.delete(file);
-        for (const [key, data] of cache) if (key.startsWith(file + ':')) {
-          cachedBytes -= data.byteLength;
-          cache.delete(key);
-        }
-      },
+      freeFile: async () => {},
       write: async () => -{{{ cDefs.EROFS }}},
       getSize: async file => {
         try { return (await details(file)).size; }
@@ -131,7 +129,7 @@ addToLibrary({
           while (copied < count) {
             const at = offset + copied;
             const index = Math.floor(at / meta.chunkSize);
-            const data = await chunk(file, meta, index);
+            const data = await chunk(meta, index);
             const within = at - index * meta.chunkSize;
             const take = Math.min(data.byteLength - within, count - copied);
             HEAPU8.set(data.subarray(within, within + take), buffer + copied);

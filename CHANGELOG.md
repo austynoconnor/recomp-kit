@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 2026-10-15 14:48 CDT — Claude Opus 5.5: cherry-picked giggity-d3d8 0448bf5
+  (pad filter: skips non-pads such as a speaker bar with a stuck axis,
+  Bluetooth Xbox layouts, last-used pad, rest calibration; diagnostics;
+  background download) onto giggity-swbf2. Its entry follows below.
+
 - 2026-10-15 12:56 CDT — Claude Opus 5.5: a two-key pad button (`key:A+B`) presses
   its second key 80 ms after the first instead of at the same moment.
   Battlefront II ignores two keys that go down in the same keyboard poll, so
@@ -10,7 +15,6 @@
   delay still sends the second key, held 80 ms (host/controls/binding.cpp,
   Binding::apply_second_keys). New controls_tests check
   test_binding_button_two_keys.
-
 - 2026-10-15 12:26 CDT — Claude Opus 5.5: QueryPerformanceCounter never
   returns the same value twice. It was host_millis()*1000, so two calls in one
   millisecond matched. Battlefront II's 30 Hz input tick (00413340) computes
@@ -20,6 +24,37 @@
   loading the profile twice and leaving a black screen with only a Back
   button. Each call now returns at least one tick more than the last. New
   runtime_tests check: five calls in a row strictly increase.
+
+- 2026-10-15 01:00 CDT — Claude Opus 5.5: Game pads that move menus by
+  themselves, and diagnostics for slow PCs. Chrome lists some Bluetooth
+  devices that are not pads (a "CA-2890 BT Speaker Bar" with an axis resting
+  at +1) as game controllers; SDL opened them as pads and the kit read only
+  the first one, so Crazy Taxi's menus scrolled with no controller on and the
+  real pad in slot 2 did nothing. The new `web/player/pad-filter.js` sits in
+  front of SDL on the web: devices named like speakers, headsets, keyboards
+  or mice are hidden; unmapped devices the kit does not know are hidden
+  (`?RECOMP_RAW_PADS=1` lets them through); Microsoft's unmapped Bluetooth
+  Xbox layouts (classic firmware 02e0/02fd with a shared trigger axis, and
+  Bluetooth LE firmware 0b13/0b20 with triggers resting at -1 and the d-pad
+  on a hat axis) are rebuilt as standard pads; sticks get a 15% dead zone;
+  every axis, trigger, hat and button counts only after it has been seen at
+  rest. Each pad and how it is read is logged as `[pads]`, and
+  `window.recompPads()` lists them. `host/controls/gamepad_sdl.cpp` now opens
+  every pad and the game reads the one pressed or moved last, with the same
+  seen-at-rest rule natively. The overlay's frame-limit label says "NO CAP"
+  instead of "ORIGINAL" (players read it as Crazy Taxi's Original mode).
+  `?debug=1` adds a "Copy diagnostics" button (browser, GPU adapter, refresh
+  rate, canvas and screen size, frame and stall numbers, pads, recent
+  warnings); other same-origin pages can ask for the same text with a
+  `{type: "recomp-diagnostics"}` message. A software GPU (SwiftShader,
+  llvmpipe, Microsoft Basic Render) shows a warning on the page and posts
+  `{type: "recomp-warning"}` to the parent. File stalls: a streamed game
+  copies its files into the browser's storage in the background 20 s after
+  it starts (low priority, games up to 768 MiB, `?RECOMP_BACKGROUND_DOWNLOAD=0`
+  turns it off), so the next visit reads everything locally; the fetch
+  backend's memory and Cache Storage pieces are keyed by URL and outlive a
+  file close, so games that reopen archives no longer refetch them.
+
 
 - 2026-10-14 16:34 CDT — Claude Opus 5.5: Two Battlefront II live-site fixes.
   (1) A constant half-second repeating sound: a SetPan or SetFrequency on a
