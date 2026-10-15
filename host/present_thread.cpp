@@ -1071,11 +1071,21 @@ void host_present_start(void *native_surface, int w, int h) {
     // Match the swapchain's three drawables so that delay does not cap a 120 Hz
     // producer near 80 FPS. Keep smaller queues available for comparisons.
     s->flight_limit = 3;
+#ifdef __EMSCRIPTEN__
+    // In a browser each submission in flight is a frame queued ahead of the
+    // display: a game held at 60 FPS on a 60 Hz screen kept all three full,
+    // and its frames reached the screen about 70 ms after the game drew them.
+    // Two still keep up with the refresh there (WebGPU acknowledges in under
+    // two refreshes) and take one frame of that wait away.
+    s->flight_limit = 2;
+#endif
     if (const char *value = recomp_env("HOST_PRESENT_FRAMES")) {
         if (!strcmp(value, "1"))
             s->flight_limit = 1;
         else if (!strcmp(value, "2"))
             s->flight_limit = 2;
+        else if (!strcmp(value, "3"))
+            s->flight_limit = 3;
     }
     s->surface = native_surface;
     s->drawable_w = w;
