@@ -28,7 +28,8 @@
 </style>
 </head>
 <body>
-<header><a href="../">Library</a><strong>@TITLE@</strong><button id="stop" hidden>Stop game</button></header>
+<header><a href="../">Library</a><strong>@TITLE@</strong><button id="diag" hidden>Copy diagnostics</button><button id="stop" hidden>Stop game</button></header>
+<dialog id="diag-dialog"><p>Copy this and send it with your report:</p><textarea id="diag-text" rows="18" cols="80" readonly></textarea><form method="dialog"><button>Close</button></form></dialog>
 <main>
   <section class="card" id="welcome">
     <h1>@TITLE@</h1>
@@ -108,6 +109,33 @@ function stopGame() {
   startButton.focus();
 }
 stopButton.addEventListener("click", stopGame);
+// ?debug=1: a button that copies what the game and browser report (GPU,
+// refresh rate, canvas, frame times, stalls, pads) for a performance report.
+// The game frame also answers {type: "recomp-diagnostics"} messages.
+const diagButton = document.getElementById("diag");
+async function diagnosticsText() {
+  const d = await frame?.contentWindow?.recompDiagnostics?.();
+  return d ? JSON.stringify(d, null, 2) : "The game is not running.";
+}
+if (new URLSearchParams(location.search).get("debug") === "1") {
+  diagButton.hidden = false;
+  diagButton.addEventListener("click", async () => {
+    const text = await diagnosticsText();
+    try {
+      await navigator.clipboard.writeText(text);
+      diagButton.textContent = "Copied";
+      setTimeout(() => { diagButton.textContent = "Copy diagnostics"; }, 2000);
+    } catch {
+      // Clipboard refused (an embedding page may not allow it): show it.
+      document.getElementById("diag-text").value = text;
+      document.getElementById("diag-dialog").showModal();
+    }
+  });
+}
+window.addEventListener("message", async (e) => {
+  if (e.origin !== location.origin || e.data?.type !== "recomp-diagnostics" || e.source === frame?.contentWindow) return;
+  e.source?.postMessage({ type: "recomp-diagnostics", text: await diagnosticsText() }, location.origin);
+});
 window.addEventListener("pagehide", stopGame);
 window.addEventListener("message", event => {
   if (event.origin === location.origin && event.source === frame?.contentWindow &&

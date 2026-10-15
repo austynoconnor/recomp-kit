@@ -65,7 +65,7 @@ test('bounded fetch reads cross chunk boundaries, caches and clips at EOF', asyn
   assert.equal(await f.backend.write(), -30);
 });
 
-test('64 MiB LRU evicts old ranges, touches recent reads and releases files', async () => {
+test('64 MiB LRU evicts old ranges, touches recent reads and outlives a file close', async () => {
   const f = await fixture();
   for (let file = 1; file <= 64; file++) assert.equal(await f.backend.read(file, 0, 1, 0), 1);
   await f.backend.read(1, 0, 1, 0);
@@ -75,9 +75,11 @@ test('64 MiB LRU evicts old ranges, touches recent reads and releases files', as
   assert.equal(f.gets.length, 65);
   await f.backend.read(2, 0, 1, 0);
   assert.equal(f.gets.length, 66);
+  // Pieces are keyed by URL, so a game that closes and reopens a file (Crazy
+  // Taxi reopens its archives) reads them from memory again.
   await f.backend.freeFile(1);
   await f.backend.read(1, 0, 1, 0);
-  assert.equal(f.gets.length, 67);
+  assert.equal(f.gets.length, 66);
 });
 
 test('incomplete ranges fail instead of supplying truncated game data', async () => {

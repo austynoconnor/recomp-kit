@@ -838,11 +838,32 @@ static void file_drop_read_ahead(const std::string &path) {
 // the read-ahead buffer are not timed; in a browser each clock reading is a
 // call out to JavaScript and a game reading a byte at a time makes hundreds
 // of thousands of them.
+// A host call that may wait (a streamed file read waiting on the network)
+// hands the baton to another runnable guest thread for its duration, so the
+// other threads - the game's main loop, audio, its own streaming - keep
+// running instead of all standing still behind one download. Begin returns
+// false (and the caller keeps the baton) when nothing else could run, inside
+// an atomic stretch, or off a guest thread. End takes the baton back.
+bool sched_host_io_begin();
+void sched_host_io_end();
+
+// Host read time on this thread so far; ReadFile compares it before and after
+// to name reads slow enough to be a hitch without reading the clock itself.
+static __thread uint64_t t_host_read_ns = 0;
+
 static int64_t host_read(int fd, uint8_t *dst, size_t want, uint64_t *spent_ns) {
     RecompStallScope stall(RECOMP_STALL_FILE);
     const uint64_t from = os_monotonic_ns();
+    // Only the destination buffer and this handle's own state are touched
+    // while another guest thread holds the baton; a game that touches the
+    // buffer of a read in flight from another thread races on Windows too.
+    const bool released = sched_host_io_begin();
     int64_t got = os_fd_read(fd, dst, want);
-    *spent_ns += os_monotonic_ns() - from;
+    if (released)
+        sched_host_io_end();
+    const uint64_t spent = os_monotonic_ns() - from;
+    *spent_ns += spent;
+    t_host_read_ns += spent;
     return got;
 }
 
@@ -885,6 +906,8 @@ static int64_t file_read(HObj *o, uint8_t *dst, uint32_t want) {
     return (int64_t)n;
 }
 
+extern __thread size_t t_self; // defined with the scheduler below
+
 void k_ReadFile(X86 *c) {
     HObj *o = handle_get(arg(c, 0), H_FILE);
     uint32_t buf = arg(c, 1), want = arg(c, 2), pread = arg(c, 3);
@@ -904,10 +927,25 @@ void k_ReadFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
+    const uint64_t read_before = t_host_read_ns;
     int64_t n = file_read(o, g_mem + buf, want);
+    const uint64_t spent_ms = (t_host_read_ns - read_before) / 1000000;
     static const bool trace_files = recomp_env("TRACE_FILES") != nullptr;
     if (trace_files)
         LOGW("file: read handle=%08x want=%u got=%lld", arg(c, 0), want, (long long)n);
+    // A read that waits long enough to show as a hitch names itself, so a
+    // stall report ("file 830 ms") can be traced to the file, the offset,
+    // and the guest thread that waited (thread 0 is the game's main thread;
+    // every guest thread waits while one holds the baton in a read).
+    static int slow_reported = 0;
+    if (spent_ms >= 40 && slow_reported < 400) {
+        slow_reported++;
+        // The descriptor ends where the guest's read ended.
+        const int64_t at = os_fd_seek(o->fd, 0, OS_SEEK_CUR) - (n > 0 ? n : 0);
+        fprintf(stderr, "[stall] slow read: %s at %lld, %u bytes, %llu ms, guest thread %zu\n",
+                o->guest_name.c_str(), (long long)at, want, (unsigned long long)spent_ms,
+                (size_t)t_self);
+    }
     if (n < 0) {
         set_last_error(ERROR_ACCESS_DENIED_);
         if (pread)
@@ -2041,7 +2079,9 @@ const uint32_t WAIT_TIMEOUT_ = 0x102;
 // wait can complete, at which point the wait is *taken* (a semaphore
 // decremented, an auto-reset event cleared, a mutex owned) by the scheduler
 // itself, so exactly one waiter can ever be released by one signal.
-enum WaitKind : uint8_t { W_NONE, W_OBJECTS, W_CRITSEC };
+// W_HOSTIO: the thread is in a host call that may wait (a streamed file read)
+// and gave the baton away for it; only sched_host_io_end releases it.
+enum WaitKind : uint8_t { W_NONE, W_OBJECTS, W_CRITSEC, W_HOSTIO };
 
 struct GuestThread {
     size_t index = 0;
@@ -2634,6 +2674,8 @@ bool sched_satisfy_locked(GuestThread *t) {
         t->wait_result = 0;
     } else if (t->wait_kind == W_NONE && t->has_deadline) {
         return false; // a plain sleep: only time releases it
+    } else if (t->wait_kind == W_HOSTIO) {
+        return false; // its own host call ends it, nothing else
     }
     t->blocked = false;
     t->wait_kind = W_NONE;
@@ -2789,8 +2831,13 @@ void sched_run_others_locked(size_t me, const char *why) {
 
         double deadline = sched_earliest_deadline_locked();
         if (deadline == 0.0) {
+            // A thread in a host call (W_HOSTIO) comes back by itself; that is
+            // not the deadlock the report below is for.
+            bool host_io = false;
+            for (GuestThread *t : threads())
+                host_io |= t->blocked && t->wait_kind == W_HOSTIO;
             static bool told = false;
-            if (!told) {
+            if (!told && !host_io) {
                 told = true;
                 dump_scheduler_locked("every guest thread is blocked with no deadline "
                                       "and nothing left to signal them",
@@ -2958,6 +3005,50 @@ void sched_atomic_unwind_to_esp(uint32_t esp) {
     while (t_atomic && t_atomic <= SCHED_ATOMIC_MAX && t_atomic_esp[t_atomic - 1] < esp)
         --t_atomic;
 }
+
+namespace {
+
+bool sched_host_io_begin() {
+    if (!sched_is_guest_thread() || t_atomic || threads().size() < 2)
+        return false;
+    std::lock_guard<std::mutex> lock(g_sched_m);
+    const size_t me = t_self;
+    if (g_baton != me || g_exit_requested)
+        return false;
+    sched_expire_locked();
+    const size_t next = sched_next_runnable_locked(me);
+    if (next == NO_THREAD || next == me)
+        return false;
+    GuestThread *t = threads()[me];
+    t->blocked = true;
+    t->wait_kind = W_HOSTIO;
+    t->wait_n = 0;
+    t->has_deadline = false;
+    g_baton = next;
+    record_handoff_locked(me, next, "host io");
+    g_sched_cv.notify_all();
+    return true;
+}
+
+void sched_host_io_end() {
+    std::lock_guard<std::mutex> lock(g_sched_m);
+    const size_t me = t_self;
+    GuestThread *t = threads()[me];
+    t->blocked = false;
+    t->wait_kind = W_NONE;
+    g_sched_cv.notify_all();
+    // Runnable again: wait for the ordinary handoff, as a yield does. A baton
+    // stranded on a finished thread is taken, since nobody can hand it on.
+    while (g_baton != me) {
+        if (g_baton >= threads().size() || threads()[g_baton]->finished) {
+            g_baton = me;
+            break;
+        }
+        sched_wait_locked(me, 0.0, HOST_IDLE_BATON_SLICE);
+    }
+}
+
+} // namespace
 
 void sched_checkpoint() {
     // Drain first and unconditionally: a guest with no worker threads never

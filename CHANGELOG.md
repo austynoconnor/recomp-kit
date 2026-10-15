@@ -56,6 +56,59 @@
   and a texture frees its levels with it. New native checks in host_tests
   (ring rebuild) and dx_tests (level references).
 
+- 2026-10-15 01:00 CDT — Claude Opus 5.5: Game pads that move menus by
+  themselves, and diagnostics for slow PCs. Chrome lists some Bluetooth
+  devices that are not pads (a "CA-2890 BT Speaker Bar" with an axis resting
+  at +1) as game controllers; SDL opened them as pads and the kit read only
+  the first one, so Crazy Taxi's menus scrolled with no controller on and the
+  real pad in slot 2 did nothing. The new `web/player/pad-filter.js` sits in
+  front of SDL on the web: devices named like speakers, headsets, keyboards
+  or mice are hidden; unmapped devices the kit does not know are hidden
+  (`?RECOMP_RAW_PADS=1` lets them through); Microsoft's unmapped Bluetooth
+  Xbox layouts (classic firmware 02e0/02fd with a shared trigger axis, and
+  Bluetooth LE firmware 0b13/0b20 with triggers resting at -1 and the d-pad
+  on a hat axis) are rebuilt as standard pads; sticks get a 15% dead zone;
+  every axis, trigger, hat and button counts only after it has been seen at
+  rest. Each pad and how it is read is logged as `[pads]`, and
+  `window.recompPads()` lists them. `host/controls/gamepad_sdl.cpp` now opens
+  every pad and the game reads the one pressed or moved last, with the same
+  seen-at-rest rule natively. The overlay's frame-limit label says "NO CAP"
+  instead of "ORIGINAL" (players read it as Crazy Taxi's Original mode).
+  `?debug=1` adds a "Copy diagnostics" button (browser, GPU adapter, refresh
+  rate, canvas and screen size, frame and stall numbers, pads, recent
+  warnings); other same-origin pages can ask for the same text with a
+  `{type: "recomp-diagnostics"}` message. A software GPU (SwiftShader,
+  llvmpipe, Microsoft Basic Render) shows a warning on the page and posts
+  `{type: "recomp-warning"}` to the parent. File stalls: a streamed game
+  copies its files into the browser's storage in the background 20 s after
+  it starts (low priority, games up to 768 MiB, `?RECOMP_BACKGROUND_DOWNLOAD=0`
+  turns it off), so the next visit reads everything locally; the fetch
+  backend's memory and Cache Storage pieces are keyed by URL and outlive a
+  file close, so games that reopen archives no longer refetch them.
+
+- 2026-10-14 17:50 CDT — Claude Opus 5.5: a guest thread waiting on a host
+  file read now hands the scheduler baton to another runnable guest thread
+  (new wait kind W_HOSTIO) and takes it back when the read returns. On the
+  web build each streamed chunk is a network round trip; before, the reading
+  thread kept the baton and every guest thread (render, audio, game loop)
+  stopped until the read finished, which showed as long freezes after a race
+  and stutter while track sections streamed. Reads made under an atomic
+  section, from host threads, or with only one guest thread keep the old
+  path. The all-blocked deadlock dump ignores threads in W_HOSTIO. Checked
+  with a local menu-and-input run of 3,700 frames: no deadlock, worst frame
+  after start 132 ms.
+- 2026-10-14 17:25 CDT — Claude Opus 5.5: three diagnostics and one render fix
+  for browser hitches.
+  - WebGPU present skips frames while the page's canvas is 0x0 (a stage
+    hidden or not laid out yet at start) and configures the surface once the
+    canvas has a size. Before, the first presents asked for a 0x0 swapchain
+    texture and every view, copy and submit after it failed validation.
+  - A ReadFile whose host read waits 40 ms or more is reported as
+    "[stall] slow read: <file> at <offset>, <bytes>, <ms>, guest thread <n>"
+    (up to 400 lines), so a stall report's file time can be traced to the
+    file and the guest thread that waited.
+  - The web player copies the game's log to the browser console when the
+    page address carries a RECOMP_* flag, so a player can copy it from there.
 - 2026-10-13 22:26 CDT — Claude Opus 5.5: a mapped pad button can hold two
   keys at once: `key:A+B` (for example `cross = "key:Space+Return"`). This lets
   a console layout put one button on an action whose PC key differs between

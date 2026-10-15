@@ -3,6 +3,7 @@
 #include "shaders_wgsl.h"
 
 #include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
 #include <emscripten/proxying.h>
 #include <emscripten/threading.h>
 
@@ -1090,6 +1091,7 @@ Swapchain WebGpuDevice::create_swapchain(void *native_surface, int width, int he
     WGPUSurfaceDescriptor sd = WGPU_SURFACE_DESCRIPTOR_INIT;
     sd.nextInChain = &canvas.chain;
     Chain c;
+    c.selector = selector;
     c.surface = wgpuInstanceCreateSurface(instance_, &sd);
     if (!c.surface)
         return {};
@@ -1139,6 +1141,23 @@ Texture WebGpuDevice::acquire(Swapchain s) {
     if (it == chains_.end())
         return {};
     Chain &c = it->second;
+    // A page can start the game while its stage is hidden or not laid out, and
+    // the canvas is then 0x0: the surface was never configured, or the page
+    // shrank the canvas behind the configuration's back. Asking for a texture
+    // then fails validation and every copy and submit after it fails too.
+    // Skip the frame until the canvas has a size, and configure to it.
+    int cw = 0, ch = 0;
+    emscripten_get_canvas_element_size(c.selector.c_str(), &cw, &ch);
+    if (cw <= 0 || ch <= 0) {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            fprintf(stderr, "[gpu] canvas is 0x0; frames are skipped until it has a size\n");
+        }
+        return {};
+    }
+    if (c.width <= 0 || c.height <= 0)
+        resize(s, cw, ch); // first size the canvas has had: configure now
     WGPUSurfaceTexture st = WGPU_SURFACE_TEXTURE_INIT;
     wgpuSurfaceGetCurrentTexture(c.surface, &st);
     if (!st.texture || (st.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&

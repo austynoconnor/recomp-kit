@@ -121,14 +121,14 @@ async function zipSource(file) {
 
 // Download one file at a time as a stream, using the existing resumable OPFS
 // importer. A large game never needs a single multi-gigabyte memory buffer.
-async function hostedSource(manifestUrl, signal) {
+async function hostedSource(manifestUrl, signal, priority = "auto") {
   const response = await fetch(manifestUrl, { signal, cache: "no-store" });
   if (!response.ok) throw new Error("Game download list is unavailable.");
   const manifest = await response.json();
   return {
     list: async () => manifest.files,
     async stream(entry) {
-      const response = await fetch(new URL(entry.url, manifestUrl), { signal });
+      const response = await fetch(new URL(entry.url, manifestUrl), { signal, priority });
       if (!response.ok || !response.body) throw new Error(`Could not download ${entry.path}. Try Start again.`);
       let received = 0;
       return response.body.pipeThrough(new TransformStream({
@@ -171,13 +171,20 @@ const handlers = {
     const persisted = await navigator.storage.persisted?.().catch(() => false);
     return { status, estimate, persisted };
   },
-  async import({ game, kind, files, handle, file, manifestUrl }) {
+  // `background` (a hosted game already streaming): low-priority fetches, and
+  // nothing at all when the whole game is over `maxBytes`.
+  async import({ game, kind, files, handle, file, manifestUrl, background, maxBytes }) {
     controller = new AbortController();
     let source;
     if (kind === "files") source = filesSource(files);
     else if (kind === "handle") source = await handleSource(handle);
-    else if (kind === "hosted") source = await hostedSource(manifestUrl, controller.signal);
+    else if (kind === "hosted")
+      source = await hostedSource(manifestUrl, controller.signal, background ? "low" : "auto");
     else source = await zipSource(file);
+    if (background && maxBytes) {
+      const total = (await source.list()).reduce((n, e) => n + (e.isDir ? 0 : e.size || 0), 0);
+      if (total > maxBytes) { controller = null; return { result: "tooBig", bytes: total }; }
+    }
     const root = await dirFor(game.id + "/game");
     const outcome = await importGame(game, source, opfsStore(root), {
       signal: controller.signal,
