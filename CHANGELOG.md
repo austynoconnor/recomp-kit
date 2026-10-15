@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 2026-10-15 13:40 CDT — Claude Opus 5.5 (NFS Underground 2): DirectInput 8
+  action mapping for the keyboard. `EnumDevicesBySemantics` now offers the
+  system keyboard to the game's callback (as a version 8 device);
+  `BuildActionMap` places each action whose semantic is a key
+  (`DIKEYBOARD_*`, 0x81000400 | scan code) on that key, keeping the game's
+  own placements (`DIA_APPMAPPED`) and earlier ones unless asked to
+  initialise; `SetActionMap` records which key serves which action, sets
+  the device's format and buffer, and from then on only mapped keys report
+  and each event's `uAppData` names its action. Underground 2 gets its
+  whole keyboard this way and had none before (Enter did nothing at the
+  title). The mouse and pad are unchanged; `GetImageInfo` and
+  `ConfigureDevices` still answer unsupported.
+
 - 2026-10-15 12:27 CDT — Claude Opus 5.5 (NFS Underground 2): a hang
   diagnostic for the web. With `RECOMP_SCHED_REPORT=<seconds>` in the page
   address (or the environment) every guest thread's state, import count and

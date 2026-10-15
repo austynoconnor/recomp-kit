@@ -269,7 +269,10 @@ void poll_device(ComObj *d) {
                 if (trace)
                     fprintf(stderr, "[input] dinput key %02x %s (buffer %u)\n", k,
                             now ? "down" : "up", unsigned(d->buffer_size));
-                if (d->buffer_size)
+                // With an action map only the mapped keys report, as in
+                // DirectInput 8: the others are not part of the device's format.
+                bool mapped = d->di_action_app.empty() || d->di_action_app[k] != ~0u;
+                if (d->buffer_size && mapped)
                     d->events.push_back(pack_event(k, now ? 0x80 : 0));
                 d->last_keys[k] = now;
             }
@@ -604,8 +607,11 @@ void Device_GetDeviceData(X86 *c) {
         for (uint32_t i = 0; i < n; ++i) {
             uint32_t e = d->events[i];
             uint32_t a = out + i * objsize;
-            if (objsize >= DIDEVICEOBJECTDATA_DX8_SIZE)
-                wr32(a + DIDOD_OFF_uAppData, 0);
+            if (objsize >= DIDEVICEOBJECTDATA_DX8_SIZE) {
+                // An action-mapped device names the game's action here.
+                uint32_t app = d->di_action_app.empty() ? 0u : d->di_action_app[event_ofs(e)];
+                wr32(a + DIDOD_OFF_uAppData, app == ~0u ? 0u : app);
+            }
             wr32(a + DIDOD_OFF_dwOfs, event_ofs(e));
             // dwData is a full dword; a signed axis delta was packed into 24
             // bits, so sign-extend it back.
@@ -1013,8 +1019,201 @@ void DI8_EnumDevices(X86 *c) {
 void DI8_FindDevice(X86 *c) {
     com_ret(c, DIERR_DEVICENOTREG);
 }
+// Action mapping, for the keyboard only. A game that maps actions
+// (DIACTIONFORMAT) asks for devices by semantics, has each one fill in which
+// of its objects serve which action (BuildActionMap), then sets that map
+// (SetActionMap) and reads events whose uAppData names the action. Keyboard
+// semantics are DIKEYBOARD_* = 0x81000400 | scan code, so the default map is
+// the key the game itself named. Underground 2 reads its whole keyboard this
+// way; with no device offered it had no keyboard at all.
+//
+// DIACTIONFORMATA: dwSize, dwActionSize, dwDataSize, dwNumActions, rgoAction
+// at 0x10, guidActionMap, dwGenre at 0x24, dwBufferSize at 0x28 ... 0x148
+// bytes. DIACTIONA (0x28): uAppData, dwSemantic, dwFlags, name, guidInstance
+// at 0x10, dwObjID at 0x20, dwHow at 0x24.
+const uint32_t DIAF_OFF_dwActionSize = 4, DIAF_OFF_dwNumActions = 12, DIAF_OFF_rgoAction = 16,
+               DIAF_OFF_dwBufferSize = 0x28, DIAF_SIZE = 0x148;
+const uint32_t DIA_OFF_uAppData = 0, DIA_OFF_dwSemantic = 4, DIA_OFF_dwFlags = 8,
+               DIA_OFF_guidInstance = 0x10, DIA_OFF_dwObjID = 0x20, DIA_OFF_dwHow = 0x24,
+               DIA_SIZE = 0x28;
+const uint32_t DIA_APPMAPPED = 0x8, DIA_APPNOMAP = 0x10;
+const uint32_t DIAH_UNMAPPED = 0, DIAH_APPREQUESTED = 0x4, DIAH_DEFAULT = 0x20;
+const uint32_t DIDBAM_INITIALIZE = 0x2;
+
+// The keyboard object for a scan code: DIDFT_MAKEINSTANCE(dik) | DIDFT_BUTTON.
+uint32_t key_obj_id(uint32_t dik) {
+    return (dik << 8) | 0x0cu;
+}
+uint32_t obj_id_key(uint32_t id) {
+    return (id >> 8) & 0xffu;
+}
+bool keyboard_semantic(uint32_t sem) {
+    return (sem & 0xff00ff00u) == 0x81000400u;
+}
+bool on_keyboard(uint32_t action) {
+    return memcmp(gm_ptr(action + DIA_OFF_guidInstance), GUID_SysKeyboard_, 16) == 0;
+}
+
+// The action array of a format, or 0 when it cannot be walked.
+uint32_t action_array(uint32_t fmt, uint32_t *count) {
+    *count = 0;
+    if (!fmt || !gm_valid(fmt, DIAF_SIZE))
+        return 0;
+    uint32_t n = rd32(fmt + DIAF_OFF_dwNumActions);
+    uint32_t a = rd32(fmt + DIAF_OFF_rgoAction);
+    if (rd32(fmt + DIAF_OFF_dwActionSize) != DIA_SIZE || n > 4096 || !a ||
+        !gm_fits_n(a, n, DIA_SIZE))
+        return 0;
+    *count = n;
+    return a;
+}
+
+void Device8_BuildActionMap(X86 *c) {
+    ComObj *d = this_device(c);
+    uint32_t fmt = arg(c, 1), flags = arg(c, 3);
+    uint32_t n = 0, acts = action_array(fmt, &n);
+    if (!d || !acts) {
+        com_ret(c, DIERR_INVALIDPARAM);
+        return;
+    }
+    if (d->dev_type != DIDEVTYPE_KEYBOARD) {
+        com_ret(c, S_FALSE); // DI_NOEFFECT: nothing on this device serves these actions
+        return;
+    }
+    bool used[256] = {false};
+    // The game's own placements first: they win over the defaults.
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t a = acts + i * DIA_SIZE;
+        if ((rd32(a + DIA_OFF_dwFlags) & DIA_APPMAPPED) && on_keyboard(a))
+            used[obj_id_key(rd32(a + DIA_OFF_dwObjID))] = true;
+    }
+    uint32_t mapped = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t a = acts + i * DIA_SIZE;
+        uint32_t af = rd32(a + DIA_OFF_dwFlags), sem = rd32(a + DIA_OFF_dwSemantic);
+        bool ours = on_keyboard(a);
+        if (af & DIA_APPNOMAP)
+            continue;
+        if (af & DIA_APPMAPPED) {
+            if (ours) {
+                wr32(a + DIA_OFF_dwHow, DIAH_APPREQUESTED);
+                ++mapped;
+            }
+            continue;
+        }
+        // Without DIDBAM_INITIALIZE an action already placed keeps its place.
+        uint32_t how = rd32(a + DIA_OFF_dwHow);
+        if (!(flags & DIDBAM_INITIALIZE) && how != DIAH_UNMAPPED) {
+            if (ours) {
+                used[obj_id_key(rd32(a + DIA_OFF_dwObjID))] = true;
+                ++mapped;
+            }
+            continue;
+        }
+        if (ours) // a previous placement on this device, being rebuilt
+            wr32(a + DIA_OFF_dwHow, DIAH_UNMAPPED);
+        if (!keyboard_semantic(sem) || used[sem & 0xffu])
+            continue;
+        used[sem & 0xffu] = true;
+        memcpy(gm_ptr(a + DIA_OFF_guidInstance), GUID_SysKeyboard_, 16);
+        wr32(a + DIA_OFF_dwObjID, key_obj_id(sem & 0xffu));
+        wr32(a + DIA_OFF_dwHow, DIAH_DEFAULT);
+        ++mapped;
+    }
+    com_ret(c, mapped ? DI_OK : S_FALSE);
+}
+
+void Device8_SetActionMap(X86 *c) {
+    ComObj *d = this_device(c);
+    uint32_t fmt = arg(c, 1);
+    uint32_t n = 0, acts = action_array(fmt, &n);
+    if (!d || !acts) {
+        com_ret(c, DIERR_INVALIDPARAM);
+        return;
+    }
+    if (d->dev_type != DIDEVTYPE_KEYBOARD) {
+        com_ret(c, DI_OK);
+        return;
+    }
+    std::vector<uint32_t> app(256, ~0u);
+    uint32_t mapped = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t a = acts + i * DIA_SIZE;
+        if (rd32(a + DIA_OFF_dwHow) == DIAH_UNMAPPED || !on_keyboard(a))
+            continue;
+        uint32_t k = obj_id_key(rd32(a + DIA_OFF_dwObjID));
+        if (app[k] == ~0u) {
+            app[k] = rd32(a + DIA_OFF_uAppData);
+            ++mapped;
+        }
+    }
+    // A format set without being built first: map it by its semantics.
+    if (!mapped)
+        for (uint32_t i = 0; i < n; ++i) {
+            uint32_t a = acts + i * DIA_SIZE;
+            uint32_t sem = rd32(a + DIA_OFF_dwSemantic);
+            if ((rd32(a + DIA_OFF_dwFlags) & DIA_APPNOMAP) || !keyboard_semantic(sem) ||
+                app[sem & 0xffu] != ~0u)
+                continue;
+            app[sem & 0xffu] = rd32(a + DIA_OFF_uAppData);
+            ++mapped;
+        }
+    d->di_action_app.swap(app);
+    // Setting a map sets the device's format and its buffer.
+    d->data_format_size = 256;
+    uint32_t buf = rd32(fmt + DIAF_OFF_dwBufferSize);
+    if (buf)
+        d->buffer_size = buf;
+    else if (!d->buffer_size)
+        d->buffer_size = 64;
+    d->events.clear();
+    static uint32_t sets;
+    if (++sets <= 8)
+        LOGW("dinput: keyboard action map %08x set: %u keys mapped, buffer %u", fmt, mapped,
+             d->buffer_size);
+    com_ret(c, DI_OK);
+}
+
+// EnumDevicesBySemantics(user, format, callback, ref, flags). The keyboard is
+// offered, as a fresh device the callback may keep (it AddRefs what it keeps).
+// The callback is BOOL (instance, device, dwFlags, dwRemaining, ref).
 void DI8_EnumDevicesBySemantics(X86 *c) {
-    com_ret(c, DI_OK); // no action-mapped devices: the callback is never called
+    ComObj *di = this_dinput(c);
+    uint32_t cb = arg(c, 3), ref = arg(c, 4);
+    if (!di || !cb) {
+        com_ret(c, DIERR_INVALIDPARAM);
+        return;
+    }
+    const bool wide = di->di_wide;
+    const uint32_t INST_SIZE = wide ? 1100 : 580;
+    ComObj *d = com_new(K_DIDEVICE);
+    d->dev_type = DIDEVTYPE_KEYBOARD;
+    d->di_wide = wide;
+    d->di_version = di->di_version;
+    uint32_t view = com_view(d, IF_DINPUTDEVICE8);
+    uint32_t a = view ? scratch(INST_SIZE) : 0;
+    if (!a) {
+        com_release(d);
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    wr32(a, INST_SIZE);
+    memcpy(gm_ptr(a + 4), GUID_SysKeyboard_, 16);
+    memcpy(gm_ptr(a + 20), GUID_SysKeyboard_, 16);
+    wr32(a + 36, 0x0413u); // DI8DEVTYPE_KEYBOARD, DI8DEVTYPEKEYBOARD_PCENH
+    if (wide) {
+        di_put_wide(a + 40, "Keyboard", 260);
+        di_put_wide(a + 560, "Keyboard", 260);
+    } else {
+        gm_put_str(a + 40, "Keyboard", 260);
+        gm_put_str(a + 300, "Keyboard", 260);
+    }
+    LOGW("dinput: offering the keyboard to EnumDevicesBySemantics");
+    // DIEDBS_MAPPEDPRI1: the device serves the format's main actions.
+    uint32_t args[5] = {a, view, 0x1u, 0u, ref};
+    guest_call(c, cb, args, 5);
+    com_release(d);
+    com_ret(c, DI_OK);
 }
 void DI8_ConfigureDevices(X86 *c) {
     com_ret(c, DI8_UNSUPPORTED);
@@ -1050,8 +1249,8 @@ const ComMethod g_didevice8[] = {
     {"SendDeviceData", 5, Device_SendDeviceData},
     {"EnumEffectsInFile", 5, Device8_Unsupported},
     {"WriteEffectToFile", 5, Device8_Unsupported},
-    {"BuildActionMap", 4, Device8_Unsupported},
-    {"SetActionMap", 4, Device8_Unsupported},
+    {"BuildActionMap", 4, Device8_BuildActionMap},
+    {"SetActionMap", 4, Device8_SetActionMap},
     {"GetImageInfo", 2, Device8_Unsupported},
 };
 
