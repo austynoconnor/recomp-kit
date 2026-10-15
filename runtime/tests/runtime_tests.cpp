@@ -1267,6 +1267,19 @@ static void test_memory_shims_2(X86 *c) {
           "QueryPerformanceFrequency reports 1 MHz");
     check(call_import(c, "KERNEL32.dll", "QueryPerformanceCounter", {li}) == 1,
           "QueryPerformanceCounter");
+    // Back-to-back reads land in the same millisecond; the counter must still
+    // move forward, as a real one does, or "now <= last" reads as a wrap.
+    {
+        uint64_t prev = rd32(li) | ((uint64_t)rd32(li + 4) << 32);
+        bool rising = true;
+        for (int i = 0; i < 5; ++i) {
+            call_import(c, "KERNEL32.dll", "QueryPerformanceCounter", {li});
+            uint64_t now = rd32(li) | ((uint64_t)rd32(li + 4) << 32);
+            rising = rising && now > prev;
+            prev = now;
+        }
+        check(rising, "QueryPerformanceCounter never repeats a value");
+    }
 
     // The wide environment block must be UTF-16, not ANSI bytes.
     uint32_t wenv = call_import(c, "KERNEL32.dll", "GetEnvironmentStringsW", {});
