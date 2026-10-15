@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- 2026-10-15 01:00 CDT — Claude Opus 5.5: Game pads that move menus by
+  themselves, and diagnostics for slow PCs. Chrome lists some Bluetooth
+  devices that are not pads (a "CA-2890 BT Speaker Bar" with an axis resting
+  at +1) as game controllers; SDL opened them as pads and the kit read only
+  the first one, so Crazy Taxi's menus scrolled with no controller on and the
+  real pad in slot 2 did nothing. The new `web/player/pad-filter.js` sits in
+  front of SDL on the web: devices named like speakers, headsets, keyboards
+  or mice are hidden; unmapped devices the kit does not know are hidden
+  (`?RECOMP_RAW_PADS=1` lets them through); Microsoft's unmapped Bluetooth
+  Xbox layouts (classic firmware 02e0/02fd with a shared trigger axis, and
+  Bluetooth LE firmware 0b13/0b20 with triggers resting at -1 and the d-pad
+  on a hat axis) are rebuilt as standard pads; sticks get a 15% dead zone;
+  every axis, trigger, hat and button counts only after it has been seen at
+  rest. Each pad and how it is read is logged as `[pads]`, and
+  `window.recompPads()` lists them. `host/controls/gamepad_sdl.cpp` now opens
+  every pad and the game reads the one pressed or moved last, with the same
+  seen-at-rest rule natively. The overlay's frame-limit label says "NO CAP"
+  instead of "ORIGINAL" (players read it as Crazy Taxi's Original mode).
+  `?debug=1` adds a "Copy diagnostics" button (browser, GPU adapter, refresh
+  rate, canvas and screen size, frame and stall numbers, pads, recent
+  warnings); other same-origin pages can ask for the same text with a
+  `{type: "recomp-diagnostics"}` message. A software GPU (SwiftShader,
+  llvmpipe, Microsoft Basic Render) shows a warning on the page and posts
+  `{type: "recomp-warning"}` to the parent. File stalls: a streamed game
+  copies its files into the browser's storage in the background 20 s after
+  it starts (low priority, games up to 768 MiB, `?RECOMP_BACKGROUND_DOWNLOAD=0`
+  turns it off), so the next visit reads everything locally; the fetch
+  backend's memory and Cache Storage pieces are keyed by URL and outlive a
+  file close, so games that reopen archives no longer refetch them.
+
 - 2026-10-14 17:50 CDT — Claude Opus 5.5: a guest thread waiting on a host
   file read now hands the scheduler baton to another runnable guest thread
   (new wait kind W_HOSTIO) and takes it back when the read returns. On the
