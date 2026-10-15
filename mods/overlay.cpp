@@ -11,10 +11,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
+#include <mutex>
 #include <new>
 #include <stdio.h>
 #include <string.h>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace {
@@ -92,6 +94,101 @@ int match_name(const char *name, void *user) {
     return 0;
 }
 
+// Answers a read-only walk got, kept until the guest next changes a file
+// (win32_dir_cache_generation moves on every create, write, rename, delete
+// and mkdir). Every read the guest makes walks the profile first, and in a
+// browser the profile is the OPFS: each stat or listing there is a round trip
+// through its worker and the page's main thread, a few ms each, which added
+// up to most of a second while a game opened the files of a new area.
+struct WalkCache {
+    std::mutex m;
+    uint64_t generation = 0;
+    bool valid = false;
+    std::unordered_map<std::string, std::pair<int, OsStat>> stats, lstats;
+    std::unordered_map<std::string, std::pair<int, std::vector<std::string>>> lists;
+};
+WalkCache &walk_cache() {
+    static WalkCache *c = new WalkCache(); // never destroyed: host threads may ask late
+    return *c;
+}
+// Caller holds c.m.
+void walk_cache_fresh(WalkCache &c) {
+    const uint64_t g = win32_dir_cache_generation();
+    if (!c.valid || c.generation != g) {
+        c.stats.clear();
+        c.lstats.clear();
+        c.lists.clear();
+        c.generation = g;
+        c.valid = true;
+    }
+}
+int walk_stat(const std::string &path, OsStat *st, bool follow, bool cached) {
+    if (!cached)
+        return follow ? os_stat(path.c_str(), st) : os_lstat(path.c_str(), st);
+    WalkCache &c = walk_cache();
+    uint64_t asked_at;
+    {
+        std::lock_guard<std::mutex> lock(c.m);
+        walk_cache_fresh(c);
+        auto &map = follow ? c.stats : c.lstats;
+        auto it = map.find(path);
+        if (it != map.end()) {
+            if (it->second.first == 0)
+                *st = it->second.second;
+            return it->second.first;
+        }
+        asked_at = c.generation;
+    }
+    OsStat got{};
+    const int rc = follow ? os_stat(path.c_str(), &got) : os_lstat(path.c_str(), &got);
+    {
+        std::lock_guard<std::mutex> lock(c.m);
+        walk_cache_fresh(c);
+        if (c.generation == asked_at) // nothing changed while it was asked
+            (follow ? c.stats : c.lstats)[path] = {rc, got};
+    }
+    if (rc == 0)
+        *st = got;
+    return rc;
+}
+int walk_listdir(const std::string &dir, OsListDirFn fn, void *user, bool cached) {
+    if (!cached)
+        return os_listdir(dir.c_str(), fn, user);
+    WalkCache &c = walk_cache();
+    std::pair<int, std::vector<std::string>> entry;
+    bool hit = false;
+    uint64_t asked_at;
+    {
+        std::lock_guard<std::mutex> lock(c.m);
+        walk_cache_fresh(c);
+        auto it = c.lists.find(dir);
+        if (it != c.lists.end()) {
+            entry = it->second;
+            hit = true;
+        }
+        asked_at = c.generation;
+    }
+    if (!hit) {
+        entry.first = os_listdir(
+            dir.c_str(),
+            [](const char *name, void *u) {
+                ((std::vector<std::string> *)u)->push_back(name);
+                return 0;
+            },
+            &entry.second);
+        std::lock_guard<std::mutex> lock(c.m);
+        walk_cache_fresh(c);
+        if (c.generation == asked_at)
+            c.lists[dir] = entry;
+    }
+    if (entry.first != 0)
+        return entry.first;
+    for (const std::string &name : entry.second)
+        if (fn(name.c_str(), user) != 0)
+            break;
+    return 0;
+}
+
 // Mutating walks reject symlinks beneath the configured root: a profile link
 // must never turn a guest write or delete into a mutation of a lower tier.
 bool resolve_in(const std::string &root, const std::string &rel, bool create, bool mutation,
@@ -101,15 +198,18 @@ bool resolve_in(const std::string &root, const std::string &rel, bool create, bo
     std::vector<std::string> comps;
     if (!split(rel, &comps))
         return false;
+    // Only a pure read walk is answered from memory; a walk that may create
+    // or change something always asks the file system.
+    const bool cached = !create && !mutation;
     std::string host = root;
     OsStat st;
-    if (os_stat(host.c_str(), &st) != 0 || !st.is_dir)
+    if (walk_stat(host, &st, true, cached) != 0 || !st.is_dir)
         return false;
     for (size_t i = 0; i < comps.size(); ++i) {
         std::string name = comps[i];
         // Always use the directory's spelling, even on case-insensitive hosts.
         NameMatch match{lower(name), std::string(), false};
-        if (os_listdir(host.c_str(), match_name, &match) != 0)
+        if (walk_listdir(host, match_name, &match, cached) != 0)
             return false;
         if (match.hit)
             name = match.found;
@@ -122,14 +222,16 @@ bool resolve_in(const std::string &root, const std::string &rel, bool create, bo
                 *out = host;
                 return true;
             }
-            if (os_mkdir(host.c_str()) != 0)
+            const int made = os_mkdir(host.c_str());
+            win32_invalidate_dir_cache(); // a new folder: remembered walks are stale
+            if (made != 0)
                 return false;
         }
-        if (os_lstat(host.c_str(), &st) != 0)
+        if (walk_stat(host, &st, false, cached) != 0)
             return false;
         if (mutation && st.is_symlink)
             return false;
-        if (i + 1 < comps.size() && (os_stat(host.c_str(), &st) != 0 || !st.is_dir))
+        if (i + 1 < comps.size() && (walk_stat(host, &st, true, cached) != 0 || !st.is_dir))
             return false;
     }
     *out = host;
@@ -332,7 +434,9 @@ bool mods_cpp_overlay_resolve(const std::string &rel, int op, std::string *out) 
             std::string source;
             if (!resolve_in(roots[i], rel, false, false, &source))
                 continue;
-            if (!copy_up(source, target))
+            const bool copied = copy_up(source, target);
+            win32_invalidate_dir_cache(); // the profile has a new file
+            if (!copied)
                 return false;
             break;
         }

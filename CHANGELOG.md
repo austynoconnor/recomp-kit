@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- 2026-10-15 17:20 CDT — Claude Opus 5.5 (perf pass, MGS2 first): shorter
+  pauses when a web game opens files. A browser recording of MGS2 loading a
+  new area showed the game thread mostly waiting, not working: each question
+  about a file (stat, size, folder listing) on a streamed file or the OPFS
+  profile is a call to another worker relayed through the page's main
+  thread, about 4-5 ms each, and opening one file asked about 11 (the mod
+  overlay walks the profile, then the game folder, one listing and two
+  stats per folder level). One area load: 16 files, about 0.7 s of these
+  waits on top of 0.4 s of downloads. Changes:
+  (1) `os_set_immutable_prefix` (platform): paths under it never change, so
+  their stat answers (found or not), listings and open files' sizes (fstat,
+  seek from the end) are remembered. The web host sets "/stream/" once the
+  streamed view is built. No effect elsewhere.
+  (2) The overlay remembers what a read-only walk found (stats and
+  listings, the profile included) until the guest next creates, writes,
+  renames, deletes or makes a folder (`win32_dir_cache_generation`, bumped
+  by `win32_invalidate_dir_cache`; an overlay mkdir or copy-up bumps it
+  too). Walks that may create or change something always ask.
+  (3) Cherry-picked browser-release 8614a82: a guest thread waiting on a
+  host file read hands the scheduler baton to another runnable guest thread
+  (W_HOSTIO), so render, audio and streaming threads keep going.
+  A symbol map for the web link was tried and left out: with names kept,
+  wasm-opt on MGS2's 180 MB module needed over 6 GB.
+- 2026-10-15 01:00 CDT — Claude Opus 5.5 (cherry-picked to giggity-mgs2 2026-10-15 11:05 CDT from giggity-d3d8 0448bf5): Game pads that move menus by
+- 2026-10-15 12:26 CDT — Claude Opus 5.5: QueryPerformanceCounter never
+  returns the same value twice. It was host_millis()*1000, so two calls in one
+  millisecond matched. Battlefront II's 30 Hz input tick (00413340) computes
+  `now - last - 1` when now <= last, which wraps to 0xFFFFFFFF and gives a
+  ~4295-second time step. Its key-repeat timer then fired at once: one tap
+  typed two or three letters, and Enter on the profile screen ran twice,
+  loading the profile twice and leaving a black screen with only a Back
+  button. Each call now returns at least one tick more than the last. New
+  runtime_tests check: five calls in a row strictly increase.
+
 - 2026-10-15 01:00 CDT — Claude Opus 5.5: Game pads that move menus by
   themselves, and diagnostics for slow PCs. Chrome lists some Bluetooth
   devices that are not pads (a "CA-2890 BT Speaker Bar" with an axis resting
