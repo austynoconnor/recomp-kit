@@ -16,6 +16,7 @@ if(EMSCRIPTEN)
   set(CMAKE_C_EXTENSIONS ON)
   set(CMAKE_CXX_EXTENSIONS ON)
 endif()
+option(RECOMP_WASM_TAIL_CALLS "Web: translated tail calls use WebAssembly return_call" ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(ANDROID)
   # All static and object libraries feed the shared SDL application.

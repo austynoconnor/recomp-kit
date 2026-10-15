@@ -4063,6 +4063,25 @@ class Translator(object):
 
 # --------------------------------------------------------------- driver ----
 
+#: A literal jump to another function, as bodies spell it.
+TAIL_CALL_RE = re.compile(r"CALL_FN\(([0-9a-f]{8})\); return;")
+
+
+def tail_calls(text):
+    """Spell a function's literal jumps to other functions as TAIL_FN, or
+    TAIL2_FN inside a multi-entry body (its signature has the entry too), and
+    mark such a body RECOMP_BODY. funcs.h says what they become: a guaranteed
+    tail call on the web, the unchanged CALL_FN; return; everywhere else.
+    A function that sets a jump buffer (SEH frames) is left alone: the
+    toolchain rewrites its calls, and a musttail cannot survive that."""
+    if "setjmp(" in text:
+        return text
+    if "static void body_" in text:
+        text = text.replace("static void body_", "RECOMP_BODY static void body_")
+        return TAIL_CALL_RE.sub(r"TAIL2_FN(\1);", text)
+    return TAIL_CALL_RE.sub(r"TAIL_FN(\1);", text)
+
+
 WITHDRAWN_CALL_RE = re.compile(r"CALL_FN\(([0-9a-f]{8})\);( return;)?")
 WITHDRAWN_JUMP_RE = re.compile(r"(?:c->eip = 0x[0-9a-f]{1,8}u; )?recomp_jump\(c, 0x([0-9a-f]{1,8})u\); return;")
 
@@ -5859,6 +5878,37 @@ def main():
                  "        recomp_frame_changed(c, %sfunc_addrs[i_], ebp_, c->r[5]);\\\n"
                  "} while (0)\n"
                  "#endif\n" % (P, P, P, P, P))
+        # A literal jump to another function (CALL_FN; return;) is a tail
+        # call. Native compilers make it a jump. WebAssembly makes it a new
+        # frame unless the call is marked musttail, so a loop whose blocks the
+        # translation split across functions grows the browser's stack every
+        # turn until it throws (Underground 2's 0x00636bf0). With the
+        # tail-call feature (-mtail-call) the common case - nothing profiling
+        # or watching the frame - is a guaranteed tail call: TAIL_FN from a
+        # one-argument function straight to the target, TAIL2_FN from a
+        # multi-entry body through the hook table, whose (X86 *, index)
+        # signature matches the body's and whose default entry tail-calls the
+        # target. Bodies are kept out of line there so their wrappers stay
+        # tail calls too. Everywhere else both are CALL_FN; return;.
+        fh.write("#if defined(__wasm__) && defined(__wasm_tail_call__) && !defined(RECOMP_NO_HOOKS)\n"
+                 "#define RECOMP_BODY __attribute__((noinline))\n"
+                 "#define TAIL_FN(a) do {\\\n"
+                 "    if (!recomp_frame_watch && !recomp_profile_enabled && __atomic_load_n(&%shooked[FIDX(a)], __ATOMIC_ACQUIRE) == 0u)\\\n"
+                 "        __attribute__((musttail)) return FN(a)(c);\\\n"
+                 "    CALL_FN(a);\\\n"
+                 "    return;\\\n"
+                 "} while (0)\n"
+                 "#define TAIL2_FN(a) do {\\\n"
+                 "    if (!recomp_frame_watch && !recomp_profile_enabled)\\\n"
+                 "        __attribute__((musttail)) return %shook_ptrs[FIDX(a)](c, FIDX(a));\\\n"
+                 "    CALL_FN(a);\\\n"
+                 "    return;\\\n"
+                 "} while (0)\n"
+                 "#else\n"
+                 "#define RECOMP_BODY\n"
+                 "#define TAIL_FN(a) do { CALL_FN(a); return; } while (0)\n"
+                 "#define TAIL2_FN(a) do { CALL_FN(a); return; } while (0)\n"
+                 "#endif\n" % (P, P))
         for i, a in enumerate(entry_names):
             fh.write("#define FIDX_%08x %du\n" % (a, i))
         # Both spellings are declared: fn_ADDR because the chunk defines it,
@@ -5888,7 +5938,7 @@ def main():
                          % (fn.name, len(fn.insns), fn.insns[0].addr,
                             fn.insns[-1].addr,
                             ("  entries: " + " ".join("%08x" % a for a in alt)) if alt else ""))
-                fh.write("\n".join(bodies[fn.addr]))
+                fh.write(tail_calls("\n".join(bodies[fn.addr])))
                 fh.write("\n\n")
         chunks.append(path)
         nchunk += 1

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- 2026-10-15 12:05 CDT — Claude Opus 5.5 (NFS Underground 2): three fixes
+  found bringing up Underground 2.
+  (1) Web tail calls. A literal jump to another translated function is a C
+  tail call (`CALL_FN; return;`), which native compilers turn into a jump
+  but WebAssembly did not, so a loop whose blocks the translator split
+  across functions (Underground 2's 0x00636bf0, a per-vertex loop) took a
+  new frame each turn and Chrome threw "Maximum call stack size exceeded"
+  ten seconds in. Bodies now spell these `TAIL_FN` / `TAIL2_FN`
+  (translate.py tail_calls); with the WebAssembly tail-call feature
+  (`-mtail-call`, CMake option RECOMP_WASM_TAIL_CALLS, default ON) the
+  common case is a `musttail` call: straight to the target from a
+  one-argument function, through the hook table (same signature) from a
+  multi-entry body, which is kept out of line so its wrappers stay tail
+  calls too. Functions with a setjmp, and every native build, keep
+  `CALL_FN; return;`. Driver tests updated for the new spelling.
+  (2) winmm callback timers run on their own guest thread
+  (misc.cpp mm_timer_thread), as Windows runs them. They used to fire only
+  from the message loop, and Underground 2's loader and movie player spin
+  on the main thread polling a stream ring that its timer callback feeds,
+  so the game froze on the first movie. Native runs now reach the title
+  screen.
+  (3) The web link writes a function-index map (`<app>.js.symbols`) so a
+  browser stack of bare `wasm-function[N]` can be named. The DirectSound
+  trace counter no longer reads and writes in one expression.
+
 - 2026-10-15 08:45 CDT — Claude Opus 5.5 (NFS Underground 2 bring-up):
   Direct3D 9 state blocks. CreateStateBlock, BeginStateBlock and
   EndStateBlock were stubs, so D3DX effects (Underground 2's whole renderer)

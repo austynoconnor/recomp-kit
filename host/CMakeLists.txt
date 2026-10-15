@@ -295,6 +295,11 @@ if(TARGET recomp_gen)
       # DWARF is shipped in the download, greatly inflating large translations.
       $<$<NOT:$<CONFIG:Debug>>:-O2>
       $<$<NOT:$<CONFIG:Debug>>:-g0>
+      # A function-index map beside the module (<app>.js.symbols),
+      # so a browser stack trace of bare wasm-function[N] can be named. It is
+      # a separate file; the module itself is unchanged.
+      --emit-symbol-map
+      $<$<BOOL:${RECOMP_WASM_TAIL_CALLS}>:-mtail-call>
       # Prewarm a modest pool instead of instantiating the large translated
       # module in dozens of idle workers. Additional guest threads can be
       # created while the browser's host loop continues servicing events.

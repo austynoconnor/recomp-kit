@@ -843,7 +843,8 @@ def test_nested_except_join_keeps_outer_finally_in_establishing_body(tmp_path, m
     assert T.main() == 0
     text = '\n'.join(p.read_text() for p in out.glob('chunk_*.c'))
     for stub in (outer_stub, inner_stub):
-        assert "void fn_%08x(X86 *c) {\n    CALL_FN(%08x); return;" % (stub, dispatcher) in text
+        # A literal jump to another function is written TAIL_FN (funcs.h).
+        assert "void fn_%08x(X86 *c) {\n    TAIL_FN(%08x);" % (stub, dispatcher) in text
     # Normal execution must retain the frame until the epilogue restores ESP/EBP.
     assert 'void fn_%08x(X86 *c) { body_%08x(c, %s); }' % (cleanup, entry, T.hexlit(cleanup)) in text
     body = text.split('static void body_%08x(' % entry, 1)[1].split('void fn_%08x(' % entry, 1)[0]
@@ -1123,7 +1124,7 @@ def test_equal_rank_candidates_bound_speculative_sweeps(tmp_path, monkeypatch, t
     if terminated:
         body = text.split("void fn_%08x(X86 *c) {" % guess)[1].split("\n}", 1)[0]
         assert "XOR EAX,EAX" not in body
-        assert "CALL_FN(%08x)" % method in body
+        assert "TAIL_FN(%08x)" % method in body
 
 
 @pytest.mark.parametrize("fault", [None, "element_size", "refcount", "zero_length",

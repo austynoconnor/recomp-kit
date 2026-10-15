@@ -1133,6 +1133,66 @@ void m_timeGetTime(X86 *c) {
     set_eax(c, host_millis());
 }
 
+// Callback timers run on a thread of their own, as winmm runs them. The
+// message loop used to fire them, which is enough for a game that pumps
+// messages while it waits; Underground 2 does not. Its loader and movie
+// player spin on the main thread polling a stream ring ("STRM") that the
+// timer callback (0x006f5b4d) keeps fed, so with the callback waiting for a
+// PeekMessage that never came the game froze on its first movie. The thread
+// is a guest thread like any other: it takes the scheduler's baton when the
+// spinning thread passes an import checkpoint, fires what is due, and sleeps
+// until the next deadline.
+bool g_mm_timer_thread = false;
+
+void mm_timer_thread(X86 *c) {
+    for (;;) {
+        uint32_t now = host_millis();
+        uint32_t wait = 10;
+        uint32_t due_id = 0;
+        for (auto &kv : timers()) {
+            const MmTimer &t = kv.second;
+            if (!t.alive || t.event_mode || !t.callback)
+                continue;
+            int32_t left = (int32_t)(t.next_due - now);
+            if (left <= 0) {
+                due_id = kv.first;
+                break;
+            }
+            if ((uint32_t)left < wait)
+                wait = (uint32_t)left;
+        }
+        if (!due_id) {
+            guest_sleep_ms(wait);
+            continue;
+        }
+        // A callback may set or kill timers (Underground 2 re-arms its
+        // one-shot from inside it), so the map is read again afterwards.
+        auto it = timers().find(due_id);
+        MmTimer t = it->second;
+        if (t.periodic)
+            it->second.next_due = now + t.period;
+        else
+            timers().erase(it);
+        host_note_cadence("mm_callback");
+        uint32_t args[5] = {t.id, 0, t.user, 0, 0};
+        guest_call(c, t.callback, args, 5);
+    }
+}
+
+void mm_timer_thread_start(X86 *c) {
+    if (g_mm_timer_thread)
+        return;
+    uint32_t create = imports_resolve("KERNEL32.dll", "CreateThread");
+    uint32_t body = imports_alloc_trampoline("RECOMP", "mm_timer_thread", mm_timer_thread, 1);
+    if (!create || !body)
+        return;
+    uint32_t args[6] = {0, 0, body, 0, 0, 0};
+    if (guest_call(c, create, args, 6)) {
+        g_mm_timer_thread = true;
+        LOGW("winmm: callback timers run on their own guest thread");
+    }
+}
+
 void m_timeSetEvent(X86 *c) {
     uint32_t delay = arg(c, 0), callback = arg(c, 2), user = arg(c, 3), flags = arg(c, 4);
     MmTimer t;
@@ -1147,6 +1207,8 @@ void m_timeSetEvent(X86 *c) {
     t.event_mode = cb_mode != 0; // TIME_CALLBACK_EVENT_SET/_PULSE
     t.event_pulse = cb_mode == 0x20;
     timers()[t.id] = t;
+    if (!t.event_mode && callback)
+        mm_timer_thread_start(c);
     LOGV("timeSetEvent(%u ms, %s, %s=%08x) -> id %u", delay, t.periodic ? "periodic" : "one-shot",
          t.event_mode ? "event" : "callback", callback, t.id);
     set_eax(c, t.id);
@@ -1959,7 +2021,8 @@ void host_pump_timers(X86 *c) {
     uint32_t now = host_millis();
     std::vector<uint32_t> due;
     for (auto &kv : timers())
-        if (kv.second.alive && (int32_t)(now - kv.second.next_due) >= 0)
+        if (kv.second.alive && (int32_t)(now - kv.second.next_due) >= 0 &&
+            (kv.second.event_mode || !g_mm_timer_thread)) // callbacks: mm_timer_thread
             due.push_back(kv.first);
     for (uint32_t id : due) {
         auto it = timers().find(id);

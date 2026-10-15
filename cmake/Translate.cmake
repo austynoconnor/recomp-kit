@@ -54,6 +54,13 @@ if(POP_HAVE_GEN)
     message(STATUS "Native overrides: ${RECOMP_OVERRIDE_HEADER}")
   endif()
   pop_optimize(recomp_gen 2)
+  # A literal jump to another translated function is a tail call in C
+  # (CALL_FN; return;). Native compilers turn it into a jump; WebAssembly
+  # needs the tail-call feature to, or a loop split across functions grows
+  # the browser's stack each turn. Every browser with WebGPU has it.
+  if(EMSCRIPTEN AND RECOMP_WASM_TAIL_CALLS)
+    target_compile_options(recomp_gen PRIVATE -mtail-call)
+  endif()
   # Auxiliary modules (game.toml [modules.aux.<key>]) are translated into
   # gen/aux-<key>/ with their own funcs.h and prefixed tables, so each is its
   # own library; their table.c registers with the runtime's module registry.
