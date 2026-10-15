@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- 2026-10-14 18:27 CDT — Claude Opus 5.5: MGS2 web pauses and display lag.
+  DirectShow movies are read from their file 1 MiB at a time as they play
+  instead of all at once: MGS2's opening movie is over 60 MB, and reading,
+  scanning and copying it whole held the game for about a second before the
+  first picture. The picture count is estimated from the first piece and
+  made exact at the end; a movie completes when its stream really ends.
+  Sequence-header aspect fixes still apply across piece boundaries. The
+  game's overlapped (streamed disc) reads now count as file waits in the
+  stall report rather than as game work. In browsers the presenter keeps at
+  most two display submissions in flight (was three; RECOMP_HOST_PRESENT_FRAMES=3
+  restores it): with a 60 FPS game on a 60 Hz screen all three stayed full
+  and frames reached the screen about 70 ms after the game drew them.
+
 - 2026-10-13 02:36 CDT â€” Claude Opus 5.5: Two code fixes from
   `browser-release` (NFS Most Wanted) on this branch. The web start path
   (web_main) now installs the controls hooks, so a browser controller in

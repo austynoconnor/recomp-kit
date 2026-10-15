@@ -63,6 +63,10 @@ struct Mpeg1Info {
     int32_t width = 0, height = 0;
     double fps = 0;       // from the sequence header's frame-rate code
     int64_t pictures = 0; // picture start codes in the stream
+    // False while `pictures` is an estimate: a stream read from a file in
+    // pieces counts its first piece and scales by the file size, and learns
+    // the real count when it reaches the end.
+    bool exact = true;
 };
 
 // Reads the first sequence header and counts the pictures. False when the
@@ -74,6 +78,7 @@ bool mpeg1_scan(const uint8_t *data, size_t size, Mpeg1Info *out);
 // hint that nothing here uses, so normalising it costs nothing. Returns the
 // number of headers changed.
 int mpeg1_fix_aspect(std::vector<uint8_t> &bytes);
+int mpeg1_fix_aspect(uint8_t *data, size_t size);
 // False in a build without FFmpeg's MPEG-1 decoder (the web build), so a
 // caller can skip a movie before reading it.
 bool mpeg1_decoder_available();
@@ -88,6 +93,10 @@ class Mpeg1Stream {
     // Takes the whole stream (headers already fixed). False when this build
     // has no MPEG-1 decoder or the bytes are not a stream.
     bool open(std::vector<uint8_t> bytes, std::string *why = nullptr);
+    // Reads the stream from a file a piece at a time as it plays (headers
+    // fixed on the way), so a long movie starts without reading all of it
+    // first. The picture count is an estimate until the end (info().exact).
+    bool open_file(const std::string &path, std::string *why = nullptr);
     bool is_open() const;
     const Mpeg1Info &info() const {
         return info_;
@@ -96,6 +105,8 @@ class Mpeg1Stream {
     bool next(VideoFrame *out);
     // Back to the first picture.
     bool rewind();
+    // True once the decoder has handed out the last picture.
+    bool ended() const;
     // Pictures handed out since open or the last rewind.
     int64_t decoded() const {
         return decoded_;
@@ -107,6 +118,8 @@ class Mpeg1Stream {
     bool start();
     State *s_ = nullptr;
     std::vector<uint8_t> bytes_;
+    std::string path_; // set for a stream read from a file
+    uint64_t file_size_ = 0;
     Mpeg1Info info_;
     int64_t decoded_ = 0;
 };

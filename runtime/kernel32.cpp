@@ -952,8 +952,12 @@ constexpr uint32_t ERROR_HANDLE_EOF_ = 38;
 // past the end, as Windows reports it.
 static bool overlapped_read(HObj *o, uint32_t buf, uint32_t want, uint32_t ovl, uint32_t pread) {
     int64_t offset = (int64_t)((uint64_t)rd32(ovl + 8) | ((uint64_t)rd32(ovl + 12) << 32));
-    int64_t n =
-        os_fd_seek(o->fd, offset, OS_SEEK_SET) < 0 ? -1 : os_fd_read(o->fd, g_mem + buf, want);
+    int64_t n;
+    {
+        // The game's streamed disc reads; on the web they may wait for a download.
+        RecompStallScope stall(RECOMP_STALL_FILE);
+        n = os_fd_seek(o->fd, offset, OS_SEEK_SET) < 0 ? -1 : os_fd_read(o->fd, g_mem + buf, want);
+    }
     if (recomp_env("TRACE_FILES"))
         LOGW("file: overlapped read at %lld want=%u got=%lld", (long long)offset, want,
              (long long)n);

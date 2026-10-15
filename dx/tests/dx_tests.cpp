@@ -4084,6 +4084,47 @@ static void test_mpeg1_scan_and_aspect() {
 }
 
 #ifdef RECOMP_HAVE_FFMPEG
+// A movie longer than one read is played from its file a piece at a time:
+// the picture count starts as an estimate and becomes exact at the end, and
+// a sequence header split across two pieces still gets its aspect fixed
+// (FFmpeg refuses the unfixed one, losing pictures).
+static void test_mpeg1_stream_from_file_in_pieces() {
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s/recomp-mpeg1-XXXXXX", os_temp_dir());
+    CHECK(os_mkdtemp(dir) == 0);
+    std::string file = std::string(dir) + "/long.pac";
+    FILE *f = fopen(file.c_str(), "wb");
+    CHECK(f != nullptr);
+    if (!f)
+        return;
+    // 76-byte copies: the 13798th header starts 4 bytes before the 1 MiB mark.
+    const int copies = 14000;
+    for (int i = 0; i < copies; ++i)
+        fwrite(kRedMpeg1, 1, sizeof kRedMpeg1, f);
+    fclose(f);
+    mf::Mpeg1Stream stream;
+    std::string why;
+    CHECK(stream.open_file(file, &why));
+    CHECK(!stream.info().exact);
+    CHECK(stream.info().pictures > 3 * copies - 100 && stream.info().pictures < 3 * copies + 100);
+    mf::VideoFrame frame;
+    int64_t n = 0;
+    while (stream.next(&frame))
+        ++n;
+    CHECK_EQ(n, 3 * copies);
+    CHECK(stream.ended());
+    CHECK(stream.info().exact);
+    CHECK_EQ(stream.info().pictures, 3 * copies);
+    CHECK_EQ(frame.width, 32);
+    // A rewind reads the file again from the start.
+    CHECK(stream.rewind());
+    CHECK(stream.next(&frame));
+    CHECK_EQ(stream.decoded(), 1);
+    CHECK(!stream.open_file(std::string(dir) + "/missing.pac", &why));
+    remove(file.c_str());
+    os_rmdir(dir);
+}
+
 // A renderer the game implements, as MGS2's is: guest objects whose vtables
 // are test trampolines. The graph joins it, opens the movie, connects the
 // source to it in RGB24 and, once running, hands it one red picture per due
@@ -13638,6 +13679,7 @@ int main() {
         {"DirectShow refused source completes", test_dshow_refused_source_completes},
         {"MPEG-1 stream scan and aspect fix", test_mpeg1_scan_and_aspect},
 #ifdef RECOMP_HAVE_FFMPEG
+        {"MPEG-1 stream from a file in pieces", test_mpeg1_stream_from_file_in_pieces},
         {"DirectShow movie into a game renderer", test_dshow_movie_into_game_renderer},
 #endif
         {"Direct3D 8 fixed-function triangle", test_d3d8_fixed_function_triangle},

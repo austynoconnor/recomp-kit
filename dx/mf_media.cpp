@@ -6,8 +6,12 @@
 
 #include "video_frame.h"
 
+#include "../platform/stall.h"
+
 #include <algorithm>
 #include <cmath>
+#include <stdio.h>
+#include <string.h>
 
 #ifdef RECOMP_HAVE_FFMPEG
 extern "C" {
@@ -339,9 +343,9 @@ bool mpeg1_scan(const uint8_t *data, size_t size, Mpeg1Info *out) {
     return true;
 }
 
-int mpeg1_fix_aspect(std::vector<uint8_t> &bytes) {
+int mpeg1_fix_aspect(uint8_t *bytes, size_t size) {
     int changed = 0;
-    for (size_t i = 0; i + 7 < bytes.size(); ++i)
+    for (size_t i = 0; i + 7 < size; ++i)
         if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1 && bytes[i + 3] == 0xb3) {
             const uint8_t fixed = uint8_t(0x10 | (bytes[i + 7] & 15));
             if (bytes[i + 7] != fixed) {
@@ -352,6 +356,32 @@ int mpeg1_fix_aspect(std::vector<uint8_t> &bytes) {
         }
     return changed;
 }
+
+int mpeg1_fix_aspect(std::vector<uint8_t> &bytes) {
+    return mpeg1_fix_aspect(bytes.data(), bytes.size());
+}
+
+namespace {
+// A file-backed stream reads this much at a time. Konami's longest movies
+// are over 60 MB; reading one whole before the first picture held the game
+// for over a second on the web, where each byte may still be a download.
+constexpr size_t kMpeg1Chunk = size_t(1) << 20;
+// A sequence header's aspect byte sits 7 bytes past its start code, so the
+// last 7 bytes of a piece wait for the next one before the parser sees them.
+constexpr size_t kMpeg1Hold = 7;
+
+size_t read_file_piece(FILE *f, uint8_t *to, size_t n) {
+    RecompStallScope stall(RECOMP_STALL_FILE);
+    size_t got = 0;
+    while (got < n) {
+        const size_t r = fread(to + got, 1, n - got, f);
+        if (!r)
+            break;
+        got += r;
+    }
+    return got;
+}
+} // namespace
 
 Mpeg1Stream::~Mpeg1Stream() {
     delete s_;
@@ -364,6 +394,8 @@ bool Mpeg1Stream::is_open() const {
 bool Mpeg1Stream::open(std::vector<uint8_t> bytes, std::string *why) {
     delete s_;
     s_ = nullptr;
+    path_.clear();
+    file_size_ = 0;
     if (!mpeg1_scan(bytes.data(), bytes.size(), &info_)) {
         if (why)
             *why = "not an MPEG-1 video stream";
@@ -378,10 +410,60 @@ bool Mpeg1Stream::open(std::vector<uint8_t> bytes, std::string *why) {
     return true;
 }
 
+bool Mpeg1Stream::open_file(const std::string &path, std::string *why) {
+    delete s_;
+    s_ = nullptr;
+    bytes_.clear();
+    path_.clear();
+    std::vector<uint8_t> head;
+    uint64_t total = 0;
+    {
+        FILE *f = fopen(path.c_str(), "rb");
+        if (!f) {
+            if (why)
+                *why = "the file cannot be opened";
+            return false;
+        }
+        {
+            RecompStallScope stall(RECOMP_STALL_FILE);
+            if (fseek(f, 0, SEEK_END) == 0) {
+                const long end = ftell(f);
+                total = end > 0 ? uint64_t(end) : 0;
+            }
+            fseek(f, 0, SEEK_SET);
+        }
+        head.resize(kMpeg1Chunk);
+        head.resize(read_file_piece(f, head.data(), head.size()));
+        fclose(f);
+    }
+    if (!mpeg1_scan(head.data(), head.size(), &info_)) {
+        if (why)
+            *why = "not an MPEG-1 video stream";
+        return false;
+    }
+    if (total > head.size()) {
+        // Pictures are near enough the same size across a movie for the
+        // first megabyte to say how many the rest hold; the end corrects it.
+        info_.pictures = int64_t(double(info_.pictures) * double(total) / double(head.size()));
+        info_.exact = false;
+    } else {
+        total = head.size();
+    }
+    path_ = path;
+    file_size_ = total;
+    if (!start()) {
+        path_.clear();
+        if (why)
+            *why = "this build has no MPEG-1 video decoder";
+        return false;
+    }
+    return true;
+}
+
 bool Mpeg1Stream::rewind() {
     delete s_;
     s_ = nullptr;
-    return !bytes_.empty() && start();
+    return (!bytes_.empty() || !path_.empty()) && start();
 }
 
 #ifdef RECOMP_HAVE_FFMPEG
@@ -391,11 +473,38 @@ struct Mpeg1Stream::State {
     AVCodecParserContext *parser = nullptr;
     AVPacket *packet = nullptr;
     AVFrame *frame = nullptr;
-    std::vector<uint8_t> padded; // the stream plus FFmpeg's read-past padding
-    size_t size = 0, pos = 0;
-    bool flushed = false;
+    std::vector<uint8_t> padded; // the stream (or a piece) plus FFmpeg's padding
+    size_t size = 0, pos = 0;    // bytes the parser may take, bytes it took
+    bool flushed = false, ended = false;
+    // A stream read from a file: its bytes in `padded` [0, len), and whether
+    // the last piece has been read.
+    FILE *file = nullptr;
+    size_t len = 0;
+    bool eof = true;
+
+    // The next piece after what the parser left over. False at the end.
+    bool refill() {
+        if (!file || eof)
+            return false;
+        const size_t keep = len - pos;
+        if (keep && pos)
+            memmove(padded.data(), padded.data() + pos, keep);
+        len = keep;
+        pos = 0;
+        const size_t got = read_file_piece(file, padded.data() + len, kMpeg1Chunk);
+        // Rescanning the held bytes is harmless: the fix is idempotent.
+        mpeg1_fix_aspect(padded.data(), len + got);
+        len += got;
+        if (got < kMpeg1Chunk)
+            eof = true;
+        size = eof ? len : (len > kMpeg1Hold ? len - kMpeg1Hold : 0);
+        std::fill(padded.begin() + len, padded.end(), uint8_t(0));
+        return true;
+    }
 
     ~State() {
+        if (file)
+            fclose(file);
         av_parser_close(parser);
         av_packet_free(&packet);
         av_frame_free(&frame);
@@ -417,9 +526,19 @@ bool Mpeg1Stream::start() {
         delete st;
         return false;
     }
-    st->size = bytes_.size();
-    st->padded.assign(bytes_.size() + AV_INPUT_BUFFER_PADDING_SIZE, 0);
-    std::copy(bytes_.begin(), bytes_.end(), st->padded.begin());
+    if (!path_.empty()) {
+        st->file = fopen(path_.c_str(), "rb");
+        if (!st->file) {
+            delete st;
+            return false;
+        }
+        st->eof = false;
+        st->padded.assign(kMpeg1Chunk + kMpeg1Hold + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+    } else {
+        st->size = bytes_.size();
+        st->padded.assign(bytes_.size() + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+        std::copy(bytes_.begin(), bytes_.end(), st->padded.begin());
+    }
     s_ = st;
     decoded_ = 0;
     return true;
@@ -450,8 +569,18 @@ bool Mpeg1Stream::next(VideoFrame *out) {
             av_frame_unref(s.frame);
             return true;
         }
-        if (s.flushed)
+        if (s.flushed) {
+            if (!s.ended) {
+                s.ended = true;
+                // Now the count is known, not estimated.
+                info_.pictures = decoded_;
+                info_.exact = true;
+            }
             return false;
+        }
+        if (s.pos >= s.size)
+            while (s.refill() && s.pos >= s.size) {
+            }
         uint8_t *data = nullptr;
         int size = 0;
         const size_t left = s.size - s.pos;
@@ -475,9 +604,16 @@ bool Mpeg1Stream::next(VideoFrame *out) {
     }
 }
 
+bool Mpeg1Stream::ended() const {
+    return s_ && s_->ended;
+}
+
 #else // no FFmpeg
 
 struct Mpeg1Stream::State {};
+bool Mpeg1Stream::ended() const {
+    return false;
+}
 bool Mpeg1Stream::start() {
     return false;
 }

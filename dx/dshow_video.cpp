@@ -196,6 +196,9 @@ uint64_t movie_position(const Movie &m) {
     uint64_t t = m.base;
     if (m.state == kRunning)
         t += ms_to_time(host_millis() - m.run_ms);
+    // While the length is an estimate the clock runs on to the real end.
+    if (!m.stream.info().exact)
+        return t;
     uint64_t end = movie_duration(m);
     return t > end ? end : t;
 }
@@ -686,12 +689,13 @@ void deliver(X86 *c, Movie &m) {
     if (info.fps <= 0)
         return;
     const uint64_t now = movie_position(m);
-    if (!m.completed && now >= movie_duration(m)) {
+    // An estimated length waits for the stream itself to end.
+    if (!m.completed && info.exact && now >= movie_duration(m)) {
         m.completed = true;
         dshow_post_graph_event(m.graph_id, EC_COMPLETE_);
     }
     int64_t due = (int64_t)((double)now * info.fps / 1e7);
-    if (due > info.pictures - 1)
+    if (info.exact && due > info.pictures - 1)
         due = info.pictures - 1;
     if (due <= m.sent)
         return;
@@ -699,8 +703,15 @@ void deliver(X86 *c, Movie &m) {
     // forward spreads over several frames instead of stalling one.
     int budget = 16;
     while (m.stream.decoded() <= due && budget-- > 0) {
-        if (!m.stream.next(&m.frame))
+        if (!m.stream.next(&m.frame)) {
+            // The real end, which an estimated length may have put later:
+            // the movie completes now.
+            if (!m.completed) {
+                m.completed = true;
+                dshow_post_graph_event(m.graph_id, EC_COMPLETE_);
+            }
             break;
+        }
         m.have_frame = true;
     }
     if (!m.have_frame)
@@ -720,10 +731,10 @@ void deliver(X86 *c, Movie &m) {
 }
 
 void reposition(Movie &m, uint64_t t) {
-    const uint64_t end = movie_duration(m);
-    if (t > end)
-        t = end;
     const mf::Mpeg1Info &info = m.stream.info();
+    const uint64_t end = movie_duration(m);
+    if (info.exact && t > end)
+        t = end;
     const int64_t want = info.fps > 0 ? (int64_t)((double)t * info.fps / 1e7) : 0;
     if (want < m.stream.decoded()) {
         m.stream.rewind();
@@ -785,19 +796,14 @@ uint32_t add_source(X86 *c, uint32_t graph_id, const std::string &guest_path,
                                     "skipped");
         return 0x80040241u; // VFW_E_CANNOT_RENDER
     }
-    FILE *f = fopen(host_path.c_str(), "rb");
-    if (!f)
+    if (FILE *f = fopen(host_path.c_str(), "rb"))
+        fclose(f);
+    else
         return 0x80070002u; // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
-    std::vector<uint8_t> bytes;
-    uint8_t chunk[65536];
-    size_t n;
-    while ((n = fread(chunk, 1, sizeof chunk, f)) > 0)
-        bytes.insert(bytes.end(), chunk, chunk + n);
-    fclose(f);
-    mf::mpeg1_fix_aspect(bytes);
     Movie &m = movie_for(graph_id);
     std::string why;
-    if (!m.stream.open(std::move(bytes), &why)) {
+    // Read as it plays, not all at once: the opening movie is over 60 MB.
+    if (!m.stream.open_file(host_path, &why)) {
         LOGW("dshow: AddSourceFilter(%s): %s", guest_path.c_str(), why.c_str());
         return 0x80040241u; // VFW_E_CANNOT_RENDER
     }
@@ -827,8 +833,8 @@ uint32_t add_source(X86 *c, uint32_t graph_id, const std::string &guest_path,
     m.state = kStopped;
     m.completed = false;
     m.have_frame = false;
-    LOGV("dshow: AddSourceFilter(%s): MPEG-1 %dx%d, %.3f fps, %lld pictures", guest_path.c_str(),
-         info.width, info.height, info.fps, (long long)info.pictures);
+    LOGV("dshow: AddSourceFilter(%s): MPEG-1 %dx%d, %.3f fps, %s%lld pictures", guest_path.c_str(),
+         info.width, info.height, info.fps, info.exact ? "" : "about ", (long long)info.pictures);
     log_once("dshow.movie", "dshow: playing MPEG-1 movies into the game's own renderer");
     if (!out || !gm_valid(out, 4))
         return E_POINTER;
