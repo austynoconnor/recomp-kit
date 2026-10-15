@@ -27,6 +27,7 @@
 #include "dxtypes.h"
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,10 @@ enum ComIface : uint16_t {
     IF_BASICAUDIO,       // IBasicAudio
     IF_MEDIAPOSITION,    // IMediaPosition
     IF_ENUMFILTERS,      // IEnumFilters over the graph's (empty) filter list
+    IF_DSFILTER,         // IBaseFilter: the source filter AddSourceFilter makes for a movie
+    IF_DSPIN,            // IPin: that filter's one output pin
+    IF_DSALLOCATOR,      // IMemAllocator: the allocator the pin hands the renderer
+    IF_DSSAMPLE,         // IMediaSample: one decoded picture for the renderer
     IF_D3D11_DEVICE,
     IF_D3D11_CONTEXT,
     IF_D3D11_TEXTURE,
@@ -135,6 +140,10 @@ enum ComIface : uint16_t {
     IF_D3DINDEXBUFFER9,
     IF_D3DVERTEXDECL9,
     IF_D3DQUERY9,
+    IF_D3DVERTEXSHADER9,
+    IF_D3DPIXELSHADER9,
+    IF_D3DVOLUMETEXTURE9,
+    IF_D3DVOLUME9,
     // DirectInput 8: the same objects as DirectInput, reached through the
     // version 8 vtables.
     IF_DINPUT8,
@@ -179,6 +188,7 @@ enum ComKind : uint16_t {
     K_STREAMSAMPLE, // one sample: fills an audio data object from a stream
     K_GRAPH,        // the filter graph a multimedia stream plays through
     K_ENUMFILTERS,  // an enumerator over that graph's filters
+    K_DSMOVIE,      // a movie's source filter, pin, allocator and sample
     K_D3D11_DEVICE,
     K_D3D11_CONTEXT,
     K_D3D11_TEXTURE,
@@ -219,6 +229,10 @@ enum ComKind : uint16_t {
     K_D3D9IB,         // an index buffer
     K_D3D9DECL,       // a vertex declaration
     K_D3D9QUERY,      // an occlusion or event query
+    K_D3D9VSHADER,    // a vertex shader made from its bytecode on the device
+    K_D3D9PSHADER,    // a pixel shader, likewise
+    K_D3D9VOLTEX,     // a volume texture: its levels are K_D3D9VOLUME objects
+    K_D3D9VOLUME,     // one level of a volume texture
 };
 
 // A DirectInput joystick axis's DIPROP_RANGE, DIPROP_DEADZONE and
@@ -261,7 +275,8 @@ struct ComObj {
     // --- K_SURFACE
     uint32_t caps = 0;
     uint32_t width = 0, height = 0, bpp = 0, pitch = 0;
-    uint32_t pixels = 0; // guest address of the pixel memory
+    uint32_t depth = 0, slice_pitch = 0; // K_D3D9VOLUME / K_D3D9VOLTEX
+    uint32_t pixels = 0;                 // guest address of the pixel memory
     uint32_t pixels_bytes = 0;
     uint32_t rmask = 0, gmask = 0, bmask = 0, amask = 0;
     uint32_t palette_obj = 0;
@@ -303,6 +318,10 @@ struct ComObj {
     uint32_t bound_texture = 0;       // Device3 retains its stage-zero texture object.
     uint32_t texture_stage[32] = {0}; // Single advertised texture stage.
     uint32_t render_target = 0;       // surface id
+    // --- K_D3D9VSHADER / K_D3D9PSHADER: the bytecode, shared with the
+    // pipeline record whenever the shader is bound, and its d9sh::code_key.
+    std::shared_ptr<const std::vector<uint8_t>> shader_code;
+    uint64_t shader_key = 0;
     uint32_t current_viewport = 0;
     bool in_scene = false;
     std::vector<uint32_t> viewports;
@@ -331,6 +350,7 @@ struct ComObj {
     uint32_t buf_bytes = 0;
     uint32_t buf_pixels = 0; // guest address of the PCM data
     uint32_t buf_flags = 0;
+    uint32_t ds_owner = 0; // id of the DirectSound object that created the buffer
     uint32_t rate = 22050, nchannels = 1, bits = 16, block_align = 2;
     int32_t volume = 0, pan = 0;
     uint32_t frequency = 0; // 0 = the format's own rate
@@ -420,6 +440,12 @@ int32_t com_release(ComObj *o);
 void com_destroy(ComObj *o);
 // A module may hook its resource teardown here.
 void com_set_destructor(ComKind kind, void (*fn)(ComObj *));
+// A module may name the object that carries a kind's references instead of
+// the object itself: a texture level's AddRef and Release count on its
+// texture, as Direct3D's do. Null means the object's own count.
+void com_set_ref_owner(ComKind kind, ComObj *(*fn)(ComObj *));
+// The object whose count a reference handed to the game should change.
+ComObj *com_ref_target(ComObj *o);
 
 // ---------------------------------------------------------------------------
 // Vtables

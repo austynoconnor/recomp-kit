@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- 2026-10-14 16:34 CDT — Claude Opus 5.5: Two Battlefront II live-site fixes.
+  (1) A constant half-second repeating sound: a SetPan or SetFrequency on a
+  playing DirectSound streaming buffer re-planned it from a copy of its
+  data, while the game kept writing into the original, so the copy looped
+  forever. The ring is now rebuilt in place and keeps its position; a pan or
+  rate call that changes nothing no longer marks the channel stopped.
+  (2) Campaign loads stuck on a black screen while memory climbed by
+  gigabytes: a Direct3D 9 texture level (GetSurfaceLevel, GetCubeMapSurface)
+  took a reference of its own as well as one on the texture, and Release
+  dropped only its own, so any texture whose level was fetched was never
+  freed. Battlefront II makes a texture for every loading-movie frame. Levels
+  now count their references on the texture (COM ref-owner hook in com.cpp),
+  and a texture frees its levels with it. New native checks in host_tests
+  (ring rebuild) and dx_tests (level references).
+
 - 2026-10-13 22:26 CDT — Claude Opus 5.5: a mapped pad button can hold two
   keys at once: `key:A+B` (for example `cross = "key:Space+Return"`). This lets
   a console layout put one button on an action whose PC key differs between
@@ -141,6 +156,33 @@
   integration pass has 58 relevant passing checks and ten direct Node tests.
   Its isolated alias save/load succeeds, but memory and full gameplay release
   validation remain incomplete. No native code changed in this pass.
+  and different), validated by tools/game_config.py. Tests: test_game_config,
+  controls_tests parse_mapped. (Cherry-picked from browser-release; its
+  input-hint part needs hint code this branch lacks and is not taken.)
+
+- 2026-10-13 02:36 CDT â€” Claude Opus 5.5: Two code fixes from
+  `browser-release` (NFS Most Wanted) on this branch. The web start path
+  (web_main) now installs the controls hooks, so a browser controller in
+  `[controls] pad = "mapped"` mode reaches the game (7c2c708; also the
+  RECOMP_CONTROLS_TRACE "[input]" lines). Direct3D 9 vertex and index
+  buffers keep their guest-heap copy only when created D3DUSAGE_DYNAMIC;
+  others free it at their last Unlock, which saves memory (1373796, code
+  only; its hint-format part is not taken).
+
+- 2026-10-13 — Claude Opus 5.5: Generic fixes from `giggity-re4`
+  (Resident Evil 4) brought to `giggity-d3d8`. Pointer capture now also
+  starts for Direct3D 9/8 games once they present a frame (it was gated on
+  a DirectDraw/GDI primary, so mouse-look games never captured the mouse).
+  IDirect3DDevice9::UpdateTexture and UpdateSurface copy whole levels from a
+  system-memory texture (games streaming video or decoded images that way
+  drew nothing). user32 GetQueueStatus returns 0. DirectShow can play a
+  movie through the game's own renderer filter (the DX9 SDK Texture3D9
+  pattern): the kit supplies the source filter, pin, allocator and samples
+  and pushes MPEG-1 frames decoded by FFmpeg into the game's
+  IMemInputPin::Receive. A prebuilt web FFmpeg can be used through the
+  RECOMP_FFMPEG_PREBUILT environment variable. Native dx_tests: 141225
+  checks, 0 failures.
+
 - 2026-10-12 — Claude Opus 5.5: Skinned characters on the GPU renderers
   (from `giggity-bully`).
   Bully's player and students were invisible in the browser; two bugs.
@@ -214,6 +256,20 @@
     `RECOMP_D3D9_TRACE_FRAMES` and `RECOMP_D3D9_TRACE_FILE` log every clear,
     copy, draw and present of chosen frames (targets, shaders, blend, fog and
     texture-stage states). Off unless set.
+- 2026-10-10 17:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: merged `giggity-d3d8` 90eb38e, the Crazy Taxi agent's
+  shared web fixes: the WebGPU clock read locally, the AudioWorklet sink
+  (`host/audio/web_sink.cpp`), two frames queued ahead, and the loader
+  reload in `runtime.html`. The one conflict was `host/gpu/d3d9_host.cpp`
+  `present_pipelined`/sync wait: both sides kept (the stall scopes from
+  here, the wait timings and frames-ahead from there).
+  - Tests: native suites 25 of 25 and Python 421 passed, 5 skipped, on
+    Linux. Visible Chrome, same route as before (menus, a Dagobah match,
+    mouse look, 175 s): 77 new frames a second in play, unchanged; audio
+    0 underruns in 56,269 worklet quanta, where the ScriptProcessor before
+    it had 2 late pulls (126 and 88 ms); stalls over 100 ms only at
+    startup (129 ms) and level load (2.6 s, 0.5 s, 112 ms), as before;
+    the game thread waits on the page thread under 0.01 ms a frame.
 
 - 2026-10-10 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: browser lag and audio. Measured in a visible Chrome window
@@ -334,6 +390,83 @@
     d-pad on the stick", test_game_config (aliases, dpad, bad names),
     test_web_launcher (inputHints), new node suite
     `web/launcher/tests/input-hints.test.mjs`.
+- 2026-10-10 16:28 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: fixes from the first visible Chrome tests of Star Wars
+  Battlefront II (the user's report: freezing, repeating sound, a picture
+  that looked bad). Also on `giggity-d3d8` for every game.
+  - **250 ms page freezes** (`host/present_thread.cpp`): the presenter's
+    `acquire()` waited up to 250 ms for a free target slot. In a browser the
+    thread waiting is the page thread, the same thread that frees slots, so
+    the wait always ran out: the page and its audio callbacks froze, then
+    the frame was dropped anyway. On the page thread it now drops at once.
+    Visible run before: 250-310 ms hitches around every level load plus four
+    audio callbacks about 260 ms late. After: neither.
+  - **Sharper picture on scaled displays** (`host/sdl/main.cpp`): the web
+    canvas now uses the display's pixel density (Windows 125% or 150%
+    scaling) when that stays within 2560x1440 pixels, instead of being
+    stretched and blurred by the browser. The log line `web canvas: ...`
+    says which.
+  - **Stalled streaming audio** (`host/audio/mixer.cpp`): a DirectSound ring
+    goes quiet once playback passes the furthest point the game has written
+    (tracked by position, at most one lap ahead), with a one-block fade,
+    rather than after a whole extra lap. `RECOMP_AUDIO_STALE_SILENCE=0`
+    keeps the old repeat for comparison. Two new cases in "ring and clock"
+    (`host/tests/host_tests.cpp`): a stalled ring goes silent and comes
+    back; half-ring writes every half lap never go quiet.
+  - Tests: native suites 25 of 25 and Python 421 passed, 5 skipped, on
+    Linux. Visible Chrome (separate profile, port 8092, 144 Hz display): the
+    menus, a Dagobah match at 77 new frames a second, and mouse look.
+    Stalls over 100 ms only at level load (one of 2.6 s, one of 0.6 s, game
+    work) plus one of 115 ms. Audio callbacks: 2 late (126 and 88 ms) in
+    175 s, none repeated. The ~130 ms gaps every half second during level
+    load are in the game's loading sound itself: they stay with the
+    silencing switched off.
+
+- 2026-10-09 15:36 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: fixes from the first hand test of the Star Wars
+  Battlefront II web build (freezes, repeating sound, a menu cursor that
+  drifted from the mouse and doubled after leaving the page).
+  - **Stall logger** (`platform/stall.h`, `platform/stall.cpp`): any frame
+    slower than `RECOMP_STALL_MS` (default 100 ms) prints one `[stall]` line
+    to the log and the browser console splitting the time into file reads
+    (`CreateFile`/`ReadFile`), render waits (the d3d9 queue's idle and
+    present waits, WebGPU calls proxied to the page thread) and the rest
+    ("game or busy machine"). The performance overlay gains a fifth line,
+    `STALL n  worst-ms CAUSE`, orange once any stall happened.
+  - **Audio** (`host/audio/mixer.cpp`): a DirectSound streaming buffer the
+    game stops refilling now goes quiet after one more lap instead of
+    replaying its last contents; it plays again on the next write.
+  - **Menu cursor** (`[controls] cursor = "tracked"`, default `"free"`;
+    `tools/game_config.py`, `tools/gen_game_config.py`,
+    `host/input_gate.cpp`, `host/sdl/main.cpp`): for games that draw their
+    own cursor from relative motion and expose no cursor position, the host
+    keeps its own copy (pushed to the top-left corner first) and sends the
+    difference to the real pointer, so the game's cursor sits under the
+    mouse after leaving and re-entering the page. Raw motion under pointer
+    lock is scaled to game pixels. In a browser the system cursor stays
+    hidden over the canvas while the game draws its own.
+  - Tests: native suites 25 of 25 and Python 421 passed, 5 skipped, on
+    Linux. Headless
+    Chrome through `serve-swbf2-web.cmd` on port 8092: the game cursor
+    follows clicks to Instant Action, Dagobah, Launch, Republic and Spawn,
+    and stays under the pointer after it leaves and re-enters the page;
+    gameplay at 57-63 new frames a second with no stall over 100 ms once
+    playing; stalls only while loading (1.7 s once, then a few 250 to
+    450 ms frames, mostly game work, two of them waiting on the GPU queue).
+
+- 2026-10-09 12:48 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `giggity-d3d8` 31b8075 merged in (web game pads, Cache
+  Storage for streamed pieces and the program, compressed program files,
+  the slow-disk backend fix, `[launcher] web_video`). Conflicts were the
+  formatting pass over code both branches already shared, and this log;
+  the formatted side was taken. Star Wars Battlefront II keeps
+  `web_video` off: its web build never linked FFmpeg, and the native Bink
+  path (`BinkSetIO` reader) is unchanged.
+  - Tests: native suites 25 of 25 and Python 421 passed, 5 skipped, on
+    Linux. The web build served by Windows Python on port 8092 (program
+    sent brotli-compressed, 9 MB of 114 MB; ranges, COOP/COEP and ETags
+    answered) reaches a Dagobah spawn in headless Chrome at 35-42 new
+    frames a second, 2.6 GB peak.
 
 - 2026-10-09 10:40 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: formatting only. `host/gpu/d3d9_host.cpp`,
@@ -375,6 +508,344 @@
   web player (program kept in Cache Storage), game config and build.py
   (`web_video`).
 
+- 2026-10-09 00:20 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: browser frame rate. Star Wars Battlefront II in level
+  (Dagobah, 800x600, headless Chrome) went from 20-25 to 44-46 game frames
+  a second (33.5 with the query cache alone; frame time 23 ms); memory
+  about 2.3 GB peak, CPU about 190%.
+  - `host/gpu/d3d9_host.cpp`: occlusion query results in the browser come
+    from a cache the main thread fills (`Op::QueryPoll`), one poll queued
+    per query, instead of a blocking round trip per `GetData`; a
+    generation per query drops a stale answer. The game thread spent a
+    quarter of its time waiting there.
+  - `host/gpu/d3d9_host.cpp`: the browser's present is pipelined
+    (`Op::Present`): the game waits only for the previous frame's present,
+    so its next frame runs while the main thread encodes this one.
+  - `host/present_thread.cpp`, `host/present_frame.h`: the presenter keeps
+    the overlay's size instead of asking the device (a main-thread round
+    trip in the browser) on every acquire.
+  - `runtime/kernel32.cpp`: in the browser, `sched_checkpoint` reads the
+    clock every 16th pass. `runtime/imports.cpp`: the import trace entry is
+    a bounded copy, not `snprintf`, on every import call.
+  - `tools/recomp/translate.py`, `runtime/intrinsics.h`,
+    `tools/game_config.py`: `[translate] ftol2` names the MSVC CRT's
+    `_ftol2`; direct calls run `recomp_ftol2_value` in line (truncation to
+    int64, integer indefinite on overflow or NaN, one pop) and indirect ones
+    reach `recomp_ftol2`. It was 9% of the browser game thread
+    (~2200 call sites in Battlefront II).
+  - `tools/recomp/translate.py`: `recomp_is_call_return` answers from a
+    bitmap built at load instead of a binary search on every guest RET.
+  - Tests: `runtime_tests` checks `_ftol2` truncation, overflow, NaN and an
+    exact FILD value; `test_game_config` checks the `ftol2` key.
+    Native suites 25 of 25 and Python 419 passed, 5 skipped, on Linux
+    (`runtime_tests` skips without a kit game image; its `_ftol2` cases
+    were run standalone and pass). In-level browser run renders normally.
+
+- 2026-10-08 22:56 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: a keyboard trace.
+  - `dx/dinput.cpp`: `RECOMP_TRACE_PAD` also logs each keyboard
+    `GetDeviceState` whose keys changed, with a timestamp and how many
+    unchanged reads came between, to show how many of a game's polls saw a
+    key held. Used on Star Wars Battlefront II's profile picker: a held
+    Enter is seen by about 30 polls in 150 ms while the profile loads, and
+    the hang that follows is a race with that load (about half of 150 ms
+    presses), not a key-message difference: the game reads the keyboard
+    only through DirectInput, and its window procedure drops WM_KEYDOWN.
+  - The indexed-strip WebGPU fix (b4c5bf8) was cherry-picked onto
+    `giggity-d3d8` (1f9b87c).
+  - Tests: native suites 25 of 25, Python 419 passed, 5 skipped, on Linux.
+
+- 2026-10-08 22:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: keyboard repeat settings, trigger presses in scripts, a
+  directory-search trace, and `giggity-d3d8` 8f9f537 (WebGPU leak fix)
+  merged in.
+  - `runtime/user32.cpp`: `SystemParametersInfoA` answers
+    `SPI_GETKEYBOARDDELAY` (1, about 500 ms) and `SPI_GETKEYBOARDSPEED` (31)
+    with Windows' defaults. Star Wars Battlefront II builds its own key
+    repeat from them; the failed call left it reading stack garbage (a
+    delay of -1.5 million seconds), so every held key repeated each frame.
+  - `host/smoke_main.cpp`: a script's `pad left_trigger`/`right_trigger`
+    past half way also presses L2/R2, as `pad_from_sdl` does for a real
+    controller, so scripted triggers drive `mapped` pads like real ones.
+  - `runtime/kernel32.cpp`: `RECOMP_TRACE_FILES` also logs each
+    `FindFirstFile` pattern and its match count.
+  - `host/gpu/webgpu/d3d9_webgpu.cpp`: an indexed triangle or line strip
+    gets a pipeline that names its index format (16 or 32 bit), part of the
+    pipeline key. WebGPU rejected such draws ("strip index format of
+    Undefined"), which threw away the whole frame's command buffer; Star
+    Wars Battlefront II's profile screen drew black in the browser.
+  - Tests: runtime_tests checks both keyboard SPI answers. Native suites
+    25 of 25 and Python 419 passed, 5 skipped, on Linux. The web build
+    compiles; headless Chrome reaches Battlefront II's main menu at 77
+    fps, 1.5 GB flat, about 1.6 cores.
+
+- 2026-10-08 20:15 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: Bink through a game's own reader, a joystick trace,
+  more script keys, and `giggity-d3d8` merged in.
+  - `dx/bink.cpp`: `BinkSetIO` now records the game's open procedure. A
+    `BinkOpen` with an empty name (Star Wars Battlefront II streams its
+    `.mvs` movies on its own thread and gives Bink only a reader) creates a
+    guest `BINKIO`, calls that procedure, and feeds FFmpeg from the
+    reader's `ReadFrame` callback, which waits for the game's streamer;
+    the tail shorter than one read comes from `ReadHeader` at halving
+    sizes. The stream is sequential: forward seeks read and discard. Every
+    Bink import that can read records its guest thread for the callbacks.
+    Named opens and file-handle opens are unchanged. dx_tests "Bink through
+    the game's reader" checks that a refusing reader fails the open.
+  - `dx/dinput_joystick.cpp`: `RECOMP_TRACE_PAD=1` prints each joystick
+    state a read hands the guest when it changes.
+  - `host/script.cpp`: scripts can also press 4 to 0 (the letters came with
+    the merge); host_tests checks W, d and 0.
+  - Merged `origin/giggity-d3d8` at `1f27076` (browser asset streaming,
+    joystick axis range, spin-wait yields, CPU renderer fixes, faster
+    critical sections and small reads).
+
+- 2026-10-08 18:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: Direct3D 9 offers four display modes (640x480, 800x600,
+  1024x768 and the 1280x960 desktop, smallest first) in each format the
+  game asks for, where it offered only the desktop size. New
+  `RECOMP_DISPLAY_MODE=<w>x<h>` caps the list (and the desktop mode) at
+  that size, for a game that picks the largest mode offered; Star Wars
+  Battlefront II's autodetect does, which made it render at 1280x960 on
+  the CPU renderer. `EnumAdapterModes` past the end fails as Windows does.
+  dx_tests checks the list. Also corrects this branch's changelog times
+  for 2026-10-08 (two hours fast) and a mis-encoded dash.
+
+- 2026-10-08 17:48 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `ReleaseSemaphore` now wakes the scheduler, as
+  `SetEvent` and `ReleaseMutex` already did, so a thread waiting on the
+  semaphore is reconsidered at once instead of sleeping out its timeout.
+  Star Wars Battlefront II hands its loader and render threads off through
+  semaphores tens of thousands of times while loading.
+
+- 2026-10-08 16:50 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: relative mouse mode for games that aim with the mouse.
+  New `[controls] mouse = "absolute" | "relative"` in game.toml (default
+  `"absolute"`, so no existing game changes), generated as
+  `RECOMP_CONTROLS_RELATIVE_MOUSE`. With `"relative"`, while the host has
+  captured the pointer the SDL host turns on SDL's relative mouse mode
+  (pointer lock in a browser), so the pointer never stops at a window edge,
+  and passes raw motion (scaled to drawable pixels, sub-pixel remainders
+  carried) to DirectInput through the new `host_gate_relative_motion` /
+  `host_input_relative_motion`. The guest cursor position is left alone
+  and the pointer correction that steers absolute motion is dropped while
+  relative motion arrives. Releasing capture (Escape, focus loss) leaves
+  relative mode. `tests/test_game_config.py` covers the new key; the stub
+  game.toml documents it.
+
+- 2026-10-08 16:45 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: Direct3D 9 for what stalled Star Wars Battlefront II's
+  loading screen. ps_1_x texture-addressing instructions (`texbem`,
+  `texbeml`, `texreg2ar`/`gb`/`rgb`, `texm3x2pad`/`tex`/`depth`,
+  `texm3x3pad`/`tex`/`spec`/`vspec`, `texdp3tex`, `texdepth`, and
+  ps_1_4's `bem`) now decode, so `CreatePixelShader` accepts the game's
+  `ps_1_1` shaders that use them. The CPU renderer runs them all (bump
+  mapping reads the stage's `BUMPENVMAT`/`LSCALE`/`LOFFSET`); the GPU
+  shader generator runs the matrix, register and dot-product forms and
+  samples `texbem`/`texbeml` unperturbed and passes `bem` through, because
+  texture stage state does not reach GPU programs yet. New
+  `d9sh::samples_destination_stage` marks which of them sample a stage.
+  Volume textures are real now: `CreateVolumeTexture` makes an
+  `IDirect3DVolumeTexture9` whose levels are `IDirect3DVolume9` objects
+  with `LockBox`/`UnlockBox` (row and slice pitch, boxes, DXT blocks),
+  `GetLevelDesc`, `GetVolumeLevel`, `GetContainer` and `GetDesc`;
+  `Res::GetType` reports `D3DRTYPE_VOLUMETEXTURE`. Neither renderer
+  samples them yet. `SetGammaRamp` keeps the ramp and `GetGammaRamp`
+  returns it (the identity before one is set); presented frames are not
+  corrected by it. `dx_tests` cases "Direct3D 9 device getters and
+  shaders" (extended) and "Direct3D 9 ps_1_1 texture addressing";
+  `dx_tests` 141,404 checks, 17 failures (the known wasm32 layout checks).
+
+- 2026-10-08 17:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: a shader that `CreateVertexShader` or
+  `CreatePixelShader` refuses is now reported with its version token and
+  guest address, once per version token, so the refused shader can be
+  found. Star Wars Battlefront II, which now reaches its loading screen
+  under the headless host, has one such pixel shader. `dx_tests` 141,363
+  checks, 17 failures (the existing 64-bit "display ABI" checks under
+  wasm32); `ctest -L nogame` 17 of 21 (the same four environmental
+  failures as before the merge: `platform_tests`, `seh_tests` and
+  `interp_tests` need child processes or C++ exceptions, which this
+  wasm32 build lacks, and `dx_tests` exits non-zero for the ABI checks);
+  the Python suite 341 passed, 76 skipped, 4 failed (symlink privilege,
+  no C compiler, and the Linux desktop-package check on Windows).
+
+- 2026-10-08 17:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: merged `giggity-d3d8` at `7c9d7e2` (Direct3D 8,
+  fixed-function rendering, DirectShow `RenderFile`). Both branches had
+  written Direct3D 9 device getters; one copy of each is kept, preferring
+  `giggity-d3d8`'s: its `GetTransform`, `GetRenderState`, `GetTexture`,
+  `GetTextureStageState`, `GetSamplerState`, `SetFVF`, `GetFVF` and
+  `d9_fvf_declaration` (in `d3d9_ffp.cpp`) replace this branch's, and the
+  device's `fvf` field this branch added is gone (`D9Pipeline::fvf` holds
+  it). This branch's `SetVertexShader`/`SetPixelShader` replace the ones
+  that only accepted null: they bind a shader object's bytecode, and null
+  still returns the stage to the fixed-function pipeline. This branch's
+  `GetRenderTarget`, `GetScissorRect`, `GetStreamSource`, `GetIndices`,
+  `GetVertexDeclaration`, `Get{Vertex,Pixel}ShaderConstantF`, shader
+  objects, `GetDisplayMode`, `CreateVolumeTexture` and `Res::GetType`
+  stay. The DirectSound 3D-listener and device-export work from earlier
+  merges is unchanged by this one.
+
+- 2026-10-08 16:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `IDirect3DDevice9::GetDisplayMode` reports the back
+  buffer's size at 60 Hz, X8R8G8B8, where the stub left the structure
+  unwritten. `CreateVolumeTexture` fails with `D3DERR_OUTOFVIDEOMEMORY`
+  and a null texture instead of succeeding with no texture: Star Wars
+  Battlefront II's texture loader checks the result and skips the texture,
+  where before it locked a null pointer and crashed. Volume textures are
+  still unsupported. `dx_tests` 141,297 checks, 17 failures (the existing
+  64-bit "display ABI" checks under wasm32).
+
+- 2026-10-08 16:10 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: the Direct3D 9 device implements what Star Wars
+  Battlefront II's statically linked D3DX calls directly, where the old
+  stubs returned success and left the out pointer unwritten (the game then
+  called through a null pointer). Getters now read back what the setters
+  stored: `GetRenderTarget` (index 0 falls back to the back buffer;
+  `D3DERR_NOTFOUND` for an unset higher index), `GetTransform` (identity
+  when never set), `GetRenderState`, `GetTexture`, `GetTextureStageState`,
+  `GetSamplerState`, `GetScissorRect`, `GetStreamSource`, `GetIndices`,
+  `GetVertexDeclaration` and `Get{Vertex,Pixel}ShaderConstantF`; each
+  object comes back with a reference, as Direct3D does. New
+  `K_D3D9VSHADER`/`K_D3D9PSHADER` objects (interfaces
+  `IDirect3DVertexShader9`/`IDirect3DPixelShader9` with `GetDevice` and
+  `GetFunction`) keep the bytecode that `Create{Vertex,Pixel}Shader` is
+  given, measured by the new `d9sh::code_size` (a token walk to the end
+  token, rejecting unknown SM1 instructions); `Set{Vertex,Pixel}Shader`
+  put that bytecode and its `code_key` in the pipeline record the renderer
+  reads, the same way the D3DX effect path does, and the matching getters
+  return the bound object. (This entry also added `SetFVF`, `GetFVF` and
+  several state getters; the 17:00 merge kept `giggity-d3d8`'s versions of
+  those instead.) `Res::GetType` reports surface, texture, cube
+  texture, vertex buffer or index buffer. `dx_tests` case "Direct3D 9
+  device getters and shaders"; `dx_tests` 141,290 checks, 17 failures,
+  all the existing 64-bit "display ABI" layout checks that fail under
+  wasm32.
+
+- 2026-10-08 15:20 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `GetCommandLineA`/`W` quote the program path when it
+  holds a space, as Explorer and shortcuts launch a program, so the CRT's
+  `argv[0]` is the whole path. Unquoted, Star Wars Battlefront II took the
+  words of `C:\Program Files\LucasArts\...` as arguments, read the last
+  one as a mission name and quit with "Could not open
+  MISSION\II\GameData\BattlefrontII.exe.lvl". This changes the command
+  line of every game whose guest root has a space (Most Wanted's too); a
+  game that splits it the standard way now gets one argument where it got
+  several. `runtime_tests` expects the quoted form; `compat_extra_tests`
+  checks it (188 checks, 0 failures under Node).
+
+- 2026-10-08 15:00 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `DialogBoxParamA`, which shows no dialog, now logs the
+  text the dialog would have shown when its init parameter names a
+  printable string, or else every such string among the first four
+  pointers in it (a title and a message), joined by " | ". A game's fatal error
+  box is often the only report of why it quit. `compat_extra_tests` 185
+  checks, 0 failures.
+
+- 2026-10-08 14:40 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: DirectSound gaps Star Wars Battlefront II reaches before
+  its first frame, kept small and next to `giggity-d3d8`'s DirectSound 8
+  work (no change to it). The primary buffer answers QueryInterface for
+  `IDirectSound3DListener` with the listener of the DirectSound object that
+  made it (new `ComObj::ds_owner`), which is where DirectSound documents
+  getting the listener; a secondary buffer still refuses. The game asked
+  the primary buffer and called through the null result. New DSOUND
+  exports, each by ordinal and name, so their stack cleanup is known:
+  `GetDeviceID` (9; any playback id, including DSDEVID_DefaultPlayback,
+  gives the runtime's one playback device, a capture id DSERR_NODRIVER),
+  `DirectSoundEnumerateA` (2; the primary sound driver, then that device),
+  `DirectSoundCaptureEnumerateA` (7; none) and `DirectSoundCaptureCreate8`
+  (12; DSERR_NODRIVER). New dx_tests cases "DirectSound primary listener"
+  and "DirectSound device exports" pass under Node (141,187 checks; the 17
+  failures are the existing 64-bit layout checks).
+
+- 2026-10-08 14:05 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `GetFileAttributes(A/W/ExA/ExW)` fail a path holding a
+  wildcard or another character no file name may hold (`? * < > | "`, after
+  any `\\?\` or `\\.\` prefix) with ERROR_INVALID_NAME (123), as Windows
+  does, instead of ERROR_FILE_NOT_FOUND. The Microsoft Layer for Unicode
+  calls `GetFileAttributesW(L"???.???")` and takes only that error as the
+  sign it runs on NT; otherwise it assumed Windows 9x and loaded
+  unicows.dll, which since the resource-only DLL change is mapped but never
+  translated, and the first wide call jumped into it. Formatted the
+  changed native files with the pinned clang-format. Tests under Node:
+  `compat_extra_tests` 182 checks, `gdi_tests` 142, 0 failures;
+  `dx_tests` 141,143 checks with the same 17 64-bit layout failures as
+  before.
+
+- 2026-10-08 13:45 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: the Winsock shims in `compat_extra.cpp` are also
+  registered by ordinal ("ord1" accept to "ord151" `__WSAFDIsSet`, the
+  numbering WS2_32 and WSOCK32 share). Star Wars Battlefront II imports
+  every WS2_32 and WSOCK32 call by ordinal, so the by-name shims never
+  reached it; its first headless run stopped on `WS2_32!ord115`
+  (WSAStartup). WSOCK32 gains only the ordinals misc.cpp did not already
+  serve, so D3DPopTB's WSOCK32 startup and host lookup are unchanged. Kit
+  tests built with Emscripten and run under Node: `compat_extra_tests` 172
+  checks and `gdi_tests` 142, 0 failures; of the other `nogame` tests,
+  `platform_tests`, `seh_tests` (no child processes in WebAssembly),
+  `interp_tests` (C++ exceptions are off in this build) and `dx_tests`
+  (17 of 141,143 checks assume 64-bit struct layouts) fail for reasons of
+  the WebAssembly target, the rest pass.
+
+- 2026-10-08 13:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: merged `giggity-d3d8` (840c86b) for DirectSound 8. Both
+  branches added `CreateFontIndirectA` and `SetMapMode`; the merge keeps
+  `giggity-d3d8`'s (its `SetMapMode` also tracks the mode for
+  `GetMapMode`) and drops this branch's copies from `gdi32_text.cpp` and
+  `compat_extra.cpp`.
+
+- 2026-10-08 13:10 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: a DLL the runtime serves with shims (a pseudo module)
+  now gets a real, small image in the guest heap, 64 KB aligned: DOS and PE
+  headers and an export directory naming every registered shim for it,
+  each pointing at its trampoline (new `imports_exports_of`). Before, its
+  handle was a bare number from 0x60000000, outside the 256 MB guest arena,
+  so reading the module's headers ran off guest memory: a crash under
+  WebAssembly. Star Wars Battlefront II's Microsoft Layer for Unicode
+  (unicows) does exactly that in its startup, walking kernel32's exports by
+  hand to find `GetFileAttributesW`. `GetProcAddress` is unchanged. Checked
+  by a new case in `compat_extra_tests` (157 checks, 0 failures, under
+  Node), which walks the table as the guest does and compares the result
+  with `GetProcAddress`.
+
+- 2026-10-08 12:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: the translator models 3DNow!'s `FEMMS` like `EMMS` (every
+  x87 register empty) and SSE3's `FISTTP` (a store that truncates whatever
+  the control word's rounding says, then pops). Star Wars Battlefront II's
+  built-in D3DX contains both on paths the kit's CPUID never selects; they
+  were 99 of the game's 208 trap sites, leaving 109, all bytes Ghidra
+  decoded from data. New `test_femms_and_fisttp_translate`.
+
+- 2026-10-08 11:55 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: `GetDateFormatA` and `GetTimeFormatA` (US English
+  short and long dates, Windows picture strings, `TIME_NOSECONDS`,
+  `TIME_NOTIMEMARKER`, `TIME_FORCE24HOURFORMAT`, the size query and the
+  short-buffer error). New `compat_extra_tests` (label `nogame`) calls each
+  new KERNEL32, USER32, GDI32, Winsock and Bink shim through the import
+  table and checks results and stack cleanup. Ran it, and `gdi_tests`,
+  built with Emscripten 6.0.11 under Node: 142 checks each, 0 failures.
+
+- 2026-10-08 11:30 CDT — Claude Opus 5.5 (Claude Code), branch
+  `giggity-swbf2`: the imports Star Wars Battlefront II (2005) links that no
+  shim table covered. New `runtime/compat_extra.cpp`:
+  `GetWindowsDirectoryA`, `IsProcessorFeaturePresent` (agrees with
+  `recomp_cpuid`: only RDTSC, so D3DX and the CRT keep their x87 paths),
+  `PeekNamedPipe` (fails), `GetFileInformationByHandle`,
+  `GetUserDefaultLangID`/`GetSystemDefaultLangID`, `DialogBoxParamA` (no
+  dialog; IDOK), `GetDlgItem`, `EndDialog`, `ToAscii` and `ToUnicode` (US
+  layout), `DrawTextA` (through the wide text path), `SetMapMode`,
+  `SetICMMode`, `GetDeviceGammaRamp` (identity), and Winsock by name: real
+  `htons`/`htonl`/`ntohs`/`ntohl`/`inet_addr`/`inet_ntoa`, while every socket
+  call now fails with WSAENETDOWN instead of returning 0. That last change
+  also reaches other games that link WS2_32 (Most Wanted): their sockets
+  now fail as a disconnected machine's would. `CreateFontIndirectA` widens a
+  LOGFONTA into the existing font object. Bink gains `DX9SurfaceType`
+  (from the D3D9 surface's format) and accepts `SetIO`, `SetIOSize`,
+  `SetMemory` and `SetVolume`; the host decoder keeps reading the file
+  itself. Checked by compiling the changed files with Emscripten's clang
+  (`-Wall -Wextra -Werror`); no native compiler is installed on this machine.
 - 2026-10-09 00:27 CDT — Claude Opus 5.5 (Claude Code), branch
   `giggity-d3d8`: browser speed fixes cherry-picked from `giggity-swbf2`
   (9867fc0..02da5a5). With them Star Wars Battlefront II went from 20-25

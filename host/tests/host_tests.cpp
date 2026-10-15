@@ -642,6 +642,10 @@ static void test_script_parsing() {
     CHECK_EQ(host_script_dik("ESCAPE"), 0x01);
     CHECK_EQ(host_script_dik("RETURN"), 0x1c);
     CHECK_EQ(host_script_dik("DOWN"), 0xd0);
+    CHECK_EQ(host_script_dik("W"), 0x11);
+    CHECK_EQ(host_script_dik("d"), 0x20);
+    CHECK_EQ(host_script_dik("0"), 0x0b);
+    CHECK_EQ(host_key_mapping_for_dik(0x11).vk, 'W');
     CHECK_EQ(host_script_dik("nonsense"), 0);
     // And the host has to have a real key with that scan code, or the press
     // would go nowhere.
@@ -2148,6 +2152,22 @@ static void test_audio_ring_and_clock() {
             CHECK(peak > 0.0f);
         }
     }
+
+    // A pan or rate change keeps the ring the one being played. Re-planning
+    // it from a copy left the guest writing into a ring nobody played while
+    // the copy looped for ever: here the ring would never go quiet.
+    host_audio_set_pan(21, 600);
+    host_audio_set_frequency(21, hz + 50);
+    host_audio_set_frequency(21, hz + 50); // unchanged: must not stop anything
+    host_audio_offline_render(4800, &peak);
+    CHECK(peak > 0.0f);
+    host_audio_offline_render(19200, &peak); // the rest of what was written
+    host_audio_offline_render(4096, &peak);  // the fade
+    host_audio_offline_render(9600, &peak);
+    CHECK(peak == 0.0f);
+    CHECK_EQ(host_audio_write(21, ring.data(), 0, ring_bytes), (int32_t)ring_bytes);
+    host_audio_offline_render(4800, &peak);
+    CHECK(peak > 0.0f);
 
     // And the queue's own answer comes from the clock, not from a completion.
     // A stream that has been playing for a while reports less outstanding than

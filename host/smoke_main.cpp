@@ -1436,6 +1436,13 @@ void run_step(const HostScriptStep &step) {
         } else {
             float *axes[] = {&pad.lx, &pad.ly, &pad.rx, &pad.ry, &pad.l2, &pad.r2};
             *axes[index - 17] = step.x / 32767.0f;
+            // A trigger past half way also presses its button, as
+            // pad_from_sdl does for a real controller's analogue trigger.
+            if (index >= 21) {
+                const uint16_t bit = index == 21 ? controls::kPadL2 : controls::kPadR2;
+                const float v = index == 21 ? pad.l2 : pad.r2;
+                pad.buttons = v > 0.5f ? pad.buttons | bit : pad.buttons & ~bit;
+            }
         }
         controls::vpad().set_source(controls::kPadSourceTouch, pad);
         tick_pad_binding();

@@ -85,6 +85,14 @@ const Named kKeys[] = {
     {"LSHIFT", 0x2a},
     {"LCONTROL", 0x1d},
     {"LALT", 0x38},
+    // The other digits, for weapon and squad keys.
+    {"4", 0x05},
+    {"5", 0x06},
+    {"6", 0x07},
+    {"7", 0x08},
+    {"8", 0x09},
+    {"9", 0x0a},
+    {"0", 0x0b},
 };
 const int kKeyCount = (int)(sizeof kKeys / sizeof kKeys[0]);
 

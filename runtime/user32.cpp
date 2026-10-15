@@ -565,6 +565,17 @@ void u_SystemParametersInfoA(X86 *c) {
         set_eax(c, 1);
         return;
     }
+    // Windows' default keyboard repeat: a delay of 1 (about 500 ms) and a
+    // speed of 31 (about 30 repeats a second). A game that builds its own key
+    // repeat from these (Star Wars Battlefront II) read uninitialised stack
+    // when the call failed, and repeated every held key on the next frame.
+    const uint32_t SPI_GETKEYBOARDSPEED = 10, SPI_GETKEYBOARDDELAY = 22;
+    if ((action == SPI_GETKEYBOARDSPEED || action == SPI_GETKEYBOARDDELAY) && param &&
+        gm_valid(param, 4)) {
+        wr32(param, action == SPI_GETKEYBOARDSPEED ? 31 : 1);
+        set_eax(c, 1);
+        return;
+    }
     log_once(("spi:" + std::to_string(action)).c_str(), "SystemParametersInfoA(%u) unsupported",
              action);
     set_eax(c, 0);
@@ -990,6 +1001,13 @@ void u_PostMessageA(X86 *c) {
 
 void u_PeekMessageA(X86 *c) {
     peek_message(c);
+}
+// GetQueueStatus(flags): the high word says what kinds of message arrived
+// since the last call, the low word what is queued. Messages here are pumped
+// by the host between frames, so nothing ever waits: zero, and the caller
+// goes on to PeekMessage as it would anyway.
+void u_GetQueueStatus(X86 *c) {
+    set_eax(c, 0);
 }
 void u_DispatchMessageA(X86 *c) {
     dispatch_message(c);
@@ -1758,6 +1776,7 @@ const ImportShim g_user32_shims[] = {
     {"USER32.dll", "SetDlgItemTextA", 3, u_SetDlgItemTextA},
     {"USER32.dll", "CreateDialogParamA", 5, u_CreateDialogParamA},
     {"USER32.dll", "PeekMessageA", 5, u_PeekMessageA},
+    {"USER32.dll", "GetQueueStatus", 1, u_GetQueueStatus},
     {"USER32.dll", "GetMessageA", 4, u_GetMessageA},
     {"USER32.dll", "GetMessagePos", 0, u_GetMessagePos},
     {"USER32.dll", "GetMessageTime", 0, u_GetMessageTime},

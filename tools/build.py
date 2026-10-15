@@ -97,8 +97,14 @@ def game_defines(game_dir, build_root):
 def web_video_defines(cfg):
     """FFmpeg for the web build only when the game asks for it ([launcher] web_video)."""
     video = cfg["launcher"]["web_video"]
-    return ["-DRECOMP_VIDEO=%s" % ("OFF" if video == "off" else "ON"),
-            "-DRECOMP_WEB_VIDEO_ALL_CODECS=%s" % ("ON" if video == "all" else "OFF")]
+    defines = ["-DRECOMP_VIDEO=%s" % ("OFF" if video == "off" else "ON"),
+               "-DRECOMP_WEB_VIDEO_ALL_CODECS=%s" % ("ON" if video == "all" else "OFF")]
+    # A host that cannot run FFmpeg's configure (Windows without MSYS2) links
+    # one another web build installed: RECOMP_FFMPEG_PREBUILT=<its prefix>.
+    prebuilt = os.environ.get("RECOMP_FFMPEG_PREBUILT")
+    if video != "off" and prebuilt:
+        defines.append("-DRECOMP_FFMPEG_PREBUILT=" + Path(prebuilt).resolve().as_posix())
+    return defines
 
 
 def configure(preset, extra=(), build_dir=None):

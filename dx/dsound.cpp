@@ -1542,6 +1542,7 @@ void DS_CreateSoundBuffer(X86 *c) {
     ComObj *b = com_new(K_DSBUFFER);
     b->buf_flags = flags;
     b->is_primary_buffer = primary;
+    b->ds_owner = ds->id;
     if (primary) {
         b->rate = 22050;
         b->nchannels = 2;
@@ -1737,11 +1738,87 @@ static ComObj *dsound_create() {
 static const uint8_t CLSID_DirectSound8_[16] =
     IID_BYTES(0x3901CC3F, 0x84B5, 0x4FA4, 0xBA, 0x35, 0xAA, 0x81, 0x72, 0xB8, 0xA0, 0x9B);
 
+// The one playback device the runtime offers, and no capture device. A game
+// that lists devices (DirectSoundEnumerateA) or turns DSDEVID_DefaultPlayback
+// into a device GUID (GetDeviceID) sees it; DirectSoundCreate takes any GUID.
+static const uint8_t kPlaybackDevice_[16] =
+    IID_BYTES(0x5245434F, 0x4D50, 0x4B49, 0x54, 0x44, 0x53, 0x4F, 0x55, 0x4E, 0x44, 0x30);
+// DSDEVID_Default{Playback,Capture,VoicePlayback,VoiceCapture} are
+// {DEF0000n-9C6D-47ED-AAF1-4DDA8F2B5C03}, n = 0..3; odd n is a capture id.
+static bool is_capture_device_id(uint32_t guid) {
+    static const uint8_t tail[12] = {0x6D, 0x9C, 0xED, 0x47, 0xAA, 0xF1,
+                                     0x4D, 0xDA, 0x8F, 0x2B, 0x5C, 0x03};
+    uint32_t d1 = rd32(guid);
+    return (d1 & ~3u) == 0xDEF00000u && (d1 & 1u) && memcmp(gm_ptr(guid + 4), tail, 12) == 0;
+}
+
+// GetDeviceID(pGuidSrc, pGuidDest), DSOUND ordinal 9.
+void DirectSoundGetDeviceID(X86 *c) {
+    uint32_t src = arg(c, 0), dest = arg(c, 1);
+    if (!dest || !gm_valid(dest, 16) || (src && !gm_valid(src, 16))) {
+        com_ret(c, DSERR_INVALIDPARAM);
+        return;
+    }
+    if (src && is_capture_device_id(src)) {
+        com_ret(c, DSERR_NODRIVER);
+        return;
+    }
+    memcpy(gm_ptr(dest), kPlaybackDevice_, 16);
+    com_ret(c, DS_OK);
+}
+
+// DirectSoundEnumerateA(lpDSEnumCallback, lpContext), DSOUND ordinal 2. Like
+// Windows: the primary sound driver first (a null GUID), then each device,
+// stopping when the callback returns FALSE.
+void DirectSoundEnumerateA(X86 *c) {
+    uint32_t cb = arg(c, 0), ctx = arg(c, 1);
+    if (!cb) {
+        com_ret(c, DSERR_INVALIDPARAM);
+        return;
+    }
+    uint32_t block = heap_alloc(96, true);
+    if (!block) {
+        com_ret(c, E_OUTOFMEMORY);
+        return;
+    }
+    uint32_t guid = block, primary = block + 16, device = block + 48, module = block + 80;
+    memcpy(gm_ptr(guid), kPlaybackDevice_, 16);
+    gm_put_str(primary, "Primary Sound Driver", 32);
+    gm_put_str(device, "Speakers", 32);
+    gm_put_str(module, "", 16);
+    const uint32_t first[4] = {0, primary, module, ctx};
+    const uint32_t second[4] = {guid, device, module, ctx};
+    if (guest_call(c, cb, first, 4))
+        guest_call(c, cb, second, 4);
+    heap_free(block);
+    com_ret(c, DS_OK);
+}
+
+// DirectSoundCaptureEnumerateA (ordinal 7) lists nothing, and
+// DirectSoundCaptureCreate8 (ordinal 12) finds no capture driver.
+void DirectSoundCaptureEnumerateA(X86 *c) {
+    com_ret(c, arg(c, 0) ? DS_OK : DSERR_INVALIDPARAM);
+}
+void DirectSoundCaptureCreate8(X86 *c) {
+    uint32_t out = arg(c, 1);
+    if (out && gm_valid(out, 4))
+        wr32(out, 0);
+    com_ret(c, DSERR_NODRIVER);
+}
+
 const ImportShim g_dsound_exports[] = {
     {"DSOUND.dll", "ord1", 3, DirectSoundCreate},
     {"DSOUND.dll", "DirectSoundCreate", 3, DirectSoundCreate},
     {"DSOUND.dll", "ord11", 3, DirectSoundCreate8},
     {"DSOUND.dll", "DirectSoundCreate8", 3, DirectSoundCreate8},
+    {"DSOUND.dll", "ord2", 2, DirectSoundEnumerateA},
+    {"DSOUND.dll", "DirectSoundEnumerateA", 2, DirectSoundEnumerateA},
+    {"DSOUND.dll", "ord7", 2, DirectSoundCaptureEnumerateA},
+    {"DSOUND.dll", "DirectSoundCaptureEnumerateA", 2, DirectSoundCaptureEnumerateA},
+    {"DSOUND.dll", "ord9", 2, DirectSoundGetDeviceID},
+    {"DSOUND.dll", "GetDeviceID", 2, DirectSoundGetDeviceID},
+    {"DSOUND.dll", "ord12", 3, DirectSoundCaptureCreate8},
+    {"DSOUND.dll", "DirectSoundCaptureCreate8", 3, DirectSoundCaptureCreate8},
 };
 
 // The version 8 vtables: the version 1 slots in order, then the additions.
@@ -1767,6 +1844,11 @@ std::vector<ComMethod> &dsbuffer8_methods() {
 // A DirectSound object also answers to IDirectSound3DListener, and a buffer to
 // IDirectSound3DBuffer and IDirectSoundNotify. Both are the same host object
 // seen through another interface, which the view table already handles.
+// The primary buffer answers to IDirectSound3DListener too, with the
+// listener of the DirectSound object that made it: that is where DirectSound
+// documents getting the listener (QueryInterface on a primary buffer created
+// with DSBCAPS_CTRL3D), and where Star Wars Battlefront II asks for it
+// without checking the result.
 ComObj *dsound_qi(ComObj *self, ComIface want) {
     if (want == IF_DS3DLISTENER || want == IF_DSOUND8)
         return self;
@@ -1775,6 +1857,8 @@ ComObj *dsound_qi(ComObj *self, ComIface want) {
 ComObj *dsbuffer_qi(ComObj *self, ComIface want) {
     if (want == IF_DS3DBUFFER || want == IF_DSNOTIFY || want == IF_DSBUFFER8)
         return self;
+    if (want == IF_DS3DLISTENER && self->is_primary_buffer)
+        return com_get(self->ds_owner); // null: refused below, as for a secondary buffer
     return nullptr;
 }
 

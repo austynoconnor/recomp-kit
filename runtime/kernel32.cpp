@@ -1228,6 +1228,71 @@ uint32_t call_dll_entry(X86 *c, const LoaderModule &m, uint32_t reason) {
     return result;
 }
 
+// A pseudo module is a DLL the runtime serves with shims rather than maps.
+// Its handle points at a small image in the guest heap: DOS and PE headers
+// and an export directory naming every shim for that DLL, each export's
+// address its trampoline. A guest that reads the module's headers or walks
+// its exports by hand (the Microsoft Layer for Unicode does, to find out
+// whether it runs on NT) then sees what it would on Windows, instead of
+// reading outside the guest arena. The RVAs of the trampolines wrap below
+// the image, which 32-bit arithmetic undoes. No sections, nothing else.
+uint32_t pseudo_module_image(const std::string &name) {
+    auto exports = imports_exports_of(name.c_str());
+    const uint32_t n = (uint32_t)exports.size();
+    const uint32_t kNt = 0x40, kExp = 0x140, kDirSize = 40;
+    uint32_t funcs = kExp + kDirSize, names = funcs + 4 * n, ords = names + 4 * n;
+    uint32_t strings = ords + 2 * n;
+    uint32_t total = strings + (uint32_t)name.size() + 1;
+    for (const auto &e : exports)
+        total += (uint32_t)e.first.size() + 1;
+    uint32_t size = (total + 0xfffu) & ~0xfffu;
+    uint32_t base = heap_alloc(size, true, 0x10000);
+    if (!base)
+        return 0;
+    wr16(base, 0x5a4d); // MZ
+    wr32(base + 0x3c, kNt);
+    wr32(base + kNt, 0x00004550); // "PE", two zero bytes
+    uint32_t fh = base + kNt + 4;
+    wr16(fh, 0x014c);      // i386
+    wr16(fh + 16, 0xe0);   // SizeOfOptionalHeader
+    wr16(fh + 18, 0x2102); // executable, 32-bit, DLL
+    uint32_t oh = fh + 20;
+    wr16(oh, 0x010b);      // PE32
+    wr32(oh + 28, base);   // ImageBase
+    wr32(oh + 32, 0x1000); // SectionAlignment
+    wr32(oh + 36, 0x200);  // FileAlignment
+    wr16(oh + 40, 5);      // OS 5.1
+    wr16(oh + 42, 1);
+    wr16(oh + 48, 5); // subsystem 5.1
+    wr16(oh + 50, 1);
+    wr32(oh + 56, size);   // SizeOfImage
+    wr32(oh + 60, 0x1000); // SizeOfHeaders
+    wr16(oh + 68, 3);      // console subsystem, as system DLLs say
+    wr32(oh + 92, 16);     // NumberOfRvaAndSizes
+    wr32(oh + 96, kExp);   // export directory
+    wr32(oh + 100, total - kExp);
+    uint32_t at = strings;
+    gm_put_str(base + at, name.c_str(), (uint32_t)name.size() + 1);
+    uint32_t dir = base + kExp;
+    wr32(dir + 12, at); // Name
+    wr32(dir + 16, 1);  // ordinal base
+    wr32(dir + 20, n);
+    wr32(dir + 24, n);
+    wr32(dir + 28, funcs);
+    wr32(dir + 32, names);
+    wr32(dir + 36, ords);
+    at += (uint32_t)name.size() + 1;
+    for (uint32_t i = 0; i < n; ++i) {
+        wr32(base + funcs + 4 * i, exports[i].second - base);
+        wr32(base + names + 4 * i, at);
+        wr16(base + ords + 2 * i, (uint16_t)i);
+        gm_put_str(base + at, exports[i].first.c_str(), (uint32_t)exports[i].first.size() + 1);
+        at += (uint32_t)exports[i].first.size() + 1;
+    }
+    LOGV("pseudo module %s: %u exports at %08x", name.c_str(), n, base);
+    return base;
+}
+
 void load_library_named(X86 *c, const std::string &module_name) {
     std::string name = library_name(module_name);
     auto it = modules().find(name);
@@ -1280,8 +1345,11 @@ void load_library_named(X86 *c, const std::string &module_name) {
         set_eax(c, 0);
         return;
     }
-    uint32_t h = g_next_module;
-    g_next_module += 0x10000;
+    uint32_t h = pseudo_module_image(name);
+    if (!h) {
+        h = g_next_module;
+        g_next_module += 0x10000;
+    }
     modules()[name] = h;
     LOGV("LoadLibrary(\"%s\") -> pseudo module %08x", name.c_str(), h);
     set_eax(c, h);
@@ -1881,6 +1949,7 @@ void k_ReleaseSemaphore(X86 *c) {
         return;
     }
     o->count += n;
+    sched_wake_all(); // a thread waiting on the semaphore can take it now
     set_eax(c, 1);
 }
 
@@ -4450,7 +4519,23 @@ void create_file_named(X86 *c, const std::string &name) {
     set_eax(c, h);
 }
 
+// A wildcard or another character no file name may hold makes Windows fail
+// a path query with ERROR_INVALID_NAME (123) before looking at the disk. The
+// Microsoft Layer for Unicode relies on it: GetFileAttributesW(L"???.???")
+// failing that way is how it knows it runs on NT (Windows 9x answers
+// ERROR_CALL_NOT_IMPLEMENTED); any other error and it takes the 9x path. A
+// leading \\?\ or \\.\ is a prefix, not part of the name.
+bool path_has_invalid_name_chars(const std::string &name) {
+    size_t from = (name.rfind("\\\\?\\", 0) == 0 || name.rfind("\\\\.\\", 0) == 0) ? 4 : 0;
+    return name.find_first_of("?*<>|\"", from) != std::string::npos;
+}
+
 void get_file_attributes_named(X86 *c, const std::string &name) {
+    if (path_has_invalid_name_chars(name)) {
+        set_last_error(123); // ERROR_INVALID_NAME
+        set_eax(c, 0xffffffffu);
+        return;
+    }
     std::string host = win32_host_path(name);
     OsStat st{};
     if (host.empty() || os_stat(host.c_str(), &st) != 0) {
@@ -4599,6 +4684,9 @@ void find_first_named(X86 *c, const std::string &pattern, bool wide) {
                 o.match_paths.push_back(host_dir + "/" + kv.second);
             }
     }
+    if (recomp_env("TRACE_FILES"))
+        LOGW("file: find \"%s\" -> %zu match(es)%s%s", pattern.c_str(), o.matches.size(),
+             o.matches.empty() ? "" : ", first ", o.matches.empty() ? "" : o.matches[0].c_str());
     if (o.matches.empty()) {
         handles().erase(h);
         set_last_error(ERROR_FILE_NOT_FOUND_);
@@ -4753,6 +4841,11 @@ void get_file_attributes_ex_named(X86 *c, const std::string &name) {
         set_eax(c, 0);
         return;
     }
+    if (path_has_invalid_name_chars(name)) {
+        set_last_error(123); // ERROR_INVALID_NAME
+        set_eax(c, 0);
+        return;
+    }
     std::string host = win32_host_path(name);
     OsStat st{};
     if (host.empty() || os_stat(host.c_str(), &st) != 0) {
@@ -4826,9 +4919,16 @@ void open_mutex_named(X86 *c, const std::string &name) {
     set_eax(c, 0);
 }
 
+// The program path is quoted when it holds a space, as Explorer and a
+// shortcut launch it, so the CRT's argv[0] is the whole path. Unquoted, a
+// game that reads its arguments takes the words of "C:\Program Files\..."
+// as switches: Star Wars Battlefront II read the last one as a mission name
+// and quit, unable to open MISSION\II\GameData\BattlefrontII.exe.lvl.
 void get_command_line(X86 *c) {
     if (!g_cmdline_addr) {
         std::string line = RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE;
+        if (line.find(' ') != std::string::npos)
+            line = "\"" + line + "\"";
         if (const char *extra = recomp_env("GUEST_ARGS"); extra && *extra)
             line += std::string(" ") + extra;
         g_cmdline_addr = guest_strdup(line.c_str());

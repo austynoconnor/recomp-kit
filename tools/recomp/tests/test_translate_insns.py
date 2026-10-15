@@ -909,3 +909,29 @@ def test_segment_register_loads_do_not_reach_the_flat_model():
     text = "\n".join(tr.translate(fn))
     assert "recomp_int(c, 6u);" in text
     assert "0x23u" not in text and "wr" not in text.split("MOV DS,AX")[1].split("\n")[0]
+
+
+def test_femms_and_fisttp_translate():
+    """Battlefront II's built-in D3DX has 3DNow! and SSE3 paths. The kit's
+    CPUID offers neither, so they should never run, but the translation
+    should not trap them. FEMMS is EMMS for x87 purposes. FISTTP stores
+    with truncation whatever the control word's rounding is, then pops."""
+    tr = T.Translator(NoImage(), {0x0D01E000}, Opts())
+    insns = T.parse_listing_text(
+        "0d01e000  FEMMS\n"
+        "0d01e002  FLD dword ptr [ESI]\n"
+        "0d01e004  FISTTP dword ptr [EDX]\n"
+        "0d01e006  FLD dword ptr [ESI]\n"
+        "0d01e008  FISTTP qword ptr [EDX]\n"
+        "0d01e00a  RET\n")
+    fn = T.Function(0x0D01E000, "sse3", 0x0b, insns)
+    fn.measure(NoImage())
+    tr.prepare(fn)
+    text = "\n".join(tr.translate(fn))
+    assert "c->fpu_tag = 0xffffu;" in text
+    assert "recomp_unmodelled" not in text and "unhandled" not in text
+    assert text.count("c->fpu_cw |= 0x0c00u;") == 2
+    assert "wr32(" in text and "fist_i32(c)" in text
+    assert "wr64(" in text and "fist_i64(c)" in text
+    assert text.count("c->fpu_cw = cw_; }") == 2
+    assert text.count("fdrop(c);") >= 2

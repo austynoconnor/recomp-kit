@@ -1567,20 +1567,56 @@ extern "C" void host_audio_set_volume(int32_t id, int32_t volume) {
 // Pan and frequency both live in the samples or in the segment's rate, so a
 // live change re-schedules the rest of the sound from where it had reached.
 // The sound does not restart. The player time is read, and the new
-// scheduling is performed, with the lock released.
+// scheduling is performed, with the lock released. `apply` returns whether
+// anything changed; an unchanged value leaves the channel exactly as it was.
+//
+// A ring played in place (a DirectSound streaming buffer) is not re-planned
+// from the channel's PCM: that would hand the player a copy, while the
+// guest's later writes keep landing in the ring nobody plays any more, and
+// the copy would loop for ever (Battlefront II's menu music: the same half
+// second over and over). The ring is rebuilt with the new pan and rate and
+// swapped in where the player is, keeping its position and write tracking.
 template <class Apply> static void reschedule_from_current(int32_t id, Apply apply) {
     bool playing = false;
+    std::shared_ptr<Segment> old_ring, new_ring;
     {
         DataLock held;
         Channel *channel = channel_for(id, true);
         if (!channel)
             return;
-        apply(*channel);
+        if (!apply(*channel))
+            return;
         reconcile_locked(id, *channel);
         playing = channel->playing && !channel->pcm.empty();
+        if (playing && channel->ring_mode && channel->ring && !g_ops) {
+            old_ring = channel->ring;
+            new_ring = make_segment(*channel, 0, (uint32_t)channel->pcm.size());
+            if (new_ring && new_ring->frames() == old_ring->frames()) {
+                new_ring->loop = true;
+                new_ring->ring = true;
+                channel->ring = new_ring;
+            } else {
+                new_ring.reset();
+            }
+        }
     }
     if (!playing)
         return;
+    if (old_ring) {
+        if (new_ring) {
+            audio_check_unlocked("swapping a ring");
+            std::lock_guard<std::mutex> render(g_render_mutex);
+            new_ring->played = old_ring->played;
+            new_ring->head = old_ring->head;
+            new_ring->fresh_until = old_ring->fresh_until;
+            for (auto &segment : g_players[id].segments)
+                if (segment == old_ring)
+                    segment = new_ring;
+        }
+        trace("ring    ch %d  pan or rate changed: ring %s in place", id,
+              new_ring ? "rebuilt" : "kept");
+        return;
+    }
     uint64_t sample_time = 0;
     bool have_time = node_sample_time(id, &sample_time);
     Job job;
@@ -1604,8 +1640,7 @@ extern "C" void host_audio_set_pan(int32_t id, int32_t pan) {
     reschedule_from_current(id, [pan](Channel &ch) {
         const bool changed = ch.pan_mb != pan;
         ch.pan_mb = pan;
-        if (!changed)
-            ch.playing = false; // nothing to redo
+        return changed;
     });
 }
 
@@ -1616,9 +1651,9 @@ extern "C" void host_audio_set_frequency(int32_t id, uint32_t hz) {
         // with, and stop overriding it.
         ch.rate_overridden = hz != 0;
         uint32_t rate = hz ? hz : ch.base_rate;
-        if (rate == ch.rate)
-            ch.playing = false; // nothing to redo
+        const bool changed = rate != ch.rate;
         ch.rate = rate;
+        return changed;
     });
 }
 
