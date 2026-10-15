@@ -25,6 +25,7 @@
 #include "d3d9_shader.h"
 #include "d3d9_ffp.h"
 #include "host_d9.h"
+#include "../platform/os.h"
 #include <unordered_map>
 #include <map>
 

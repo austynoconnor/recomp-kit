@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-14 19:50 CDT — Claude Opus 5.5: Browser memory cuts from
+  `giggity-bully` (a6252a0). The web build no longer zero-fills the guest
+  arena by hand, boot sets the arena up once (the loader does it), dead COM
+  objects are freed instead of kept forever, WebGPU destroys a retired
+  texture after the open encoder's submit, and RECOMP_D3D9_MEM=1 prints
+  the guest heap and D3D9 copies every 600 frames. Bully's browser tab
+  went from over 2.5 GB and growing to about 1.5 GB, flat.
+
 - 2026-10-14 17:35 CDT — Claude Opus 5.5: Two generic fixes from `giggity-swbf2`
   (df1e69c). (1) A DirectSound streaming buffer whose pan or frequency
   changed while playing looped a stale copy of its data forever (a constant
