@@ -30,6 +30,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <atomic>
+#include <deque>
 #include <map>
 #include <chrono>
 #include <condition_variable>
@@ -282,8 +284,13 @@ std::vector<std::string> split_path(const std::string &p) {
 
 } // namespace
 
+static std::atomic<uint64_t> g_dir_generation{0};
 void win32_invalidate_dir_cache() {
     dir_cache().clear();
+    g_dir_generation.fetch_add(1);
+}
+uint64_t win32_dir_cache_generation() {
+    return g_dir_generation.load();
 }
 
 const std::string &win32_game_dir() {
