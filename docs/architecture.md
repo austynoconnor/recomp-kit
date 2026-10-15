@@ -80,6 +80,14 @@ mouse (or, in `native` mode, into the DirectInput joystick and XInput devices
 in `dx/`), the overlay that draws it and the on-device editor. Everything but
 the overlay and the SDL glue is SDL-free and unit-tested in `controls_tests`.
 See `docs/superpowers/specs/2026-09-17-touch-controls-design.md`.
+`controls/gamepad_sdl.cpp` opens every pad and the game reads the one used
+last; an axis or button counts only after it has been seen at rest. On the
+web, `web/player/pad-filter.js` sits in front of SDL: it hides devices that
+are not pads (Bluetooth speakers and headsets Windows lists as controllers)
+and unmapped devices it does not know, rebuilds Microsoft's unmapped
+Bluetooth Xbox layouts as standard pads, and adds a stick dead zone
+(`?RECOMP_RAW_PADS=1` lets unknown devices through). `?debug=1` adds a
+"Copy diagnostics" button with the pad list, adapter and frame stats.
 `mods/options_menu.cpp` extends the original Options page and queues changes at
 guest-safe boundaries. `mods/game_settings.cpp` persists original graphics choices;
 `mods/settings.cpp` atomically persists host/mod settings in the selected profile.
