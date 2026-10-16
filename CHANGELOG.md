@@ -29,8 +29,6 @@
   loading the profile twice and leaving a black screen with only a Back
   button. Each call now returns at least one tick more than the last. New
   runtime_tests check: five calls in a row strictly increase.
-
-- 2026-10-15 01:00 CDT — Claude Opus 5.5: Game pads that move menus by
 - 2026-10-15 18:20 CDT — Claude Opus 5.5 (perf pass): browsers keep two
   display submissions in flight instead of three (from giggity-mgs2
   7c9fa01; RECOMP_HOST_PRESENT_FRAMES=3 restores three). A game held at its
