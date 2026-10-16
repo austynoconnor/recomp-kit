@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 2026-10-16 00:20 CDT — Claude Opus 5.5 (perf pass): QueryPerformanceCounter
+  no longer runs ahead of the clock. The never-repeat rule (12:26 entry)
+  added one 1 MHz unit for every read in the same millisecond, with no
+  ceiling, so a game spinning on the counter to pace its frames pushed it
+  ahead of real time: Metal Gear Solid 2 drew about 106 frames a second
+  instead of 60. The counter is
+  now 10 MHz, as Windows 10 reports, and the extra ticks stop short of the
+  next millisecond, so it still never repeats in normal use (up to 9 999
+  reads a millisecond) and never passes GetTickCount. New runtime_tests
+  check: 50 000 reads stay within GetTickCount's millisecond.
 - 2026-10-15 12:26 CDT — Claude Opus 5.5: QueryPerformanceCounter never
   returns the same value twice. It was host_millis()*1000, so two calls in one
   millisecond matched. Battlefront II's 30 Hz input tick (00413340) computes
@@ -12,6 +22,7 @@
   button. Each call now returns at least one tick more than the last. New
   runtime_tests check: five calls in a row strictly increase.
 
+- 2026-10-15 01:00 CDT — Claude Opus 5.5: Game pads that move menus by
 - 2026-10-15 18:20 CDT — Claude Opus 5.5 (perf pass): browsers keep two
   display submissions in flight instead of three (from giggity-mgs2
   7c9fa01; RECOMP_HOST_PRESENT_FRAMES=3 restores three). A game held at its
