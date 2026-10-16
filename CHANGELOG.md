@@ -31,7 +31,6 @@
   (W_HOSTIO), so render, audio and streaming threads keep going.
   A symbol map for the web link was tried and left out: with names kept,
   wasm-opt on MGS2's 180 MB module needed over 6 GB.
-- 2026-10-15 01:00 CDT — Claude Opus 5.5 (cherry-picked to giggity-mgs2 2026-10-15 11:05 CDT from giggity-d3d8 0448bf5): Game pads that move menus by
 - 2026-10-15 14:48 CDT — Claude Opus 5.5: cherry-picked giggity-d3d8 0448bf5
   (pad filter: skips non-pads such as a speaker bar with a stuck axis,
   Bluetooth Xbox layouts, last-used pad, rest calibration; diagnostics;
