@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- 2026-10-15 20:45 CDT — Claude Opus 5.5 (perf pass): winmm callback timers
+  run on their own guest thread, as Windows runs them (misc.cpp
+  mm_timer_thread, from giggity-nfsu2 c19a2da). They used to fire only when
+  the game pumped messages. Metal Gear Solid 2 and Resident Evil 4 set
+  timeSetEvent callbacks; while a game loads without pumping messages, a
+  timer it waits on did not fire until the load ended. Event-mode timers
+  still fire from the message loop.
+- 2026-10-15 12:26 CDT — Claude Opus 5.5: QueryPerformanceCounter never
+  returns the same value twice. It was host_millis()*1000, so two calls in one
+  millisecond matched. Battlefront II's 30 Hz input tick (00413340) computes
+  `now - last - 1` when now <= last, which wraps to 0xFFFFFFFF and gives a
+  ~4295-second time step. Its key-repeat timer then fired at once: one tap
+  typed two or three letters, and Enter on the profile screen ran twice,
+  loading the profile twice and leaving a black screen with only a Back
+  button. Each call now returns at least one tick more than the last. New
+  runtime_tests check: five calls in a row strictly increase.
+
+- 2026-10-15 01:00 CDT — Claude Opus 5.5: Game pads that move menus by
 - 2026-10-15 18:20 CDT — Claude Opus 5.5 (perf pass): browsers keep two
   display submissions in flight instead of three (from giggity-mgs2
   7c9fa01; RECOMP_HOST_PRESENT_FRAMES=3 restores three). A game held at its
