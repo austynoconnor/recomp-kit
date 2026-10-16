@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-16 00:45 CDT — Claude Opus 5.5 (perf pass): QueryPerformanceCounter
+  counts a microsecond clock (new host_micros: starts at host_millis() and
+  advances by the monotonic clock, performance.now() in a browser) instead
+  of GetTickCount's whole milliseconds. Crazy Taxi's frame limiter saw time
+  only in milliseconds and ran at 50 frames a second, its race timer at
+  0.83 of real time. A repeated read still gets one 100 ns tick more, never
+  reaching the next microsecond, so the counter neither repeats nor runs
+  ahead.
 - 2026-10-16 00:20 CDT — Claude Opus 5.5 (perf pass): QueryPerformanceCounter
   no longer runs ahead of the clock. The never-repeat rule (12:26 entry)
   added one 1 MHz unit for every read in the same millisecond, with no
