@@ -1900,7 +1900,7 @@ void k_TlsFree(X86 *c) {
 void k_QueryPerformanceFrequency(X86 *c) {
     uint32_t p = arg(c, 0);
     if (p) {
-        wr32(p, 1000000);
+        wr32(p, 10000000);
         wr32(p + 4, 0);
     }
     set_eax(c, 1);
@@ -1919,14 +1919,18 @@ void k_QueryPerformanceCounter(X86 *c) {
     host_note_cadence("QueryPerformanceCounter");
     uint32_t p = arg(c, 0);
     if (p) {
-        // Microseconds, at the frequency QueryPerformanceFrequency reports.
-        // It counted whole milliseconds before, so a frame limiter waiting for
-        // 33 333 ticks saw time arrive in 1000-tick steps. Never the same
-        // value twice: "now <= last" reads as a wrap in some games.
+        // Ten million ticks a second, as Windows 10 reports, over the
+        // microsecond clock (it counted whole milliseconds once, so a frame
+        // limiter waiting for 33 333 ticks saw time arrive in 1000-tick
+        // steps). Never the same value twice: "now <= last" reads as a wrap
+        // in some games. A repeat gets one 100 ns tick more, but never past
+        // the next microsecond: an unlimited step let a game spinning on the
+        // counter push it ahead of real time and run fast.
         static uint64_t last = 0;
-        uint64_t ticks = host_micros();
+        const uint64_t base = host_micros() * 10ull;
+        uint64_t ticks = base;
         if (ticks <= last)
-            ticks = last + 1;
+            ticks = last + 1 < base + 10ull ? last + 1 : last;
         last = ticks;
         wr32(p, (uint32_t)ticks);
         wr32(p + 4, (uint32_t)(ticks >> 32));

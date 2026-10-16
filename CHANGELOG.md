@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 2026-10-16 00:30 CDT — Claude Opus 5.5 (perf pass): QueryPerformanceCounter
+  no longer runs ahead of the clock. The never-repeat step (one counter unit
+  per repeated read, no ceiling) let a game spinning on the counter push it
+  ahead of real time; Metal Gear Solid 2 drew about 106 frames a second
+  instead of 60 with it. The counter is now 10 MHz, as Windows 10 reports,
+  over the microsecond clock, and a repeat's extra ticks stop short of the
+  next microsecond. New runtime_tests check: 50 000 reads stay within
+  GetTickCount's millisecond.
 - 2026-10-15 18:20 CDT — Claude Opus 5.5 (perf pass): browsers keep two
   display submissions in flight instead of three (from giggity-mgs2
   7c9fa01; RECOMP_HOST_PRESENT_FRAMES=3 restores three). A game held at its
