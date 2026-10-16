@@ -7,7 +7,8 @@
   per repeated read, no ceiling) let a game spinning on the counter push it
   ahead of real time; Metal Gear Solid 2 drew about 106 frames a second
   instead of 60 with it. The counter is now 10 MHz, as Windows 10 reports,
-  over the microsecond clock, and a repeat's extra ticks stop short of the
+  over a microsecond clock that advances by the monotonic clock (finer than
+  the wall clock in a browser), and a repeat's extra ticks stop short of the
   next microsecond. New runtime_tests check: 50 000 reads stay within
   GetTickCount's millisecond.
 - 2026-10-15 18:20 CDT — Claude Opus 5.5 (perf pass): browsers keep two
