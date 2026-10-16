@@ -45,6 +45,24 @@ uint32_t host_millis() {
         g_epoch_us = now_us();
     return (uint32_t)((now_us() - g_epoch_us) / 1000ull);
 }
+// A microsecond clock for QueryPerformanceCounter, on the same time line as
+// host_millis(): it starts at host_millis() and then advances by the
+// monotonic clock, whose resolution is far finer (performance.now() in a
+// browser, where the wall clock under host_millis() only has milliseconds).
+// A pinned clock, which only has milliseconds, stays pinned.
+bool host_time_source_is_pinned();
+uint64_t host_micros() {
+    const uint32_t ms = host_millis();
+    if (host_time_source_is_pinned())
+        return (uint64_t)ms * 1000ull;
+    static uint64_t mono0 = 0, us0 = 0;
+    const uint64_t mono = os_monotonic_ns();
+    if (!mono0) {
+        mono0 = mono;
+        us0 = (uint64_t)ms * 1000ull;
+    }
+    return us0 + (mono - mono0) / 1000ull;
+}
 void host_set_time_source(uint32_t (*fn)()) {
     g_time_source = fn;
 }
