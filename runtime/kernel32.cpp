@@ -1950,34 +1950,40 @@ void k_TlsFree(X86 *c) {
     set_eax(c, 1);
 }
 
-// One microsecond tick, driven by the same clock as GetTickCount so a guest
-// that mixes the two never sees them disagree.
+// Ten million ticks a second, as Windows 10 reports, driven by the same clock
+// as GetTickCount so a guest that mixes the two never sees them disagree.
 void k_QueryPerformanceFrequency(X86 *c) {
     uint32_t p = arg(c, 0);
     if (p) {
-        wr32(p, 1000000);
+        wr32(p, 10000000);
         wr32(p + 4, 0);
     }
     set_eax(c, 1);
 }
 
-// The counter never repeats a value. The clock under it moves in whole
-// milliseconds, but a real counter ticks millions of times a second, so two
-// reads never match there. Games compare 64-bit stamps with "now <= last
-// means it wrapped": Star Wars Battlefront II's 30 Hz input tick then took a
-// repeated stamp as a wrap of 2^32 ticks, saw 4295 seconds pass, and
-// auto-repeated every held key at once (double letters, a doubled Enter that
-// pushed two profile loads and left a black screen). A read in the same
-// millisecond as the last one returns one tick later instead. Only one guest
-// thread runs at a time, so the last value needs no lock.
+// The counter never repeats a value, and never runs ahead of the clock. The
+// clock under it moves in whole milliseconds; two reads in one millisecond
+// used to match, and games compare stamps with "now <= last means it
+// wrapped": Star Wars Battlefront II's 30 Hz input tick then saw 4295 seconds
+// pass and auto-repeated every held key (double letters, a doubled Enter that
+// left the profile screen black). A read in the same millisecond as the last
+// one returns one tick (100 ns) later. That step used to be a whole counter
+// unit of a 1 MHz counter with no ceiling, so a game spinning on the counter
+// to pace its frames (Metal Gear Solid 2 calls it thousands of times a
+// millisecond) pushed it ahead of real time and ran at over 100 frames a
+// second instead of 60. Now the extra ticks stop short of the next
+// millisecond: at most 9 999 reads a millisecond are told apart, and the
+// count never gets ahead of GetTickCount. Only one guest thread runs at a
+// time, so the last value needs no lock.
 void k_QueryPerformanceCounter(X86 *c) {
     host_note_cadence("QueryPerformanceCounter");
     uint32_t p = arg(c, 0);
     if (p) {
         static uint64_t last = 0;
-        uint64_t ticks = (uint64_t)host_millis() * 1000ull;
+        const uint64_t base = (uint64_t)host_millis() * 10000ull;
+        uint64_t ticks = base;
         if (ticks <= last)
-            ticks = last + 1;
+            ticks = last + 1 < base + 10000ull ? last + 1 : last;
         last = ticks;
         wr32(p, (uint32_t)ticks);
         wr32(p + 4, (uint32_t)(ticks >> 32));
