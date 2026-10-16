@@ -31,7 +31,6 @@
   (W_HOSTIO), so render, audio and streaming threads keep going.
   A symbol map for the web link was tried and left out: with names kept,
   wasm-opt on MGS2's 180 MB module needed over 6 GB.
-- 2026-10-15 01:00 CDT — Claude Opus 5.5 (cherry-picked to giggity-mgs2 2026-10-15 11:05 CDT from giggity-d3d8 0448bf5): Game pads that move menus by
 - 2026-10-15 12:26 CDT — Claude Opus 5.5: QueryPerformanceCounter never
   returns the same value twice. It was host_millis()*1000, so two calls in one
   millisecond matched. Battlefront II's 30 Hz input tick (00413340) computes
