@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- 2026-10-15 20:45 CDT — Claude Opus 5.5 (perf pass): winmm callback timers
+  run on their own guest thread, as Windows runs them (misc.cpp
+  mm_timer_thread, from giggity-nfsu2 c19a2da). They used to fire only when
+  the game pumped messages. Metal Gear Solid 2 and Resident Evil 4 set
+  timeSetEvent callbacks; while a game loads without pumping messages, a
+  timer it waits on did not fire until the load ended. Event-mode timers
+  still fire from the message loop.
 - 2026-10-15 12:26 CDT — Claude Opus 5.5: QueryPerformanceCounter never
   returns the same value twice. It was host_millis()*1000, so two calls in one
   millisecond matched. Battlefront II's 30 Hz input tick (00413340) computes
