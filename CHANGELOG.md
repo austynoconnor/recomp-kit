@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 2026-10-16 00:20 CDT — Claude Opus 5.5 (perf pass): QueryPerformanceCounter
+  no longer runs ahead of the clock. The never-repeat rule (12:26 entry)
+  added one 1 MHz unit for every read in the same millisecond, with no
+  ceiling, so a game spinning on the counter to pace its frames pushed it
+  ahead of real time: Metal Gear Solid 2 drew about 106 frames a second
+  instead of 60. The counter is
+  now 10 MHz, as Windows 10 reports, and the extra ticks stop short of the
+  next millisecond, so it still never repeats in normal use (up to 9 999
+  reads a millisecond) and never passes GetTickCount. New runtime_tests
+  check: 50 000 reads stay within GetTickCount's millisecond.
 - 2026-10-15 20:45 CDT — Claude Opus 5.5 (perf pass): winmm callback timers
   run on their own guest thread, as Windows runs them (misc.cpp
   mm_timer_thread, from giggity-nfsu2 c19a2da). They used to fire only when

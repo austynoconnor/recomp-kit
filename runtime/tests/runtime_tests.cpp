@@ -1261,8 +1261,8 @@ static void test_memory_shims_2(X86 *c) {
 
     uint32_t li = scratch_block(8);
     check(call_import(c, "KERNEL32.dll", "QueryPerformanceFrequency", {li}) == 1 &&
-              rd32(li) == 1000000,
-          "QueryPerformanceFrequency reports 1 MHz");
+              rd32(li) == 10000000,
+          "QueryPerformanceFrequency reports 10 MHz");
     check(call_import(c, "KERNEL32.dll", "QueryPerformanceCounter", {li}) == 1,
           "QueryPerformanceCounter");
     // Back-to-back reads land in the same millisecond; the counter must still
@@ -1277,6 +1277,16 @@ static void test_memory_shims_2(X86 *c) {
             prev = now;
         }
         check(rising, "QueryPerformanceCounter never repeats a value");
+        // A game spinning on the counter must not push it ahead of the clock:
+        // 50 000 reads stay within the millisecond GetTickCount reports.
+        bool behind = true;
+        for (int i = 0; i < 50000; ++i) {
+            call_import(c, "KERNEL32.dll", "QueryPerformanceCounter", {li});
+            uint64_t now = rd32(li) | ((uint64_t)rd32(li + 4) << 32);
+            uint64_t ms = call_import(c, "KERNEL32.dll", "GetTickCount", {});
+            behind = behind && now < (ms + 1) * 10000ull;
+        }
+        check(behind, "QueryPerformanceCounter never runs ahead of GetTickCount");
     }
 
     // The wide environment block must be UTF-16, not ANSI bytes.
