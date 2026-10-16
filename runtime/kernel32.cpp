@@ -1792,8 +1792,8 @@ void k_TlsFree(X86 *c) {
     set_eax(c, 1);
 }
 
-// Ten million ticks a second, as Windows 10 reports, driven by the same clock
-// as GetTickCount so a guest that mixes the two never sees them disagree.
+// Ten million ticks a second, as Windows 10 reports, on the same time line as
+// GetTickCount so a guest that mixes the two never sees them disagree.
 void k_QueryPerformanceFrequency(X86 *c) {
     uint32_t p = arg(c, 0);
     if (p) {
@@ -1803,29 +1803,29 @@ void k_QueryPerformanceFrequency(X86 *c) {
     set_eax(c, 1);
 }
 
-// The counter never repeats a value, and never runs ahead of the clock. The
-// clock under it moves in whole milliseconds; two reads in one millisecond
-// used to match, and games compare stamps with "now <= last means it
-// wrapped": Star Wars Battlefront II's 30 Hz input tick then saw 4295 seconds
-// pass and auto-repeated every held key (double letters, a doubled Enter that
-// left the profile screen black). A read in the same millisecond as the last
-// one returns one tick (100 ns) later. That step used to be a whole counter
-// unit of a 1 MHz counter with no ceiling, so a game spinning on the counter
-// to pace its frames (Metal Gear Solid 2 calls it thousands of times a
-// millisecond) pushed it ahead of real time and ran at over 100 frames a
-// second instead of 60. Now the extra ticks stop short of the next
-// millisecond: at most 9 999 reads a millisecond are told apart, and the
-// count never gets ahead of GetTickCount. Only one guest thread runs at a
-// time, so the last value needs no lock.
+// The counter never repeats a value, never runs ahead of the clock, and
+// moves between milliseconds. It used to be GetTickCount's millisecond times
+// 1000: a frame limiter waiting 16.7 ms then saw time only in whole
+// milliseconds and, with the Sleep(1) between its reads, ran Crazy Taxi at
+// 50 frames a second, its race timer at 0.83 of real time. Two reads in one
+// millisecond also matched, and games compare stamps with "now <= last means
+// it wrapped": Star Wars Battlefront II saw 4295 seconds pass and
+// auto-repeated every held key. A first fix added one unit per repeated
+// read with no ceiling, so a game spinning on the counter (Metal Gear Solid 2,
+// thousands of reads a millisecond) pushed it ahead of real time and drew
+// 106 frames a second instead of 60. Now it counts the microsecond clock
+// (host_micros), and a repeat gets one 100 ns tick more but never reaches the
+// next microsecond. Only one guest thread runs at a time, so the last value
+// needs no lock.
 void k_QueryPerformanceCounter(X86 *c) {
     host_note_cadence("QueryPerformanceCounter");
     uint32_t p = arg(c, 0);
     if (p) {
         static uint64_t last = 0;
-        const uint64_t base = (uint64_t)host_millis() * 10000ull;
+        const uint64_t base = host_micros() * 10ull;
         uint64_t ticks = base;
         if (ticks <= last)
-            ticks = last + 1 < base + 10000ull ? last + 1 : last;
+            ticks = last + 1 < base + 10ull ? last + 1 : last;
         last = ticks;
         wr32(p, (uint32_t)ticks);
         wr32(p + 4, (uint32_t)(ticks >> 32));
