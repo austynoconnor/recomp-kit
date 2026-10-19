@@ -4,6 +4,7 @@ import importlib.util
 import gzip
 import json
 import hashlib
+import gzip
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -199,6 +200,7 @@ class WebLauncherTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join()
+
     def test_core_suite(self):
         node = shutil.which("node")
         if not node:

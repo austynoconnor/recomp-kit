@@ -286,3 +286,41 @@ def test_incremental_build_refreshes_runtime_header_without_translation(tmp_path
     build.main()
     build.main()
     assert timestamps[0] == timestamps[1]  # unchanged headers do not rebuild every chunk
+
+
+def test_regeneration_keeps_identical_shards_incremental_and_publishes_changes(tmp_path):
+    import os
+    gen = tmp_path / "recomp/gen"
+    gen.mkdir(parents=True)
+    (gen / "unchanged.c").write_text("keep")
+    (gen / "changed.c").write_text("old!")
+    (gen / "removed.c").write_text("gone")
+    old_time = 1_700_000_000_000_000_000
+    os.utime(gen / "unchanged.c", ns=(old_time, old_time))
+    os.utime(gen / "changed.c", ns=(old_time, old_time))
+    def translate(stage):
+        (stage / "unchanged.c").write_text("keep")
+        (stage / "changed.c").write_text("new!")
+        (stage / "added.c").write_text("added")
+        (stage / "symbols.json").write_text('{"version":2}')
+    build.publish_generated(tmp_path, translate)
+    assert (gen / "unchanged.c").stat().st_mtime_ns == old_time
+    assert (gen / "changed.c").stat().st_mtime_ns != old_time
+    assert (gen / "changed.c").read_text() == "new!"
+    assert (gen / "added.c").read_text() == "added"
+    assert not (gen / "removed.c").exists()
+    assert (tmp_path / "recomp/symbols.json").read_text() == '{"version":2}'
+    assert not (tmp_path / "recomp/gen.old").exists()
+
+
+def test_failed_regeneration_keeps_the_previous_generation(tmp_path):
+    gen = tmp_path / "recomp/gen"
+    gen.mkdir(parents=True)
+    (gen / "table.c").write_text("working")
+    def translate(stage):
+        (stage / "table.c").write_text("partial")
+        raise RuntimeError("translation failed")
+    with pytest.raises(RuntimeError, match="translation failed"):
+        build.publish_generated(tmp_path, translate)
+    assert (gen / "table.c").read_text() == "working"
+    assert not list((tmp_path / "recomp").glob("gen.new.*"))

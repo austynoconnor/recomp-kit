@@ -854,6 +854,10 @@ static void file_drop_read_ahead(const std::string &path) {
 bool sched_host_io_begin();
 void sched_host_io_end();
 
+// Host read time on this thread so far; ReadFile compares it before and after
+// to name reads slow enough to be a hitch without reading the clock itself.
+static __thread uint64_t t_host_read_ns = 0;
+
 static int64_t host_read(int fd, uint8_t *dst, size_t want, uint64_t *spent_ns) {
     RecompStallScope stall(RECOMP_STALL_FILE);
     const uint64_t from = os_monotonic_ns();
@@ -864,7 +868,9 @@ static int64_t host_read(int fd, uint8_t *dst, size_t want, uint64_t *spent_ns) 
     int64_t got = os_fd_read(fd, dst, want);
     if (released)
         sched_host_io_end();
-    *spent_ns += os_monotonic_ns() - from;
+    const uint64_t spent = os_monotonic_ns() - from;
+    *spent_ns += spent;
+    t_host_read_ns += spent;
     return got;
 }
 
@@ -907,6 +913,8 @@ static int64_t file_read(HObj *o, uint8_t *dst, uint32_t want) {
     return (int64_t)n;
 }
 
+extern __thread size_t t_self; // defined with the scheduler below
+
 void k_ReadFile(X86 *c) {
     HObj *o = handle_get(arg(c, 0), H_FILE);
     uint32_t buf = arg(c, 1), want = arg(c, 2), pread = arg(c, 3);
@@ -926,10 +934,25 @@ void k_ReadFile(X86 *c) {
         set_eax(c, 0);
         return;
     }
+    const uint64_t read_before = t_host_read_ns;
     int64_t n = file_read(o, g_mem + buf, want);
+    const uint64_t spent_ms = (t_host_read_ns - read_before) / 1000000;
     static const bool trace_files = recomp_env("TRACE_FILES") != nullptr;
     if (trace_files)
         LOGW("file: read handle=%08x want=%u got=%lld", arg(c, 0), want, (long long)n);
+    // A read that waits long enough to show as a hitch names itself, so a
+    // stall report ("file 830 ms") can be traced to the file, the offset,
+    // and the guest thread that waited (thread 0 is the game's main thread;
+    // every guest thread waits while one holds the baton in a read).
+    static int slow_reported = 0;
+    if (spent_ms >= 40 && slow_reported < 400) {
+        slow_reported++;
+        // The descriptor ends where the guest's read ended.
+        const int64_t at = os_fd_seek(o->fd, 0, OS_SEEK_CUR) - (n > 0 ? n : 0);
+        fprintf(stderr, "[stall] slow read: %s at %lld, %u bytes, %llu ms, guest thread %zu\n",
+                o->guest_name.c_str(), (long long)at, want, (unsigned long long)spent_ms,
+                (size_t)t_self);
+    }
     if (n < 0) {
         set_last_error(ERROR_ACCESS_DENIED_);
         if (pread)
@@ -1250,6 +1273,71 @@ uint32_t call_dll_entry(X86 *c, const LoaderModule &m, uint32_t reason) {
     return result;
 }
 
+// A pseudo module is a DLL the runtime serves with shims rather than maps.
+// Its handle points at a small image in the guest heap: DOS and PE headers
+// and an export directory naming every shim for that DLL, each export's
+// address its trampoline. A guest that reads the module's headers or walks
+// its exports by hand (the Microsoft Layer for Unicode does, to find out
+// whether it runs on NT) then sees what it would on Windows, instead of
+// reading outside the guest arena. The RVAs of the trampolines wrap below
+// the image, which 32-bit arithmetic undoes. No sections, nothing else.
+uint32_t pseudo_module_image(const std::string &name) {
+    auto exports = imports_exports_of(name.c_str());
+    const uint32_t n = (uint32_t)exports.size();
+    const uint32_t kNt = 0x40, kExp = 0x140, kDirSize = 40;
+    uint32_t funcs = kExp + kDirSize, names = funcs + 4 * n, ords = names + 4 * n;
+    uint32_t strings = ords + 2 * n;
+    uint32_t total = strings + (uint32_t)name.size() + 1;
+    for (const auto &e : exports)
+        total += (uint32_t)e.first.size() + 1;
+    uint32_t size = (total + 0xfffu) & ~0xfffu;
+    uint32_t base = heap_alloc(size, true, 0x10000);
+    if (!base)
+        return 0;
+    wr16(base, 0x5a4d); // MZ
+    wr32(base + 0x3c, kNt);
+    wr32(base + kNt, 0x00004550); // "PE", two zero bytes
+    uint32_t fh = base + kNt + 4;
+    wr16(fh, 0x014c);      // i386
+    wr16(fh + 16, 0xe0);   // SizeOfOptionalHeader
+    wr16(fh + 18, 0x2102); // executable, 32-bit, DLL
+    uint32_t oh = fh + 20;
+    wr16(oh, 0x010b);      // PE32
+    wr32(oh + 28, base);   // ImageBase
+    wr32(oh + 32, 0x1000); // SectionAlignment
+    wr32(oh + 36, 0x200);  // FileAlignment
+    wr16(oh + 40, 5);      // OS 5.1
+    wr16(oh + 42, 1);
+    wr16(oh + 48, 5); // subsystem 5.1
+    wr16(oh + 50, 1);
+    wr32(oh + 56, size);   // SizeOfImage
+    wr32(oh + 60, 0x1000); // SizeOfHeaders
+    wr16(oh + 68, 3);      // console subsystem, as system DLLs say
+    wr32(oh + 92, 16);     // NumberOfRvaAndSizes
+    wr32(oh + 96, kExp);   // export directory
+    wr32(oh + 100, total - kExp);
+    uint32_t at = strings;
+    gm_put_str(base + at, name.c_str(), (uint32_t)name.size() + 1);
+    uint32_t dir = base + kExp;
+    wr32(dir + 12, at); // Name
+    wr32(dir + 16, 1);  // ordinal base
+    wr32(dir + 20, n);
+    wr32(dir + 24, n);
+    wr32(dir + 28, funcs);
+    wr32(dir + 32, names);
+    wr32(dir + 36, ords);
+    at += (uint32_t)name.size() + 1;
+    for (uint32_t i = 0; i < n; ++i) {
+        wr32(base + funcs + 4 * i, exports[i].second - base);
+        wr32(base + names + 4 * i, at);
+        wr16(base + ords + 2 * i, (uint16_t)i);
+        gm_put_str(base + at, exports[i].first.c_str(), (uint32_t)exports[i].first.size() + 1);
+        at += (uint32_t)exports[i].first.size() + 1;
+    }
+    LOGV("pseudo module %s: %u exports at %08x", name.c_str(), n, base);
+    return base;
+}
+
 void load_library_named(X86 *c, const std::string &module_name) {
     std::string name = library_name(module_name);
     auto it = modules().find(name);
@@ -1302,8 +1390,11 @@ void load_library_named(X86 *c, const std::string &module_name) {
         set_eax(c, 0);
         return;
     }
-    uint32_t h = g_next_module;
-    g_next_module += 0x10000;
+    uint32_t h = pseudo_module_image(name);
+    if (!h) {
+        h = g_next_module;
+        g_next_module += 0x10000;
+    }
     modules()[name] = h;
     LOGV("LoadLibrary(\"%s\") -> pseudo module %08x", name.c_str(), h);
     set_eax(c, h);
@@ -1486,7 +1577,7 @@ void k_GetSystemInfo(X86 *c) {
     wr32(p + 0, 0);           // wProcessorArchitecture = INTEL, wReserved
     wr32(p + 4, 4096);        // dwPageSize
     wr32(p + 8, IMAGE_BASE);  // lpMinimumApplicationAddress
-    wr32(p + 12, HEAP_LIMIT); // lpMaximumApplicationAddress
+    wr32(p + 12, heap_highest_limit()); // lpMaximumApplicationAddress
     wr32(p + 16, 1);          // dwActiveProcessorMask
     wr32(p + 20, 1);          // dwNumberOfProcessors
     wr32(p + 24, 586);        // dwProcessorType = PROCESSOR_INTEL_PENTIUM
@@ -1850,6 +1941,18 @@ void k_InterlockedExchange(X86 *c) {
     wr32(p, v);
     set_eax(c, old);
 }
+void k_InterlockedCompareExchange(X86 *c) {
+    uint32_t p = arg(c, 0), exchange = arg(c, 1), comparand = arg(c, 2);
+    uint32_t old = rd32(p);
+    if (old == comparand)
+        wr32(p, exchange);
+    set_eax(c, old);
+}
+// Agrees with recomp_cpuid: no MMX, SSE or other extension is reported, so
+// the CRT and the game keep to the x87 paths the translator covers.
+void k_IsProcessorFeaturePresent(X86 *c) {
+    set_eax(c, 0);
+}
 
 // CRITICAL_SECTION is 24 bytes. The fields the guest can read are kept where
 // Windows keeps them: LockCount at +4, RecursionCount at +8, OwningThread at
@@ -1910,6 +2013,7 @@ void k_ReleaseSemaphore(X86 *c) {
         return;
     }
     o->count += n;
+    sched_wake_all(); // a thread waiting on the semaphore can take it now
     set_eax(c, 1);
 }
 
@@ -2035,6 +2139,10 @@ struct GuestThread {
     double deadline = 0.0;    // monotonic seconds
     uint32_t wait_result = 0; // what the wait returns once released
     double last_yield = 0.0;  // for the bounded scheduling checkpoint
+    // The last import this thread called and where from, for
+    // RECOMP_SCHED_REPORT (sched_note_import).
+    uint32_t last_import = 0xffffffffu, last_ret = 0;
+    uint64_t import_calls = 0;
     jmp_buf exit_jmp;
     uint32_t exit_code = 0;
     // TerminateThread from another thread: this one ends with exit_code the
@@ -2972,6 +3080,71 @@ void sched_host_io_end() {
 
 } // namespace
 
+const char *imports_trampoline_desc(uint32_t idx);
+
+// Notes each import a guest thread calls. With RECOMP_SCHED_REPORT=<seconds>
+// every thread's state and last import is logged that often, which is how a
+// hang that keeps calling into the runtime (a spin on a flag another thread
+// should set) is told from a wait, and which thread is doing which - on the
+// web, where there is no debugger to attach.
+void sched_note_import(X86 *c, uint32_t idx) {
+    uint32_t ret = rd32(c->r[R_ESP]);
+    if (!sched_is_guest_thread())
+        return;
+    GuestThread *me = cur_thread();
+    me->last_import = idx;
+    me->last_ret = ret;
+    ++me->import_calls;
+    static const double period = [] {
+        const char *e = recomp_env("SCHED_REPORT");
+        return e ? atof(e) : 0.0;
+    }();
+    if (period <= 0.0)
+        return;
+    static double next = 0.0;
+    double now = sched_now();
+    if (now < next)
+        return;
+    bool first = next == 0.0;
+    next = now + period;
+    if (first)
+        return;
+    // The caller holds the baton, so no other guest thread changes the list.
+    for (GuestThread *t : threads())
+        LOGW("[sched] thread %zu id %u%s%s%s%s: %llu imports, last %s from %08x%s", t->index,
+             t->id, t->is_main ? " main" : "", t->finished ? " finished" : "",
+             t->blocked ? " blocked on " : "", t->blocked ? wait_kind_name(t->wait_kind) : "",
+             (unsigned long long)t->import_calls,
+             t->last_import == 0xffffffffu ? "-" : imports_trampoline_desc(t->last_import),
+             t->last_ret, t == me ? " (reporting)" : "");
+    // The reporting thread's guest stack, read for return addresses: values
+    // inside the image that a CALL instruction precedes. A heuristic, but
+    // enough to name the loop a spinning thread is in.
+    {
+        char line[400];
+        int n = snprintf(line, sizeof line, "[sched] thread %zu stack:", me->index);
+        uint32_t esp = c->r[R_ESP];
+        int found = 0;
+        for (uint32_t a = esp; a < esp + 4096 && found < 16 && n < (int)sizeof line - 10; a += 4) {
+            if (!gm_valid(a, 4))
+                break;
+            uint32_t v = rd32(a);
+            if (v < RECOMP_IMAGE_BASE + 0x1000u || v >= RECOMP_IMAGE_BASE + 0x00400000u ||
+                !gm_valid(v - 6, 6))
+                continue;
+            bool call = rd8(v - 5) == 0xe8 || (rd8(v - 6) == 0xff && rd8(v - 5) == 0x15) ||
+                        (rd8(v - 2) == 0xff && (rd8(v - 1) & 0x38) == 0x10) ||
+                        (rd8(v - 3) == 0xff && (rd8(v - 2) & 0x38) == 0x10) ||
+                        (rd8(v - 6) == 0xff && (rd8(v - 5) & 0x38) == 0x10);
+            if (!call)
+                continue;
+            n += snprintf(line + n, sizeof line - n, " %08x", v);
+            ++found;
+        }
+        LOGW("%s", line);
+    }
+}
+
 void sched_checkpoint() {
     // Drain first and unconditionally: a guest with no worker threads never
     // reaches the scheduler proper, and a signal it never applied is a wait
@@ -3876,6 +4049,27 @@ void k_lstrlenA(X86 *c) {
     set_eax(c, (uint32_t)gm_str(arg(c, 0)).size());
 }
 
+// lstrcmpiA: case-insensitive, ASCII folding; the sign is what callers test.
+void k_lstrcmpiA(X86 *c) {
+    std::string a = gm_str(arg(c, 0)), b = gm_str(arg(c, 1));
+    int r = 0;
+    for (size_t i = 0;; ++i) {
+        unsigned char x = i < a.size() ? (unsigned char)a[i] : 0;
+        unsigned char y = i < b.size() ? (unsigned char)b[i] : 0;
+        if (x >= 'A' && x <= 'Z')
+            x += 32;
+        if (y >= 'A' && y <= 'Z')
+            y += 32;
+        if (x != y) {
+            r = x < y ? -1 : 1;
+            break;
+        }
+        if (!x)
+            break;
+    }
+    set_eax(c, (uint32_t)r);
+}
+
 void k_lstrcpyA(X86 *c) {
     uint32_t d = arg(c, 0);
     std::string s = gm_str(arg(c, 1));
@@ -4511,7 +4705,23 @@ void create_file_named(X86 *c, const std::string &name) {
     set_eax(c, h);
 }
 
+// A wildcard or another character no file name may hold makes Windows fail
+// a path query with ERROR_INVALID_NAME (123) before looking at the disk. The
+// Microsoft Layer for Unicode relies on it: GetFileAttributesW(L"???.???")
+// failing that way is how it knows it runs on NT (Windows 9x answers
+// ERROR_CALL_NOT_IMPLEMENTED); any other error and it takes the 9x path. A
+// leading \\?\ or \\.\ is a prefix, not part of the name.
+bool path_has_invalid_name_chars(const std::string &name) {
+    size_t from = (name.rfind("\\\\?\\", 0) == 0 || name.rfind("\\\\.\\", 0) == 0) ? 4 : 0;
+    return name.find_first_of("?*<>|\"", from) != std::string::npos;
+}
+
 void get_file_attributes_named(X86 *c, const std::string &name) {
+    if (path_has_invalid_name_chars(name)) {
+        set_last_error(123); // ERROR_INVALID_NAME
+        set_eax(c, 0xffffffffu);
+        return;
+    }
     std::string host = win32_host_path(name);
     OsStat st{};
     if (host.empty() || os_stat(host.c_str(), &st) != 0) {
@@ -4660,6 +4870,9 @@ void find_first_named(X86 *c, const std::string &pattern, bool wide) {
                 o.match_paths.push_back(host_dir + "/" + kv.second);
             }
     }
+    if (recomp_env("TRACE_FILES"))
+        LOGW("file: find \"%s\" -> %zu match(es)%s%s", pattern.c_str(), o.matches.size(),
+             o.matches.empty() ? "" : ", first ", o.matches.empty() ? "" : o.matches[0].c_str());
     if (o.matches.empty()) {
         handles().erase(h);
         set_last_error(ERROR_FILE_NOT_FOUND_);
@@ -4814,6 +5027,11 @@ void get_file_attributes_ex_named(X86 *c, const std::string &name) {
         set_eax(c, 0);
         return;
     }
+    if (path_has_invalid_name_chars(name)) {
+        set_last_error(123); // ERROR_INVALID_NAME
+        set_eax(c, 0);
+        return;
+    }
     std::string host = win32_host_path(name);
     OsStat st{};
     if (host.empty() || os_stat(host.c_str(), &st) != 0) {
@@ -4887,9 +5105,16 @@ void open_mutex_named(X86 *c, const std::string &name) {
     set_eax(c, 0);
 }
 
+// The program path is quoted when it holds a space, as Explorer and a
+// shortcut launch it, so the CRT's argv[0] is the whole path. Unquoted, a
+// game that reads its arguments takes the words of "C:\Program Files\..."
+// as switches: Star Wars Battlefront II read the last one as a mission name
+// and quit, unable to open MISSION\II\GameData\BattlefrontII.exe.lvl.
 void get_command_line(X86 *c) {
     if (!g_cmdline_addr) {
         std::string line = RECOMP_GUEST_ROOT "\\" RECOMP_EXECUTABLE;
+        if (line.find(' ') != std::string::npos)
+            line = "\"" + line + "\"";
         if (const char *extra = recomp_env("GUEST_ARGS"); extra && *extra)
             line += std::string(" ") + extra;
         g_cmdline_addr = guest_strdup(line.c_str());
@@ -5196,6 +5421,8 @@ const ImportShim g_kernel32_shims[] = {
     {"KERNEL32.dll", "InterlockedIncrement", 1, k_InterlockedIncrement},
     {"KERNEL32.dll", "InterlockedDecrement", 1, k_InterlockedDecrement},
     {"KERNEL32.dll", "InterlockedExchange", 2, k_InterlockedExchange},
+    {"KERNEL32.dll", "InterlockedCompareExchange", 3, k_InterlockedCompareExchange},
+    {"KERNEL32.dll", "IsProcessorFeaturePresent", 1, k_IsProcessorFeaturePresent},
     {"KERNEL32.dll", "InitializeCriticalSection", 1, k_InitializeCriticalSection},
     {"KERNEL32.dll", "EnterCriticalSection", 1, k_EnterCriticalSection},
     {"KERNEL32.dll", "LeaveCriticalSection", 1, k_LeaveCriticalSection},
@@ -5232,6 +5459,7 @@ const ImportShim g_kernel32_shims[] = {
     // strings, code pages, locale
     {"KERNEL32.dll", "lstrlenA", 1, k_lstrlenA},
     {"KERNEL32.dll", "lstrcpyA", 2, k_lstrcpyA},
+    {"KERNEL32.dll", "lstrcmpiA", 2, k_lstrcmpiA},
     {"KERNEL32.dll", "lstrcatA", 2, k_lstrcatA},
     {"KERNEL32.dll", "IsDBCSLeadByte", 1, k_IsDBCSLeadByte},
     {"KERNEL32.dll", "GetACP", 0, k_GetACP},

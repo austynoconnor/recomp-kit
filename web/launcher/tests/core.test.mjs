@@ -157,6 +157,32 @@ test("import, status, resume and wrong versions", async () => {
   assert.ok(tight.needed > tight.free);
 });
 
+test("interrupted or malformed import journals recover without erasing other files", async () => {
+  for (const journal of ['{"files":', '{"files":null}', '{"files":[]}']) {
+    const store = new MemoryStore();
+    await store.writeText(MANIFEST, journal);
+    await store.writeText("unrelated.txt", "keep me");
+    assert.equal((await gameStatus(game, store)).state, "notFound");
+    const result = await importGame(game, memorySource(install()), store);
+    assert.equal(result.result, "done");
+    assert.equal((await gameStatus(game, store)).state, "ready");
+    assert.equal(await store.readText("unrelated.txt"), "keep me");
+  }
+
+  const store = new MemoryStore();
+  await importGame(game, memorySource(install()), store);
+  const journal = JSON.parse(await store.readText(MANIFEST));
+  journal.files["DATA/sprites.bin"].size = "10000";
+  journal.files["../outside"] = { size: 1, mtime: 1000 };
+  await store.writeText(MANIFEST, JSON.stringify(journal));
+  const source = memorySource(install());
+  const result = await importGame(game, source, store);
+  assert.equal(result.result, "done");
+  assert.equal(result.copied, 1);
+  assert.equal(source.reads, 1);
+  assert.equal((await gameStatus(game, store)).files, 4);
+});
+
 test("zip read (stored and deflate) and write", async () => {
   const { deflateRawSync } = await import("node:zlib");
   // A deflated archive built by hand, beside zipWrite's stored ones.

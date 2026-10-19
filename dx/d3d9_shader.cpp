@@ -27,7 +27,24 @@ int operand_count(uint32_t op, uint32_t major, uint32_t minor, bool pixel) {
     case OP_EXPP:
     case OP_LOGP:
     case OP_TEXDP3:
+    case OP_TEXBEM:
+    case OP_TEXBEML:
+    case OP_TEXREG2AR:
+    case OP_TEXREG2GB:
+    case OP_TEXREG2RGB:
+    case OP_TEXM3X2PAD:
+    case OP_TEXM3X2TEX:
+    case OP_TEXM3X3PAD:
+    case OP_TEXM3X3TEX:
+    case OP_TEXM3X3VSPEC:
+    case OP_TEXDP3TEX:
+    case OP_TEXM3X2DEPTH:
         return 2;
+    case OP_TEXDEPTH:
+        return 1;
+    case OP_TEXM3X3SPEC:
+    case OP_BEM:
+        return 3;
     case OP_ADD:
     case OP_SUB:
     case OP_MUL:
@@ -259,6 +276,59 @@ Program load(const std::vector<uint8_t> &code) {
 }
 
 } // namespace
+
+bool samples_destination_stage(uint32_t op) {
+    switch (op) {
+    case OP_TEX:
+    case OP_TEXBEM:
+    case OP_TEXBEML:
+    case OP_TEXREG2AR:
+    case OP_TEXREG2GB:
+    case OP_TEXREG2RGB:
+    case OP_TEXM3X2TEX:
+    case OP_TEXM3X3TEX:
+    case OP_TEXM3X3SPEC:
+    case OP_TEXM3X3VSPEC:
+    case OP_TEXDP3TEX:
+        return true;
+    default:
+        return false;
+    }
+}
+
+size_t code_size(const uint8_t *code, size_t max_bytes) {
+    size_t n = max_bytes / 4;
+    auto tok = [&](size_t i) {
+        return (uint32_t)(code[i * 4] | code[i * 4 + 1] << 8 | code[i * 4 + 2] << 16 |
+                          (uint32_t)code[i * 4 + 3] << 24);
+    };
+    if (!code || n < 2)
+        return 0;
+    uint32_t version = tok(0);
+    if ((version >> 16) != 0xffff && (version >> 16) != 0xfffe)
+        return 0;
+    bool pixel = (version >> 16) == 0xffff;
+    uint32_t major = (version >> 8) & 0xff, minor = version & 0xff;
+    size_t i = 1;
+    while (i < n) {
+        uint32_t t = tok(i), op = t & 0xffff;
+        if (op == OP_END)
+            return (i + 1) * 4;
+        if (op == OP_COMMENT) {
+            i += 1 + ((t >> 16) & 0x7fff);
+            continue;
+        }
+        if (op == OP_PHASE) {
+            ++i;
+            continue;
+        }
+        int count = operand_count(op, major, minor, pixel);
+        if (count < 0 && major < 2)
+            return 0;
+        i += 1 + (major >= 2 ? ((t >> 24) & 0xf) : (size_t)count);
+    }
+    return 0;
+}
 
 uint64_t code_key(const uint8_t *code, size_t size) {
     uint64_t h = 1469598103934665603ull;

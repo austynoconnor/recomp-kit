@@ -8,6 +8,7 @@
 
 // Defined in kernel32.cpp with the scheduler.
 void sched_checkpoint();
+void sched_note_import(X86 *c, uint32_t idx);
 #include "memory.h"
 
 #include <map>
@@ -238,6 +239,22 @@ uint32_t imports_resolve(const char *dll, const char *name) {
                                     ri->second.argc_stdcall);
 }
 
+std::vector<std::pair<std::string, uint32_t>> imports_exports_of(const char *dll) {
+    std::vector<std::pair<std::string, uint32_t>> out;
+    std::string prefix = key_of(dll, nullptr);
+    std::vector<std::string> names;
+    for (auto it = registry().lower_bound(prefix);
+         it != registry().end() && it->first.compare(0, prefix.size(), prefix) == 0; ++it) {
+        std::string name = it->first.substr(prefix.size());
+        if (!name.empty() && name[0] != '#')
+            names.push_back(name);
+    }
+    for (const std::string &name : names)
+        if (uint32_t t = imports_resolve(dll, name.c_str()))
+            out.emplace_back(name, t);
+    return out;
+}
+
 bool imports_serves_module(const char *dll) {
     if (!dll || !*dll)
         return false;
@@ -401,6 +418,12 @@ void imports_call_leaves_surfaces() {
     --g_import_calls;
 }
 
+// The name a trampoline was allocated under ("KERNEL32.dll!Sleep"), for
+// diagnostics; "?" past the end.
+const char *imports_trampoline_desc(uint32_t idx) {
+    return idx < tramps().size() ? tramps()[idx].desc.c_str() : "?";
+}
+
 bool imports_dispatch(X86 *c, uint32_t target) {
     if (!imports_is_trampoline(target))
         return false;
@@ -412,6 +435,7 @@ bool imports_dispatch(X86 *c, uint32_t target) {
     // runs before the shim so the guest state is a consistent call boundary -
     // except at an atomic import, and inside a sched_atomic_enter stretch.
     uint32_t idx = (target - TRAMP_BASE) / TRAMP_STRIDE;
+    sched_note_import(c, idx);
     if (idx >= tramps().size() || !tramps()[idx].atomic)
         sched_checkpoint();
     if (idx >= tramps().size()) {
@@ -619,6 +643,7 @@ void imports_init() {
     kernel32_wide_register();
     oleaut32_register();
     misc_dlls_register();
+    compat_extra_register();
     comctl32_register();
     media_foundation_register();
     imports_register(g_user32_shims, g_user32_shim_count);

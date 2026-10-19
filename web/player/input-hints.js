@@ -9,6 +9,58 @@ export function controllerLabels(id = "") {
            confirm: "A / bottom button", back: "B / right button" };
 }
 
+// Actions are supplied by the game, while bindings come from its native mapped
+// pad configuration. Face-button position must not imply a menu action.
+export function inputHintText(id, config) {
+  const labels = id === null ? null : controllerLabels(id);
+  if (typeof config?.keyboard === "string" || typeof config?.controller === "string")
+    return hintText(labels, config);
+  if (!config?.actions || !Object.keys(config.actions).length)
+    return labels ? `${labels.name} · D-pad: browse · ${labels.confirm}: confirm · ${labels.back}: back · Use keyboard to type names`
+      : "Keyboard · Arrow keys: browse · Enter: confirm · Esc: back · Type names · Backspace: delete";
+  const playstation = labels?.name.startsWith("PlayStation");
+  const nintendo = labels?.name.startsWith("Nintendo");
+  const buttons = playstation ? {cross:"✕",circle:"○",square:"□",triangle:"△",r2:"R2",l2:"L2",r1:"R1",l1:"L1",select:"Select",start:"Options"}
+    : nintendo ? {cross:"B",circle:"A",square:"Y",triangle:"X",r2:"ZR",l2:"ZL",r1:"R",l1:"L",select:"−",start:"+"}
+    : {cross:"A",circle:"B",square:"X",triangle:"Y",r2:"RT",l2:"LT",r1:"RB",l1:"LB",select:labels?.name === "Xbox controller" ? "View" : "Back",start:labels?.name === "Xbox controller" ? "Menu" : "Start"};
+  if (labels?.name === "Controller") Object.assign(buttons, {
+    cross:"Bottom button",circle:"Right button",square:"Left button",triangle:"Top button",
+    r2:"Right trigger",l2:"Left trigger",r1:"Right shoulder",l1:"Left shoulder",
+  });
+  const named = value => ({"key:Return":"Enter", "key:Escape":"Esc", "key:Up":"↑", "key:Down":"↓",
+    "key:Space":"Space", "key:LShift":"Shift", "key:RShift":"Shift", "key:LCtrl":"Ctrl", "key:LAlt":"Alt",
+    "horizontal_arrows":"←/→"})[value] || value.replace(/^key:/, "");
+  // A pad button bound to "key:Space+Return" presses both keys, so it serves
+  // an action bound to either one.
+  const serves = (binding, value) => binding === value || (typeof binding === "string" &&
+    binding.startsWith("key:") && value.startsWith("key:") && binding.slice(4).split("+").includes(value.slice(4)));
+  // [controls] key_aliases ({W: "Up"}): holding the key also holds its target.
+  const aliases = {};
+  for (const [key, target] of Object.entries(config.aliases || {})) aliases[target] ??= key;
+  const keyboard = value => {
+    if (value === "horizontal_arrows" && aliases.Left && aliases.Right)
+      return `${aliases.Left}/${aliases.Right} or ←/→`;
+    const alias = value.startsWith("key:") && aliases[value.slice(4)];
+    return alias ? `${alias}/${named(value)}` : named(value);
+  };
+  const order = ["r2","l2","start","triangle","cross","square","circle","l1","r1","select","l3","r3"];
+  const text = [labels ? labels.name : "Keyboard"];
+  if (!labels || config.bindings?.dpad === "arrows") text.push(labels ? "D-pad: menus" : "Arrow keys: menus");
+  for (const [action, value] of Object.entries(config.actions)) {
+    let button = keyboard(value);
+    if (labels) {
+      const binding = order.find(name => serves(config.bindings?.[name], value));
+      if (binding) button = buttons[binding] || binding.toUpperCase();
+      else if (config.bindings?.left_stick === value) button = "Left stick";
+      else if (config.bindings?.right_stick === value) button = "Right stick";
+      else button += " key";
+    }
+    text.push(`${button}: ${action === "back" ? "back/pause" : action}`);
+  }
+  text.push(labels ? "Keyboard: names" : "Type names · Backspace: delete");
+  return text.join(" · ");
+}
+
 // `custom` ({keyboard, controller}, game.toml [launcher] input_hints) replaces
 // the generic lines; {name}, {confirm} and {back} in the controller line take
 // the active pad's labels.
@@ -22,7 +74,9 @@ export function hintText(labels, custom = null) {
     "Keyboard · Arrow keys: browse · Enter: confirm · Esc: back · Type names · Backspace: delete";
 }
 
-export function startInputHints(render, readPads = () => navigator.getGamepads?.() || [], custom = null) {
+// The third argument is the hint config itself or a function returning it.
+export function startInputHints(render, readPads = () => navigator.getGamepads?.() || [], config = null) {
+  const readConfig = typeof config === "function" ? config : () => config;
   let active = "keyboard";
   let selected = null;
   let first = true;
@@ -46,8 +100,7 @@ export function startInputHints(render, readPads = () => navigator.getGamepads?.
     }
     previous = next;
     if (active === "controller" && !pads.some(pad => pad.index === selected?.index)) active = "keyboard";
-    const labels = active === "controller" ? controllerLabels(selected?.id) : null;
-    const text = hintText(labels, custom);
+    const text = inputHintText(active === "controller" ? selected?.id || "" : null, readConfig());
     if (text !== last) { render(text); last = text; }
   }, 150);
   return () => { clearInterval(timer); window.removeEventListener("keydown", keyboard, true); };

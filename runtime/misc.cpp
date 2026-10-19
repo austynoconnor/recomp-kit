@@ -1079,6 +1079,36 @@ void w_gethostbyname(X86 *c) {
              gm_str(arg(c, 0), 256).c_str());
     set_eax(c, 0);
 }
+// Winsock 2 (see the WS2_32 table entries): the network is down. The error is
+// per thread, as WSAGetLastError's is.
+thread_local uint32_t t_ws_error = 0;
+constexpr uint32_t kWsaENetDown = 10050;
+constexpr uint32_t kWsaHostNotFound = 11001;
+void ws_WSAGetLastError(X86 *c) {
+    set_eax(c, t_ws_error);
+}
+// SOCKET_ERROR / INVALID_SOCKET: both are all ones.
+void ws_fail(X86 *c) {
+    log_once("ws2.fail", "winsock: networking is not available; socket calls fail with "
+                         "WSAENETDOWN");
+    t_ws_error = kWsaENetDown;
+    set_eax(c, 0xffffffffu);
+}
+void ws_null(X86 *c) {
+    t_ws_error = kWsaENetDown;
+    set_eax(c, 0);
+}
+void ws_true(X86 *c) {
+    set_eax(c, 1);
+}
+void ws_wait_failed(X86 *c) {
+    t_ws_error = kWsaENetDown;
+    set_eax(c, 0xffffffffu); // WSA_WAIT_FAILED
+}
+void ws_gethostbyname(X86 *c) {
+    t_ws_error = kWsaHostNotFound;
+    set_eax(c, 0);
+}
 void w_inet_ntoa(X86 *c) {
     // The returned pointer is reused across calls, as the real inet_ntoa does.
     // heap_owns re-checks it because mem_init() invalidates the whole heap.
@@ -1121,6 +1151,66 @@ void m_timeGetTime(X86 *c) {
     set_eax(c, host_millis());
 }
 
+// Callback timers run on a thread of their own, as winmm runs them. The
+// message loop used to fire them, which is enough for a game that pumps
+// messages while it waits; Underground 2 does not. Its loader and movie
+// player spin on the main thread polling a stream ring ("STRM") that the
+// timer callback (0x006f5b4d) keeps fed, so with the callback waiting for a
+// PeekMessage that never came the game froze on its first movie. The thread
+// is a guest thread like any other: it takes the scheduler's baton when the
+// spinning thread passes an import checkpoint, fires what is due, and sleeps
+// until the next deadline.
+bool g_mm_timer_thread = false;
+
+void mm_timer_thread(X86 *c) {
+    for (;;) {
+        uint32_t now = host_millis();
+        uint32_t wait = 10;
+        uint32_t due_id = 0;
+        for (auto &kv : timers()) {
+            const MmTimer &t = kv.second;
+            if (!t.alive || t.event_mode || !t.callback)
+                continue;
+            int32_t left = (int32_t)(t.next_due - now);
+            if (left <= 0) {
+                due_id = kv.first;
+                break;
+            }
+            if ((uint32_t)left < wait)
+                wait = (uint32_t)left;
+        }
+        if (!due_id) {
+            guest_sleep_ms(wait);
+            continue;
+        }
+        // A callback may set or kill timers (Underground 2 re-arms its
+        // one-shot from inside it), so the map is read again afterwards.
+        auto it = timers().find(due_id);
+        MmTimer t = it->second;
+        if (t.periodic)
+            it->second.next_due = now + t.period;
+        else
+            timers().erase(it);
+        host_note_cadence("mm_callback");
+        uint32_t args[5] = {t.id, 0, t.user, 0, 0};
+        guest_call(c, t.callback, args, 5);
+    }
+}
+
+void mm_timer_thread_start(X86 *c) {
+    if (g_mm_timer_thread)
+        return;
+    uint32_t create = imports_resolve("KERNEL32.dll", "CreateThread");
+    uint32_t body = imports_alloc_trampoline("RECOMP", "mm_timer_thread", mm_timer_thread, 1);
+    if (!create || !body)
+        return;
+    uint32_t args[6] = {0, 0, body, 0, 0, 0};
+    if (guest_call(c, create, args, 6)) {
+        g_mm_timer_thread = true;
+        LOGW("winmm: callback timers run on their own guest thread");
+    }
+}
+
 void m_timeSetEvent(X86 *c) {
     uint32_t delay = arg(c, 0), callback = arg(c, 2), user = arg(c, 3), flags = arg(c, 4);
     MmTimer t;
@@ -1135,6 +1225,8 @@ void m_timeSetEvent(X86 *c) {
     t.event_mode = cb_mode != 0; // TIME_CALLBACK_EVENT_SET/_PULSE
     t.event_pulse = cb_mode == 0x20;
     timers()[t.id] = t;
+    if (!t.event_mode && callback)
+        mm_timer_thread_start(c);
     LOGV("timeSetEvent(%u ms, %s, %s=%08x) -> id %u", delay, t.periodic ? "periodic" : "one-shot",
          t.event_mode ? "event" : "callback", callback, t.id);
     set_eax(c, t.id);
@@ -1947,7 +2039,8 @@ void host_pump_timers(X86 *c) {
     uint32_t now = host_millis();
     std::vector<uint32_t> due;
     for (auto &kv : timers())
-        if (kv.second.alive && (int32_t)(now - kv.second.next_due) >= 0)
+        if (kv.second.alive && (int32_t)(now - kv.second.next_due) >= 0 &&
+            (kv.second.event_mode || !g_mm_timer_thread)) // callbacks: mm_timer_thread
             due.push_back(kv.first);
     for (uint32_t id : due) {
         auto it = timers().find(id);
@@ -2181,38 +2274,65 @@ const ImportShim g_misc_shims[] = {
     {"WINMM.dll", "waveInStop", 1, nullptr},
     {"WINMM.dll", "waveInReset", 1, nullptr},
     {"WINMM.dll", "waveInGetPosition", 3, nullptr},
-    // Winsock 2: networking is out of scope, but the pop counts are not.
-    {"WS2_32.dll", "WSAStartup", 2, nullptr},
-    {"WS2_32.dll", "WSACleanup", 0, nullptr},
-    {"WS2_32.dll", "WSAGetLastError", 0, nullptr},
-    {"WS2_32.dll", "WSAIoctl", 9, nullptr},
-    {"WS2_32.dll", "WSACreateEvent", 0, nullptr},
-    {"WS2_32.dll", "WSACloseEvent", 1, nullptr},
-    {"WS2_32.dll", "WSASetEvent", 1, nullptr},
-    {"WS2_32.dll", "WSAResetEvent", 1, nullptr},
-    {"WS2_32.dll", "WSAWaitForMultipleEvents", 5, nullptr},
-    {"WS2_32.dll", "WSARecv", 7, nullptr},
-    {"WS2_32.dll", "WSARecvFrom", 9, nullptr},
-    {"WS2_32.dll", "WSAGetOverlappedResult", 5, nullptr},
-    {"WS2_32.dll", "socket", 3, nullptr},
-    {"WS2_32.dll", "bind", 3, nullptr},
-    {"WS2_32.dll", "connect", 3, nullptr},
-    {"WS2_32.dll", "listen", 2, nullptr},
-    {"WS2_32.dll", "accept", 3, nullptr},
-    {"WS2_32.dll", "send", 4, nullptr},
-    {"WS2_32.dll", "recv", 4, nullptr},
-    {"WS2_32.dll", "sendto", 6, nullptr},
-    {"WS2_32.dll", "recvfrom", 6, nullptr},
-    {"WS2_32.dll", "select", 5, nullptr},
-    {"WS2_32.dll", "shutdown", 2, nullptr},
-    {"WS2_32.dll", "closesocket", 1, nullptr},
-    {"WS2_32.dll", "ioctlsocket", 3, nullptr},
-    {"WS2_32.dll", "getsockopt", 5, nullptr},
-    {"WS2_32.dll", "setsockopt", 5, nullptr},
-    {"WS2_32.dll", "getpeername", 3, nullptr},
-    {"WS2_32.dll", "getsockname", 3, nullptr},
-    {"WS2_32.dll", "gethostbyname", 1, nullptr},
-    {"WS2_32.dll", "gethostname", 2, nullptr},
+    // Winsock 2: a machine whose network is down. Startup succeeds (games
+    // check it first and some treat a failure as fatal), and every socket
+    // call then fails with WSAENETDOWN, so online and LAN menus report "no
+    // connection" instead of running on. Executables may import these by
+    // ordinal, so each is listed under both spellings: an ordinal with no
+    // entry would pop nothing and drift the guest stack.
+    {"WS2_32.dll", "WSAStartup", 2, w_WSAStartup},
+    {"WS2_32.dll", "ord115", 2, w_WSAStartup},
+    {"WS2_32.dll", "WSACleanup", 0, w_WSACleanup},
+    {"WS2_32.dll", "ord116", 0, w_WSACleanup},
+    {"WS2_32.dll", "WSAGetLastError", 0, ws_WSAGetLastError},
+    {"WS2_32.dll", "ord111", 0, ws_WSAGetLastError},
+    {"WS2_32.dll", "WSAIoctl", 9, ws_fail},
+    {"WS2_32.dll", "WSACreateEvent", 0, ws_null},
+    {"WS2_32.dll", "WSACloseEvent", 1, ws_true},
+    {"WS2_32.dll", "WSASetEvent", 1, ws_true},
+    {"WS2_32.dll", "WSAResetEvent", 1, ws_true},
+    {"WS2_32.dll", "WSAWaitForMultipleEvents", 5, ws_wait_failed},
+    {"WS2_32.dll", "WSARecv", 7, ws_fail},
+    {"WS2_32.dll", "WSARecvFrom", 9, ws_fail},
+    {"WS2_32.dll", "WSAGetOverlappedResult", 5, ws_null},
+    {"WS2_32.dll", "socket", 3, ws_fail},
+    {"WS2_32.dll", "ord23", 3, ws_fail},
+    {"WS2_32.dll", "bind", 3, ws_fail},
+    {"WS2_32.dll", "ord2", 3, ws_fail},
+    {"WS2_32.dll", "connect", 3, ws_fail},
+    {"WS2_32.dll", "ord4", 3, ws_fail},
+    {"WS2_32.dll", "listen", 2, ws_fail},
+    {"WS2_32.dll", "ord13", 2, ws_fail},
+    {"WS2_32.dll", "accept", 3, ws_fail},
+    {"WS2_32.dll", "ord1", 3, ws_fail},
+    {"WS2_32.dll", "send", 4, ws_fail},
+    {"WS2_32.dll", "ord19", 4, ws_fail},
+    {"WS2_32.dll", "recv", 4, ws_fail},
+    {"WS2_32.dll", "ord16", 4, ws_fail},
+    {"WS2_32.dll", "sendto", 6, ws_fail},
+    {"WS2_32.dll", "ord20", 6, ws_fail},
+    {"WS2_32.dll", "recvfrom", 6, ws_fail},
+    {"WS2_32.dll", "ord17", 6, ws_fail},
+    {"WS2_32.dll", "select", 5, ws_fail},
+    {"WS2_32.dll", "ord18", 5, ws_fail},
+    {"WS2_32.dll", "shutdown", 2, ws_fail},
+    {"WS2_32.dll", "ord22", 2, ws_fail},
+    {"WS2_32.dll", "closesocket", 1, ws_fail},
+    {"WS2_32.dll", "ord3", 1, ws_fail},
+    {"WS2_32.dll", "ioctlsocket", 3, ws_fail},
+    {"WS2_32.dll", "ord10", 3, ws_fail},
+    {"WS2_32.dll", "getsockopt", 5, ws_fail},
+    {"WS2_32.dll", "ord7", 5, ws_fail},
+    {"WS2_32.dll", "setsockopt", 5, ws_fail},
+    {"WS2_32.dll", "ord21", 5, ws_fail},
+    {"WS2_32.dll", "getpeername", 3, ws_fail},
+    {"WS2_32.dll", "ord5", 3, ws_fail},
+    {"WS2_32.dll", "getsockname", 3, ws_fail},
+    {"WS2_32.dll", "ord6", 3, ws_fail},
+    {"WS2_32.dll", "gethostbyname", 1, ws_gethostbyname},
+    {"WS2_32.dll", "ord52", 1, ws_gethostbyname},
+    {"WS2_32.dll", "gethostname", 2, w_gethostname},
+    {"WS2_32.dll", "ord57", 2, w_gethostname},
     {"NETAPI32.dll", "Netbios", 1, nullptr},
     {"DDRAW.dll", "DirectDrawCreate", 3, nullptr},
     {"DDRAW.dll", "DirectDrawEnumerateA", 2, nullptr},

@@ -742,6 +742,8 @@ uint32_t virtual_query(uint32_t address, uint32_t out, uint32_t len) {
     std::vector<Region> regions = {{loader_image_base(), loader_image_limit(), 0x1000000, 0x40},
                                    {HEAP_BASE, HEAP_LIMIT, 0x20000, 4},
                                    {STACK_LIMIT, STACK_TOP, 0x20000, 4}};
+    if (UPPER_HEAP_LIMIT > UPPER_HEAP_BASE)
+        regions.push_back({UPPER_HEAP_BASE, UPPER_HEAP_LIMIT, 0x20000, 4});
     for (uint32_t i = 0; const LoaderModule *m = loader_module(i); ++i)
         regions.push_back({m->base, m->base + m->size, 0x1000000, 0x40});
     uint32_t page = address & ~0xfffu, end = GUEST_SIZE, allocation = 0, type = 0, protection = 0;
@@ -853,6 +855,41 @@ void k_FindResourceW(X86 *c) {
     }
     set_eax(c, entry);
 }
+// The ANSI form: a string type or name is widened into a guest temporary so
+// the one directory walk serves both (NFS Underground 2 imports this form).
+void k_FindResourceA(X86 *c) {
+    if (!resource_module(arg(c, 0))) {
+        set_eax(c, 0);
+        return;
+    }
+    uint32_t ids[2] = {arg(c, 1), arg(c, 2)}, temps[2] = {0, 0};
+    for (int i = 0; i < 2; ++i) {
+        if (ids[i] <= 0xffff)
+            continue;
+        std::string text = gm_str(ids[i]);
+        uint32_t cap = wide_units(text) + 1;
+        temps[i] = heap_alloc(cap * 2, true);
+        if (!temps[i]) {
+            if (temps[0])
+                heap_free(temps[0]);
+            set_last_error(8);
+            set_eax(c, 0);
+            return;
+        }
+        gm_put_wstr(temps[i], text, cap);
+        ids[i] = temps[i];
+    }
+    std::string why;
+    uint32_t entry = resource_find(ids[1], ids[0], &why, arg(c, 0));
+    for (uint32_t t : temps)
+        if (t)
+            heap_free(t);
+    if (!entry) {
+        set_last_error(1814);
+        LOGV("FindResourceA: %s", why.c_str());
+    }
+    set_eax(c, entry);
+}
 void k_LoadResource(X86 *c) {
     uint32_t data =
         resource_module(arg(c, 0)) ? resource_data(arg(c, 1), nullptr, nullptr, arg(c, 0)) : 0;
@@ -904,6 +941,7 @@ void k_EnumResourceNamesW(X86 *c) {
 
 static const ImportShim g_kernel32_wide[] = {
     {"KERNEL32.dll", "FindResourceW", 3, k_FindResourceW},
+    {"KERNEL32.dll", "FindResourceA", 3, k_FindResourceA},
     {"KERNEL32.dll", "LoadResource", 2, k_LoadResource},
     {"KERNEL32.dll", "LockResource", 1, k_LockResource},
     {"KERNEL32.dll", "SizeofResource", 2, k_SizeofResource},

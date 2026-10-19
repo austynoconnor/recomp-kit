@@ -43,6 +43,7 @@ LISTINGS = FUNCS_TSV = BINARY = CURATED = None
 ANIMATION_COUNTER = 0
 VISUAL_ANIMATION_READS = frozenset()
 EXTRA_ENTRY_POINTS = frozenset()
+NOT_FUNCTIONS = frozenset()
 RESUMABLE_STACKS = False
 FUNCTION_ALIGNMENT = 16
 
@@ -131,6 +132,10 @@ def configure(cfg):
     global RESUMABLE_STACKS
     RESUMABLE_STACKS = cfg["translate"].get("resumable_stacks", False)
     EXTRA_ENTRY_POINTS = frozenset(int(a) for a in cfg["translate"].get("entry_points", ()))
+    # Listed "functions" a game has audited as data (Ghidra decoding zeros in
+    # .data, say): dropped as --forget drops them, on every regeneration.
+    global NOT_FUNCTIONS
+    NOT_FUNCTIONS = frozenset(int(a) for a in cfg["translate"].get("not_functions", ()))
     FUNCTION_ALIGNMENT = cfg["translate"].get("function_alignment", 16)
     # The CRT's __setjmp3/longjmp pair, when the game links one; the defaults
     # are Populous's. Rebuilt in place so every holder of INTRINSIC_BODY sees it.
@@ -1241,22 +1246,74 @@ class Image(object):
                     continue
                 if start.kind != "imm" or end.kind != "imm":
                     continue
-                lo, hi = start.imm, end.imm
-                if not (lo < hi and hi - lo <= 0x100000 and lo % 4 == 0):
+                named = self.initterm_range(start.imm, end.imm)
+                if named is None:
                     continue
-                if not any(a <= lo and hi <= b for a, b, _ in self.data_ranges):
+                ranges.append((start.imm, end.imm, ins.addr))
+                entries.update(named)
+        # Visual C++ 2005's __cinit walks the C++ initializer table inline:
+        # `MOV ESI,start; MOV EDI,end; ... MOV EAX,[ESI]; CALL EAX;
+        # ADD ESI,0x4; CMP ESI,EDI; JC`. There is no call site to name the
+        # range, so it is read from the loop's own registers instead: the
+        # register stepped by four, the register it is compared against, and
+        # the immediates each was last loaded with. The same strict table test
+        # applies.
+        for fn in functions:
+            if fn.addr not in walkers:
+                continue
+            for lo, hi, at in self.inline_initterm_bounds(fn):
+                named = self.initterm_range(lo, hi)
+                if named is None or any(r[:2] == (lo, hi) for r in ranges):
                     continue
-                # The looser walker test buys a stricter table test: an
-                # initializer array holds function pointers and nulls and
-                # nothing else, so one slot that is neither disqualifies the
-                # range rather than being quietly skipped.
-                slots = [self.rd32(va) for va in range(lo, hi, 4)]
-                named = [t for t in slots if t]
-                if not named or not all(self.is_exec(t) for t in named):
-                    continue
-                ranges.append((lo, hi, ins.addr))
+                ranges.append((lo, hi, at))
                 entries.update(named)
         return ranges, entries
+
+    def initterm_range(self, lo, hi):
+        """The function pointers in [lo, hi), or None unless it is a table.
+
+        The looser walker test buys a stricter table test: an initializer
+        array holds function pointers and nulls and nothing else, so one slot
+        that is neither disqualifies the range rather than being quietly
+        skipped."""
+        if not (lo < hi and hi - lo <= 0x100000 and lo % 4 == 0):
+            return None
+        if not any(a <= lo and hi <= b for a, b, _ in self.data_ranges):
+            return None
+        slots = [self.rd32(va) for va in range(lo, hi, 4)]
+        named = [t for t in slots if t]
+        if not named or not all(self.is_exec(t) for t in named):
+            return None
+        return named
+
+    @staticmethod
+    def inline_initterm_bounds(fn):
+        """(lo, hi, address) for each inline walk in `fn`: `ADD r,0x4` with a
+        `CMP r,h` after it, where r and h were last loaded with immediates."""
+        regs = ("EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP")
+        out = []
+        for i, ins in enumerate(fn.insns):
+            if ins.mnem != "ADD" or ins.ops[1:] != ["0x4"] or ins.ops[0] not in regs:
+                continue
+            step = ins.ops[0]
+            cmp = next((c for c in fn.insns[i + 1:i + 4]
+                        if c.mnem == "CMP" and len(c.ops) == 2 and c.ops[0] == step and c.ops[1] in regs), None)
+            if cmp is None:
+                continue
+            bound = cmp.ops[1]
+
+            def loaded(reg):
+                value = None
+                for k in range(i):
+                    p = fn.insns[k]
+                    if p.mnem == "MOV" and len(p.ops) == 2 and p.ops[0] == reg:
+                        value = int(p.ops[1], 16) if p.ops[1].startswith("0x") else None
+                return value
+
+            lo, hi = loaded(step), loaded(bound)
+            if lo is not None and hi is not None:
+                out.append((lo, hi, ins.addr))
+        return out
 
     def code_pointers(self, covered, interior_bytes=None, exclude=()):
         """Dwords stored anywhere in the image that name executable addresses.
@@ -1343,7 +1400,7 @@ class Image(object):
     #: x87 mnemonics whose memory operand is an integer or a control/status
     #: word rather than a float, so its width names itself (`word ptr`) instead
     #: of being spelled `float`/`double`/`extended double`.
-    X87_INT = frozenset(("FILD", "FIST", "FISTP", "FIADD", "FISUB", "FISUBR",
+    X87_INT = frozenset(("FILD", "FIST", "FISTP", "FISTTP", "FIADD", "FISUB", "FISUBR",
                          "FIMUL", "FIDIV", "FIDIVR", "FICOM", "FICOMP",
                          "FNSTSW", "FSTSW", "FNSTCW", "FSTCW", "FLDCW",
                          "FNSTENV", "FLDENV", "FNSAVE", "FSAVE", "FRSTOR"))
@@ -3493,9 +3550,12 @@ class Translator(object):
             return ["recomp_spin_wait(c);"]
         if m in ("NOP", "WAIT"):
             return [";"]
-        if m == "EMMS":
+        if m in ("EMMS", "FEMMS"):
             # Every x87 register empty; TOP and the values are left alone.
-            # Codecs call a bare `emms; ret` whatever CPUID said.
+            # Codecs call a bare `emms; ret` whatever CPUID said. FEMMS is
+            # 3DNow!'s faster spelling, which leaves the MMX values undefined
+            # rather than preserved; keeping them is one of the allowed
+            # outcomes.
             return ["c->fpu_tag = 0xffffu;"]
         if m == "STMXCSR":
             # No translated SSE arithmetic changes MXCSR, so expose its reset value.
@@ -3687,7 +3747,7 @@ class Translator(object):
 
     # ---- x87 -------------------------------------------------------------
 
-    X87_MEM_INT = {"FILD", "FISTP", "FIST", "FIADD", "FISUB", "FISUBR",
+    X87_MEM_INT = {"FILD", "FISTP", "FISTTP", "FIST", "FIADD", "FISUB", "FISUBR",
                    "FIMUL", "FIDIV", "FIDIVR", "FICOM", "FICOMP"}
 
     def x87_mem_value(self, op):
@@ -3797,8 +3857,12 @@ class Translator(object):
                 L.append("fdrop(c);")
             return L
 
-        if m in ("FIST", "FISTP"):
+        if m in ("FIST", "FISTP", "FISTTP"):
             op = ops[0]
+            if m == "FISTTP":
+                # SSE3's store truncates whatever the control word's rounding
+                # says: round toward zero for this one conversion.
+                L.append("{ uint16_t cw_ = c->fpu_cw; c->fpu_cw |= 0x0c00u;")
             if op.size == 16:
                 L.append("wr16(%s, (uint16_t)fist_i16(c));" % addr_expr(op))
             elif op.size == 32:
@@ -3807,7 +3871,9 @@ class Translator(object):
                 L.append("wr64(%s, (uint64_t)fist_i64(c));" % addr_expr(op))
             else:
                 raise TranslateError("bad %s size" % m)
-            if m == "FISTP":
+            if m == "FISTTP":
+                L.append("c->fpu_cw = cw_; }")
+            if m in ("FISTP", "FISTTP"):
                 L.append("fdrop(c);")
             return L
 
@@ -3997,6 +4063,25 @@ class Translator(object):
 
 # --------------------------------------------------------------- driver ----
 
+#: A literal jump to another function, as bodies spell it.
+TAIL_CALL_RE = re.compile(r"CALL_FN\(([0-9a-f]{8})\); return;")
+
+
+def tail_calls(text):
+    """Spell a function's literal jumps to other functions as TAIL_FN, or
+    TAIL2_FN inside a multi-entry body (its signature has the entry too), and
+    mark such a body RECOMP_BODY. funcs.h says what they become: a guaranteed
+    tail call on the web, the unchanged CALL_FN; return; everywhere else.
+    A function that sets a jump buffer (SEH frames) is left alone: the
+    toolchain rewrites its calls, and a musttail cannot survive that."""
+    if "setjmp(" in text:
+        return text
+    if "static void body_" in text:
+        text = text.replace("static void body_", "RECOMP_BODY static void body_")
+        return TAIL_CALL_RE.sub(r"TAIL2_FN(\1);", text)
+    return TAIL_CALL_RE.sub(r"TAIL_FN(\1);", text)
+
+
 WITHDRAWN_CALL_RE = re.compile(r"CALL_FN\(([0-9a-f]{8})\);( return;)?")
 WITHDRAWN_JUMP_RE = re.compile(r"(?:c->eip = 0x[0-9a-f]{1,8}u; )?recomp_jump\(c, 0x([0-9a-f]{1,8})u\); return;")
 
@@ -4145,7 +4230,7 @@ def main():
     # --forget with --discovered a loop rather than a contradiction. A run
     # reports the gap, and the regeneration that reads its file closes it.
     forget = frozenset(int(a, 16) for a in args.forget.split(",")) if args.forget else frozenset()
-    forget = forget - EXTRA_ENTRY_POINTS
+    forget = (forget | NOT_FUNCTIONS) - EXTRA_ENTRY_POINTS
     if forget:
         print("  --forget: %s dropped as if the listing had never named them"
               % ", ".join("%08x" % a for a in sorted(forget)), file=sys.stderr)
@@ -5793,6 +5878,37 @@ def main():
                  "        recomp_frame_changed(c, %sfunc_addrs[i_], ebp_, c->r[5]);\\\n"
                  "} while (0)\n"
                  "#endif\n" % (P, P, P, P, P))
+        # A literal jump to another function (CALL_FN; return;) is a tail
+        # call. Native compilers make it a jump. WebAssembly makes it a new
+        # frame unless the call is marked musttail, so a loop whose blocks the
+        # translation split across functions grows the browser's stack every
+        # turn until it throws (Underground 2's 0x00636bf0). With the
+        # tail-call feature (-mtail-call) the common case - nothing profiling
+        # or watching the frame - is a guaranteed tail call: TAIL_FN from a
+        # one-argument function straight to the target, TAIL2_FN from a
+        # multi-entry body through the hook table, whose (X86 *, index)
+        # signature matches the body's and whose default entry tail-calls the
+        # target. Bodies are kept out of line there so their wrappers stay
+        # tail calls too. Everywhere else both are CALL_FN; return;.
+        fh.write("#if defined(__wasm__) && defined(__wasm_tail_call__) && !defined(RECOMP_NO_HOOKS)\n"
+                 "#define RECOMP_BODY __attribute__((noinline))\n"
+                 "#define TAIL_FN(a) do {\\\n"
+                 "    if (!recomp_frame_watch && !recomp_profile_enabled && __atomic_load_n(&%shooked[FIDX(a)], __ATOMIC_ACQUIRE) == 0u)\\\n"
+                 "        __attribute__((musttail)) return FN(a)(c);\\\n"
+                 "    CALL_FN(a);\\\n"
+                 "    return;\\\n"
+                 "} while (0)\n"
+                 "#define TAIL2_FN(a) do {\\\n"
+                 "    if (!recomp_frame_watch && !recomp_profile_enabled)\\\n"
+                 "        __attribute__((musttail)) return %shook_ptrs[FIDX(a)](c, FIDX(a));\\\n"
+                 "    CALL_FN(a);\\\n"
+                 "    return;\\\n"
+                 "} while (0)\n"
+                 "#else\n"
+                 "#define RECOMP_BODY\n"
+                 "#define TAIL_FN(a) do { CALL_FN(a); return; } while (0)\n"
+                 "#define TAIL2_FN(a) do { CALL_FN(a); return; } while (0)\n"
+                 "#endif\n" % (P, P))
         for i, a in enumerate(entry_names):
             fh.write("#define FIDX_%08x %du\n" % (a, i))
         # Both spellings are declared: fn_ADDR because the chunk defines it,
@@ -5822,7 +5938,7 @@ def main():
                          % (fn.name, len(fn.insns), fn.insns[0].addr,
                             fn.insns[-1].addr,
                             ("  entries: " + " ".join("%08x" % a for a in alt)) if alt else ""))
-                fh.write("\n".join(bodies[fn.addr]))
+                fh.write(tail_calls("\n".join(bodies[fn.addr])))
                 fh.write("\n\n")
         chunks.append(path)
         nchunk += 1

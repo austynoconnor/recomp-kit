@@ -27,6 +27,9 @@
 #include "fixtures/tone_mp3.h"
 #include "fixtures/quad_shaders.h"
 #include "../d3d11.h"
+#include "../d3d9_ffp.h"
+#include "../d3d9_pipeline.h"
+#include "../d3d9_shader.h"
 #include "guest_abi.h"
 #include <cmath>
 
@@ -7590,6 +7593,28 @@ static void test_bink_shutdown_with_open_player() {
     });
 }
 
+// A nameless BinkOpen after BinkSetIO goes through the game's own reader: its
+// open procedure is called with (BINKIO*, name, flags), and a refusal fails
+// the open. MulDiv stands in for the procedure: 3 stdcall arguments, and
+// MulDiv(bio, 0, flags) is 0, a refusal.
+static void test_bink_game_reader() {
+    cpu_reset();
+    uint32_t open = tramp("binkw32.dll", "_BinkOpen@8");
+    uint32_t set_io = tramp("binkw32.dll", "_BinkSetIO@4");
+    uint32_t name = sc(0x20);
+    wr8(name, 0);
+    CHECK_EQ(call_shim(set_io, {tramp("KERNEL32.dll", "MulDiv")}), 0u);
+    uint32_t rec = call_shim(open, {0, 0x0b000000});
+#ifdef RECOMP_HAVE_FFMPEG
+    CHECK_EQ(rec, 0u);
+    uint32_t err = call_shim(tramp("binkw32.dll", "_BinkGetError@0"), {});
+    CHECK(err != 0 && gm_str(err).find("reader refused") != std::string::npos);
+#endif
+    if (rec)
+        call_shim(tramp("binkw32.dll", "_BinkClose@4"), {rec});
+    CHECK_EQ(call_shim(set_io, {0}), 0u);
+}
+
 static void test_bink_rects_and_pause() {
     cpu_reset();
     CHECK_EQ(call_shim(tramp("binkw32.dll", "_BinkOpenDirectSound@4"), {0}), 1u);
@@ -10825,6 +10850,316 @@ static void test_dsound_stream() {
 // the play cursor by hand and asserts the events fire exactly when the cursor
 // reaches their offsets, including across the loop point.
 // ---------------------------------------------------------------------------
+// The 3D listener comes from the primary buffer, which is where DirectSound
+// documents getting it; a secondary buffer has none.
+static void test_dsound_primary_listener() {
+    cpu_reset();
+    uint32_t ds = make_dsound();
+    CHECK(ds != 0);
+    uint32_t bd = sc(0x200);
+    gm_zero(bd, DSBUFFERDESC_SIZE);
+    wr32(bd + DSBD_OFF_dwSize, DSBUFFERDESC_SIZE);
+    wr32(bd + DSBD_OFF_dwFlags, DSBCAPS_PRIMARYBUFFER | DSBCAPS_CTRL3D);
+    CHECK_EQ(call_method(ds, DS_CreateSoundBuffer, {bd, sc(4), 0}), DS_OK);
+    uint32_t primary = rd32(sc(4));
+    CHECK(primary != 0);
+    static const uint8_t IID_LISTENER[16] = {0x84, 0xFA, 0x9A, 0x27, 0x81, 0x49, 0xCE, 0x11,
+                                             0xA5, 0x21, 0x00, 0x20, 0xAF, 0x0B, 0xE5, 0x60};
+    uint32_t iid = sc(0x500);
+    for (uint32_t i = 0; i < 16; ++i)
+        wr8(iid + i, IID_LISTENER[i]);
+    CHECK_EQ(call_method(primary, B_QueryInterface, {iid, sc(0x510)}), DS_OK);
+    uint32_t listener = rd32(sc(0x510));
+    CHECK(listener != 0);
+    // SetPosition (slot 14) and GetPosition (slot 7) round-trip.
+    float pos[3] = {1.5f, -2.0f, 3.25f};
+    uint32_t bits[3];
+    memcpy(bits, pos, sizeof bits);
+    CHECK_EQ(call_method(listener, 14, {bits[0], bits[1], bits[2], 0}), DS_OK);
+    CHECK_EQ(call_method(listener, 7, {sc(0x520)}), DS_OK);
+    CHECK(rdf32(sc(0x520)) == 1.5f && rdf32(sc(0x524)) == -2.0f && rdf32(sc(0x528)) == 3.25f);
+    uint32_t buf = make_buffer(ds, 1, 22050, 16, 1024, sc(8));
+    CHECK(buf != 0);
+    CHECK_EQ(call_method(buf, B_QueryInterface, {iid, sc(0x530)}), E_NOINTERFACE);
+}
+
+// The device exports a game uses to pick its output: one playback device,
+// no capture device. The enumeration callback is guest code, so only the
+// argument check is exercised here.
+// The IDirect3DDevice9 getters, shaders and FVFs Battlefront II leans on:
+// each getter reads back what its setter stored.
+static void test_d3d9_device_getters_and_shaders() {
+    cpu_reset();
+    enum : uint32_t {
+        D9_CreateDevice = 16,
+        V_CreateVertexBuffer = 26,
+        V_GetRenderTarget = 38,
+        V_SetTransform = 44,
+        V_GetTransform = 45,
+        V_SetRenderState = 57,
+        V_GetRenderState = 58,
+        V_GetSamplerState = 68,
+        V_SetSamplerState = 69,
+        V_SetScissorRect = 75,
+        V_GetScissorRect = 76,
+        V_GetVertexDeclaration = 88,
+        V_SetFVF = 89,
+        V_GetFVF = 90,
+        V_CreateVertexShader = 91,
+        V_SetVertexShader = 92,
+        V_GetVertexShader = 93,
+        V_SetVertexShaderConstantF = 94,
+        V_GetVertexShaderConstantF = 95,
+        V_SetStreamSource = 100,
+        V_GetStreamSource = 101,
+        V_CreatePixelShader = 106,
+        V_GetPixelShader = 108,
+        S_GetFunction = 4,
+        R_GetType = 10,
+    };
+    uint32_t d3d = call_shim(tramp("d3d9.dll", "Direct3DCreate9"), {32});
+    CHECK(d3d != 0);
+    // The adapter offers 640x480 up to the 1280x960 desktop, smallest first.
+    CHECK_EQ(call_method(d3d, 6, {0, 22}), 4u);              // GetAdapterModeCount
+    CHECK_EQ(call_method(d3d, 7, {0, 22, 0, sc(0x40)}), 0u); // EnumAdapterModes
+    CHECK_EQ(rd32(sc(0x40)), 640u);
+    CHECK_EQ(rd32(sc(0x44)), 480u);
+    CHECK_EQ(rd32(sc(0x4c)), 22u);
+    CHECK_EQ(call_method(d3d, 7, {0, 23, 3, sc(0x40)}), 0u);
+    CHECK_EQ(rd32(sc(0x40)), 1280u);
+    CHECK_EQ(rd32(sc(0x4c)), 23u);
+    CHECK(call_method(d3d, 7, {0, 22, 4, sc(0x40)}) != 0u);
+    CHECK_EQ(call_method(d3d, 8, {0, sc(0x40)}), 0u); // GetAdapterDisplayMode
+    CHECK_EQ(rd32(sc(0x40)), 1280u);
+    CHECK_EQ(rd32(sc(0x44)), 960u);
+    uint32_t pp = sc(0x100);
+    for (uint32_t i = 0; i < 14; ++i)
+        wr32(pp + 4 * i, 0);
+    wr32(pp + 0, 640);
+    wr32(pp + 4, 480);
+    wr32(pp + 8, 22); // X8R8G8B8
+    wr32(pp + 12, 1);
+    wr32(pp + 24, 1); // DISCARD
+    wr32(pp + 32, 1); // windowed
+    CHECK_EQ(call_method(d3d, D9_CreateDevice, {0, 1, 0, 0x40, pp, sc(0)}), 0u);
+    uint32_t dev = rd32(sc(0));
+    CHECK(dev != 0);
+    if (!dev)
+        return;
+
+    // Render target 0 is the back buffer; an unset one is not found.
+    CHECK_EQ(call_method(dev, V_GetRenderTarget, {0, sc(4)}), 0u);
+    CHECK(rd32(sc(4)) != 0);
+    CHECK_EQ(call_method(rd32(sc(4)), R_GetType, {}), 1u); // D3DRTYPE_SURFACE
+    CHECK(call_method(dev, V_GetRenderTarget, {1, sc(4)}) != 0u);
+    CHECK_EQ(rd32(sc(4)), 0u);
+
+    CHECK_EQ(call_method(dev, V_SetRenderState, {27, 1}), 0u); // ALPHABLENDENABLE
+    CHECK_EQ(call_method(dev, V_GetRenderState, {27, sc(8)}), 0u);
+    CHECK_EQ(rd32(sc(8)), 1u);
+    CHECK_EQ(call_method(dev, V_SetSamplerState, {2, 5, 3}), 0u);
+    CHECK_EQ(call_method(dev, V_GetSamplerState, {2, 5, sc(8)}), 0u);
+    CHECK_EQ(rd32(sc(8)), 3u);
+
+    // An unset transform is identity; a set one comes back as given.
+    CHECK_EQ(call_method(dev, V_GetTransform, {2, sc(0x200)}), 0u);
+    CHECK_EQ(rd32(sc(0x200)), 0x3f800000u);
+    CHECK_EQ(rd32(sc(0x204)), 0u);
+    for (uint32_t i = 0; i < 16; ++i)
+        wr32(sc(0x300) + 4 * i, 0x40000000u + i);
+    CHECK_EQ(call_method(dev, V_SetTransform, {256, sc(0x300)}), 0u); // WORLD
+    CHECK_EQ(call_method(dev, V_GetTransform, {256, sc(0x200)}), 0u);
+    CHECK_EQ(rd32(sc(0x23c)), 0x4000000fu);
+
+    wr32(sc(0x40), 1);
+    wr32(sc(0x44), 2);
+    wr32(sc(0x48), 300);
+    wr32(sc(0x4c), 400);
+    CHECK_EQ(call_method(dev, V_SetScissorRect, {sc(0x40)}), 0u);
+    CHECK_EQ(call_method(dev, V_GetScissorRect, {sc(0x50)}), 0u);
+    CHECK_EQ(rd32(sc(0x5c)), 400u);
+
+    // Stream sources come back with an extra reference.
+    CHECK_EQ(call_method(dev, V_CreateVertexBuffer, {256, 0, 0, 1, sc(0x60), 0}), 0u);
+    uint32_t vbuf = rd32(sc(0x60));
+    CHECK(vbuf != 0);
+    CHECK_EQ(call_method(dev, V_SetStreamSource, {0, vbuf, 16, 24}), 0u);
+    CHECK_EQ(call_method(dev, V_GetStreamSource, {0, sc(0x64), sc(0x68), sc(0x6c)}), 0u);
+    CHECK_EQ(rd32(sc(0x64)), vbuf);
+    CHECK_EQ(rd32(sc(0x68)), 16u);
+    CHECK_EQ(rd32(sc(0x6c)), 24u);
+    CHECK_EQ(call_method(vbuf, R_GetType, {}), 6u);
+
+    // XYZ | NORMAL | DIFFUSE | TEX1 becomes a declaration of four elements.
+    CHECK_EQ(call_method(dev, V_SetFVF, {0x152}), 0u);
+    CHECK_EQ(call_method(dev, V_GetFVF, {sc(0x70)}), 0u);
+    CHECK_EQ(rd32(sc(0x70)), 0x152u);
+    CHECK_EQ(call_method(dev, V_GetVertexDeclaration, {sc(0x74)}), 0u);
+    CHECK(rd32(sc(0x74)) != 0);
+    std::vector<uint8_t> decl = d9_fvf_declaration(0x152);
+    CHECK_EQ(decl.size(), 40u);
+    CHECK_EQ(decl[2], 0u);   // position at 0
+    CHECK_EQ(decl[10], 12u); // normal at 12
+    CHECK_EQ(decl[18], 24u); // diffuse at 24
+    CHECK_EQ(decl[22], 10u); // COLOR usage
+    CHECK_EQ(decl[26], 28u); // texcoord 0 at 28
+    CHECK_EQ(decl[28], 1u);  // FLOAT2
+    CHECK_EQ(decl[32], 0xffu);
+    std::vector<uint8_t> skin = d9_fvf_declaration(0x1008); // XYZB2 | LASTBETA_UBYTE4
+    CHECK_EQ(skin.size(), 32u);
+    CHECK_EQ(skin[12], 0u); // one blend weight, FLOAT1
+    CHECK_EQ(skin[20], 5u); // UBYTE4 indices
+
+    // vs_1_1 { dcl_position v0; mov oPos, v0 }, with a comment, then END.
+    const uint32_t vs[] = {0xfffe0101u, 0x0002fffeu, 0x41414141u, 0x42424242u,
+                           0x0000001fu, 0x80000000u, 0x900f0000u, 0x00000001u,
+                           0xc00f0000u, 0x90e40000u, 0x0000ffffu, 0xdeadbeefu};
+    for (uint32_t i = 0; i < 12; ++i)
+        wr32(sc(0x400) + 4 * i, vs[i]);
+    CHECK_EQ(d9sh::code_size(gm_ptr(sc(0x400)), 48), 44u);
+    CHECK_EQ(d9sh::code_size(gm_ptr(sc(0x400)), 40), 0u); // no END within the limit
+    CHECK_EQ(call_method(dev, V_CreateVertexShader, {sc(0x400), sc(0x80)}), 0u);
+    uint32_t shader = rd32(sc(0x80));
+    CHECK(shader != 0);
+    CHECK_EQ(call_method(shader, S_GetFunction, {0, sc(0x84)}), 0u);
+    CHECK_EQ(rd32(sc(0x84)), 44u);
+    wr32(sc(0x84), 8);
+    CHECK(call_method(shader, S_GetFunction, {sc(0x500), sc(0x84)}) != 0u);
+    wr32(sc(0x84), 64);
+    CHECK_EQ(call_method(shader, S_GetFunction, {sc(0x500), sc(0x84)}), 0u);
+    CHECK_EQ(rd32(sc(0x528)), 0x0000ffffu);
+    CHECK_EQ(call_method(dev, V_SetVertexShader, {shader}), 0u);
+    CHECK_EQ(call_method(dev, V_GetVertexShader, {sc(0x88)}), 0u);
+    CHECK_EQ(rd32(sc(0x88)), shader);
+    const D9Pipeline &pl = d9_pipeline(com_this(dev)->id);
+    CHECK_EQ(pl.vs.size(), 44u);
+    CHECK(pl.vs_key != 0);
+    CHECK_EQ(call_method(dev, V_SetVertexShader, {0}), 0u);
+    CHECK(pl.vs.empty());
+    CHECK_EQ(pl.vs_key, 0u);
+    CHECK_EQ(call_method(dev, V_GetPixelShader, {sc(0x8c)}), 0u);
+    CHECK_EQ(rd32(sc(0x8c)), 0u);
+    wr32(sc(0x600), 0x12345678u); // not a shader
+    CHECK(call_method(dev, V_CreatePixelShader, {sc(0x600), sc(0x90)}) != 0u);
+
+    for (uint32_t i = 0; i < 8; ++i)
+        wr32(sc(0x700) + 4 * i, 0x3f000000u + i);
+    CHECK_EQ(call_method(dev, V_SetVertexShaderConstantF, {10, sc(0x700), 2}), 0u);
+    CHECK_EQ(call_method(dev, V_GetVertexShaderConstantF, {11, sc(0x800), 1}), 0u);
+    CHECK_EQ(rd32(sc(0x800)), 0x3f000004u);
+
+    // GetDisplayMode (slot 8) is the back buffer.
+    CHECK_EQ(call_method(dev, 8, {0, sc(0x900)}), 0u);
+    CHECK_EQ(rd32(sc(0x900)), 640u);
+    CHECK_EQ(rd32(sc(0x90c)), 22u);
+
+    // CreateVolumeTexture (slot 24): 8x4x2 A8R8G8B8, one level. LockBox
+    // (slot 19) hands out rows of 32 bytes and slices of 128; a box starting
+    // at (1, 2, 1) lands 128 + 64 + 4 bytes in, and what is written there
+    // survives UnlockBox (slot 20) and a second lock.
+    CHECK_EQ(call_method(dev, 24, {8, 4, 2, 1, 0, 21, 1, sc(0x910), 0}), 0u);
+    uint32_t vol = rd32(sc(0x910));
+    CHECK(vol != 0);
+    CHECK_EQ(call_method(vol, R_GetType, {}), 4u);      // D3DRTYPE_VOLUMETEXTURE
+    CHECK_EQ(call_method(vol, 17, {0, sc(0x920)}), 0u); // GetLevelDesc
+    CHECK_EQ(rd32(sc(0x920)), 21u);
+    CHECK_EQ(rd32(sc(0x938)), 2u); // depth
+    const uint32_t box[6] = {1, 2, 8, 4, 1, 2};
+    for (uint32_t i = 0; i < 6; ++i)
+        wr32(sc(0x940) + 4 * i, box[i]);
+    CHECK_EQ(call_method(vol, 19, {0, sc(0x960), 0, 0}), 0u);
+    uint32_t whole = rd32(sc(0x968));
+    CHECK_EQ(rd32(sc(0x960)), 32u);
+    CHECK_EQ(rd32(sc(0x964)), 128u);
+    CHECK_EQ(call_method(vol, 20, {0}), 0u);
+    CHECK_EQ(call_method(vol, 19, {0, sc(0x960), sc(0x940), 0}), 0u);
+    uint32_t part = rd32(sc(0x968));
+    CHECK(part != 0);
+    wr32(part, 0xcafef00du);
+    CHECK_EQ(call_method(vol, 20, {0}), 0u);
+    CHECK_EQ(call_method(vol, 19, {0, sc(0x960), 0, 0}), 0u);
+    whole = rd32(sc(0x968));
+    CHECK_EQ(rd32(whole + 128 + 64 + 4), 0xcafef00du);
+    CHECK_EQ(call_method(vol, 20, {0}), 0u);
+    CHECK_EQ(call_method(vol, 18, {0, sc(0x970)}), 0u); // GetVolumeLevel
+    CHECK(rd32(sc(0x970)) != 0);
+
+    // SetGammaRamp (slot 21) is kept for GetGammaRamp (slot 22), which
+    // reads the identity before any is set.
+    CHECK_EQ(call_method(dev, 22, {0, sc(0x1000)}), 0u);
+    CHECK_EQ(rd16(sc(0x1000) + 2 * 255), 0xffffu);
+    wr16(sc(0x1000) + 2, 0x1234);
+    CHECK_EQ(call_method(dev, 21, {0, 0, sc(0x1000)}), 0u);
+    wr16(sc(0x1000) + 2, 0);
+    CHECK_EQ(call_method(dev, 22, {0, sc(0x1000)}), 0u);
+    CHECK_EQ(rd16(sc(0x1000) + 2), 0x1234u);
+
+    // A texture level counts its references on the texture: releasing the
+    // level and then the texture frees both (Battlefront II's loading movie
+    // makes a texture a frame and leaked every one of them).
+    const uint32_t live = com_live_count();
+    CHECK_EQ(call_method(dev, 23, {64, 32, 1, 0, 21, 1, sc(0x1100), 0}), 0u); // CreateTexture
+    uint32_t tex = rd32(sc(0x1100));
+    CHECK(tex != 0);
+    CHECK_EQ(call_method(tex, 18, {0, sc(0x1104)}), 0u); // GetSurfaceLevel
+    uint32_t level = rd32(sc(0x1104));
+    CHECK(level != 0);
+    CHECK_EQ(call_method(level, 1, {}), 3u); // AddRef: the texture's count
+    CHECK_EQ(call_method(level, 2, {}), 2u);
+    CHECK_EQ(call_method(tex, 2, {}), 1u); // the level keeps it alive
+    CHECK_EQ(call_method(level, 2, {}), 0u);
+    CHECK_EQ(com_live_count(), live);
+}
+
+// ps_1_1 texture addressing: texm3x2pad/texm3x2tex and texbem decode (the
+// D3DX ps_1_1 shaders Battlefront II creates use them), and the code-size
+// walk accepts them.
+static void test_d3d9_ps11_texture_addressing() {
+    // ps_1_1; tex t0; texm3x2pad t1, t0_bx2; texm3x2tex t2, t0_bx2;
+    // texbem t3, t0; mov r0, t2; end
+    const uint32_t ps[] = {0xffff0101u, 0x00000042u, 0xb00f0000u, 0x00000047u,
+                           0xb00f0001u, 0xb4e40000u, 0x00000048u, 0xb00f0002u,
+                           0xb4e40000u, 0x00000043u, 0xb00f0003u, 0xb0e40000u,
+                           0x00000001u, 0x800f0000u, 0xb0e40002u, 0x0000ffffu};
+    std::vector<uint8_t> code(sizeof ps);
+    memcpy(code.data(), ps, sizeof ps);
+    CHECK_EQ(d9sh::code_size(code.data(), code.size()), sizeof ps);
+    const d9sh::Program &p = d9sh::program_for(code);
+    CHECK(p.ok);
+    CHECK_EQ(p.code.size(), 5u);
+    if (p.code.size() == 5) {
+        CHECK_EQ(p.code[1].op, (uint32_t)d9sh::OP_TEXM3X2PAD);
+        CHECK_EQ(p.code[2].op, (uint32_t)d9sh::OP_TEXM3X2TEX);
+        CHECK_EQ(p.code[3].op, (uint32_t)d9sh::OP_TEXBEM);
+    }
+    CHECK(d9sh::samples_destination_stage(d9sh::OP_TEXM3X2TEX));
+    CHECK(!d9sh::samples_destination_stage(d9sh::OP_TEXM3X2PAD));
+}
+
+static void test_dsound_device_exports() {
+    cpu_reset();
+    uint32_t get_id = tramp("DSOUND.dll", "ord9");
+    CHECK(get_id != 0);
+    CHECK_EQ(call_shim(get_id, {0, sc(0x10)}), DS_OK);
+    uint32_t d1 = rd32(sc(0x10));
+    CHECK(d1 != 0);
+    // DSDEVID_DefaultPlayback {DEF00000-9C6D-47ED-AAF1-4DDA8F2B5C03} maps to it too.
+    static const uint8_t kDefault[16] = {0x00, 0x00, 0xF0, 0xDE, 0x6D, 0x9C, 0xED, 0x47,
+                                         0xAA, 0xF1, 0x4D, 0xDA, 0x8F, 0x2B, 0x5C, 0x03};
+    for (uint32_t i = 0; i < 16; ++i)
+        wr8(sc(0x20) + i, kDefault[i]);
+    CHECK_EQ(call_shim(get_id, {sc(0x20), sc(0x30)}), DS_OK);
+    CHECK_EQ(rd32(sc(0x30)), d1);
+    wr8(sc(0x20), 0x01); // DSDEVID_DefaultCapture
+    CHECK_EQ(call_shim(get_id, {sc(0x20), sc(0x30)}), DSERR_NODRIVER);
+    CHECK_EQ(call_shim(get_id, {0, 0}), DSERR_INVALIDPARAM);
+    wr32(sc(0x40), 0x1234);
+    CHECK_EQ(call_shim(tramp("DSOUND.dll", "ord12"), {0, sc(0x40), 0}), DSERR_NODRIVER);
+    CHECK_EQ(rd32(sc(0x40)), 0u);
+    CHECK_EQ(call_shim(tramp("DSOUND.dll", "ord2"), {0, 0}), DSERR_INVALIDPARAM);
+    CHECK_EQ(call_shim(tramp("DSOUND.dll", "ord7"), {0x00401000, 0}), DS_OK);
+}
+
 static void test_dsound_notify() {
     cpu_reset();
     qmixer_reset();
@@ -12971,6 +13306,7 @@ int main() {
         {"Bink open from handle", test_bink_open_from_handle},
         {"Bink handle flag errors", test_bink_handle_flag_errors},
         {"Bink rects and pause", test_bink_rects_and_pause},
+        {"Bink through the game's reader", test_bink_game_reader},
         {"Bink audio without service", test_bink_audio_without_service},
         {"Bink shutdown with open player", test_bink_shutdown_with_open_player},
         {"weanetr", test_weanetr},
@@ -12992,6 +13328,10 @@ int main() {
         {"DirectSound data path", test_dsound_data_path},
         {"audio formats", test_dsound_formats},
         {"DirectSound notify", test_dsound_notify},
+        {"DirectSound primary listener", test_dsound_primary_listener},
+        {"DirectSound device exports", test_dsound_device_exports},
+        {"Direct3D 9 device getters and shaders", test_d3d9_device_getters_and_shaders},
+        {"Direct3D 9 ps_1_1 texture addressing", test_d3d9_ps11_texture_addressing},
         {"DirectSound streaming", test_dsound_stream},
         {"FMV refill gate", test_dsound_stream_pacing},
         {"QMixer streaming", test_qmixer_streaming},

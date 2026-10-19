@@ -344,13 +344,31 @@ export function zipWrite(files) {
 export const MANIFEST = ".manifest.json";
 export const STAMP = ".stamp";
 
+// Stop or a browser crash can interrupt a journal write. Recover by validating
+// entries independently; an unreadable journal means rechecking/downloading game
+// inputs, never deleting the player's separate profile directory.
+async function readManifest(store) {
+  const raw = await store.readText(MANIFEST);
+  let parsed;
+  try { parsed = JSON.parse(raw || "{}"); }
+  catch { return { files: {} }; }
+  const files = Object.create(null);
+  if (parsed?.files && typeof parsed.files === "object" && !Array.isArray(parsed.files))
+    for (const [path, entry] of Object.entries(parsed.files))
+      if (!unsafe(path) && !junk(path) && entry && typeof entry === "object" &&
+          Number.isSafeInteger(entry.size) && entry.size >= 0 &&
+          Number.isFinite(entry.mtime) && entry.mtime >= 0)
+        files[path] = { size: entry.size, mtime: entry.mtime };
+  return { files };
+}
+
 export async function importGame(game, source, store, { onProgress, signal, freeBytes } = {}) {
   const entries = await source.list();
   const plan = planImport(game, entries);
   if (plan.error) return { result: "noExecutable" };
   if (plan.missing.length) return { result: "incomplete", missing: plan.missing };
   await store.remove(STAMP);
-  const manifest = JSON.parse((await store.readText(MANIFEST)) || '{"files":{}}');
+  const manifest = await readManifest(store);
   const progress = { filesDone: 0, filesTotal: plan.files.length, bytesDone: 0, bytesTotal: 0, current: "" };
   let needed = 0;
   for (const f of plan.files) {
@@ -432,7 +450,7 @@ export async function importGame(game, source, store, { onProgress, signal, free
 
 export async function gameStatus(game, store) {
   const stamp = ((await store.readText(STAMP)) || "").trim();
-  const manifest = JSON.parse((await store.readText(MANIFEST)) || '{"files":{}}');
+  const manifest = await readManifest(store);
   const names = Object.keys(manifest.files);
   if (!names.some((n) => n.toLowerCase() === game.executable.toLowerCase())) return { state: "notFound" };
   const tops = new Set(names.filter((n) => n.includes("/")).map((n) => n.split("/")[0].toLowerCase()));

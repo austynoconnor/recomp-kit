@@ -326,12 +326,17 @@ void WebGpuDevice::destroy(Texture tex) {
     textures_.erase(it);
     if (t.external)
         return;
-    // Destroying frees the memory at once (after submitted work using it);
-    // a texture an open recording uses must wait for that recording.
+    // Keep the handles until every open encoder has been submitted, then
+    // explicitly reclaim storage after that queue point. Releasing handles
+    // alone leaves transient presentation images waiting for JavaScript GC.
+    retired_textures_.push_back(t);
+    retire_textures();
+}
+
+void WebGpuDevice::release_retired(Tex t) {
+    wgpuTextureDestroy(t.texture);
     wgpuTextureViewRelease(t.view);
-    doomed_textures_.push_back(t.texture);
-    if (!recording_count_)
-        free_doomed();
+    wgpuTextureRelease(t.texture);
 }
 
 void WebGpuDevice::free_doomed() {
@@ -345,6 +350,31 @@ void WebGpuDevice::free_doomed() {
     }
     doomed_textures_.clear();
     doomed_buffers_.clear();
+}
+
+void WebGpuDevice::retire_textures() {
+    if (!recording_.empty() || retired_textures_.empty())
+        return;
+    auto retired = std::move(retired_textures_);
+    retired_textures_.clear();
+    after_submitted([retired = std::move(retired)]() {
+        for (Tex t : retired)
+            release_retired(t);
+    });
+}
+
+// Only exclusively owned textures with all recorded uses completed take this
+// immediate path. Ordinary destruction above also handles unsubmitted work.
+void WebGpuDevice::destroy_completed(Texture tex) {
+    if (off_main())
+        return on_main_void([&] { destroy_completed(tex); });
+    auto it = textures_.find(tex.id);
+    if (it == textures_.end())
+        return;
+    Tex t = it->second;
+    textures_.erase(it);
+    if (!t.external)
+        release_retired(t);
 }
 
 TextureDesc WebGpuDevice::describe(Texture tex) {
@@ -1035,6 +1065,7 @@ void WebGpuDevice::commit(CommandBuffer cb) {
         if (status_.size() > 4096)
             status_.clear();
     });
+    retire_textures();
 }
 
 void WebGpuDevice::wait(CommandBuffer) {

@@ -565,6 +565,17 @@ void u_SystemParametersInfoA(X86 *c) {
         set_eax(c, 1);
         return;
     }
+    // Windows' default keyboard repeat: a delay of 1 (about 500 ms) and a
+    // speed of 31 (about 30 repeats a second). A game that builds its own key
+    // repeat from these (Star Wars Battlefront II) read uninitialised stack
+    // when the call failed, and repeated every held key on the next frame.
+    const uint32_t SPI_GETKEYBOARDSPEED = 10, SPI_GETKEYBOARDDELAY = 22;
+    if ((action == SPI_GETKEYBOARDSPEED || action == SPI_GETKEYBOARDDELAY) && param &&
+        gm_valid(param, 4)) {
+        wr32(param, action == SPI_GETKEYBOARDSPEED ? 31 : 1);
+        set_eax(c, 1);
+        return;
+    }
     log_once(("spi:" + std::to_string(action)).c_str(), "SystemParametersInfoA(%u) unsupported",
              action);
     set_eax(c, 0);

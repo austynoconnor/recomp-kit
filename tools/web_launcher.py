@@ -37,6 +37,18 @@ import game_config  # noqa: E402
 PAGE_FILES = ("index.html", "app.js", "core.js", "worker.js")
 
 
+def input_hints(cfg, hints):
+    """Fixed {keyboard, controller} lines pass through; otherwise the entries
+    are actions resolved against the game's mapped pad bindings."""
+    if not hints:
+        return None
+    if "keyboard" in hints or "controller" in hints:
+        return hints
+    controls = cfg.get("controls", {})
+    return {"bindings": controls.get("mapped", {}), "actions": hints,
+            "aliases": controls.get("key_aliases", {})}
+
+
 def game_entry(cfg):
     game, launcher = cfg["game"], cfg["launcher"]
     return {
@@ -50,7 +62,7 @@ def game_entry(cfg):
         "installNames": launcher["install_names"],
         "minFreeMb": launcher["min_free_mb"],
         "streamAssets": launcher.get("stream_assets", False),
-        "inputHints": launcher.get("input_hints") or None,
+        "inputHints": input_hints(cfg, launcher.get("input_hints")),
     }
 
 

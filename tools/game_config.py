@@ -50,12 +50,15 @@ KEY_NAMES = (
     "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Insert", "Home", "PageUp", "Delete",
     "End", "PageDown", "Right", "Left", "Down", "Up", "LCtrl", "LShift", "LAlt",
 )
-# key:<name>, mouse_left/right/middle, wheel_up/down, action:<name> or none.
+# key:<name> (or key:<name>+<name>, two keys held together), mouse_left/right/middle,
+# wheel_up/down, action:<name> or none.
 BUTTON_TARGET_RE = re.compile(
-    r"^(key:[A-Za-z0-9]+|mouse_(left|right|middle)|wheel_(up|down)|"
+    r"^(key:[A-Za-z0-9]+(\+[A-Za-z0-9]+)?|mouse_(left|right|middle)|wheel_(up|down)|"
     r"action:(settings|system_keyboard|edit_layout)|none)$")
 HEAP_END = 0x0e000000        # runtime/x86.h GUEST_HEAP_END; the mods' heap starts there
 GUEST_SIZE_DEFAULT = 0x10000000   # runtime/x86.h GUEST_SIZE: the arena, 256 MB unless a module needs more
+GUEST_SIZE_MAX = 0xf0000000       # keeps every guest address and size in 32 bits
+UPPER_HEAP_BASE = 0x10000000      # runtime/x86.h GUEST_UPPER_HEAP_BASE
 AUX_REQUIRED_KEYS = ("name", "path", "sha256", "base", "size")
 
 WEB_VIDEO = ("off", "mpeg1", "all")
@@ -121,7 +124,8 @@ def load_controls(controls, touch, source):
                                  % (source, value))
         elif not isinstance(value, str) or not BUTTON_TARGET_RE.match(value):
             raise ValueError("%s: [controls.mapped] %s is not a valid target: %r" % (source, key, value))
-        elif value.startswith("key:") and value[len("key:"):] not in KEY_NAMES:
+        elif value.startswith("key:") and any(
+                name not in KEY_NAMES for name in value[len("key:"):].split("+")):
             raise ValueError("%s: [controls.mapped] %s names no key: %r" % (source, key, value))
     controls["mapped"] = mapped
 
@@ -260,11 +264,17 @@ def load(game_dir):
     # only, the DirectShow movie path) or "all" (the desktop decoder list).
     if launcher.setdefault("web_video", "off") not in WEB_VIDEO:
         raise ValueError("%s: [launcher] web_video must be one of %s" % (source, ", ".join(WEB_VIDEO)))
-    # The control lines under the game in the browser: {keyboard = "...",
-    # controller = "..."}, the controller one with {name}/{confirm}/{back}.
+    # The control lines under the game in the browser, either fixed lines
+    # {keyboard = "...", controller = "..."} (the controller one with
+    # {name}/{confirm}/{back}), or actions mapped to binding strings
+    # {accelerate = "key:Up", ...} that the browser resolves against
+    # [controls.mapped].
     hints = launcher.setdefault("input_hints", {})
-    if not isinstance(hints, dict) or not all(
-            k in ("keyboard", "controller") and isinstance(v, str) for k, v in hints.items()):
+    fixed = isinstance(hints, dict) and any(k in ("keyboard", "controller") for k in hints)
+    if not isinstance(hints, dict) or not all(isinstance(k, str) and isinstance(v, str) and v
+                                             for k, v in hints.items()):
+        raise ValueError("%s: [launcher.input_hints] must map actions to binding strings" % source)
+    if fixed and not all(k in ("keyboard", "controller") for k in hints):
         raise ValueError('%s: [launcher] input_hints may set only "keyboard" and "controller" '
                          "strings, not %r" % (source, hints))
     min_free = launcher.setdefault("min_free_mb", 0)
@@ -313,6 +323,20 @@ def load_aux_modules(cfg, game_dir, source):
         raise ValueError("%s: [game] guest_size %#x must be page aligned and at least %#x"
                          % (source, guest_size, GUEST_SIZE_DEFAULT))
     game["guest_size"] = guest_size
+    # [game] upper_heap: a second heap region from UPPER_HEAP_BASE to the end
+    # of the arena, for a game whose start-up reserves more than the low
+    # arena (heap_base..0x0e000000) holds. Auxiliary modules map in that same
+    # range, so the two do not combine.
+    upper = game.setdefault("upper_heap", False)
+    if not isinstance(upper, bool):
+        raise ValueError("%s: [game] upper_heap must be a boolean" % source)
+    if upper and guest_size <= UPPER_HEAP_BASE:
+        raise ValueError("%s: [game] upper_heap needs guest_size above %#x" % (source, UPPER_HEAP_BASE))
+    if guest_size > GUEST_SIZE_MAX:
+        raise ValueError("%s: [game] guest_size %#x is above %#x" % (source, guest_size, GUEST_SIZE_MAX))
+    if upper and cfg.get("modules", {}).get("aux"):
+        raise ValueError("%s: [game] upper_heap and [modules.aux] both use the arena above %#x"
+                         % (source, UPPER_HEAP_BASE))
     modules = []
     for key, entry in sorted(cfg.get("modules", {}).get("aux", {}).items()):
         missing = [k for k in AUX_REQUIRED_KEYS if k not in entry]

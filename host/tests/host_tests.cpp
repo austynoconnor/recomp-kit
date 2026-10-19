@@ -642,6 +642,10 @@ static void test_script_parsing() {
     CHECK_EQ(host_script_dik("ESCAPE"), 0x01);
     CHECK_EQ(host_script_dik("RETURN"), 0x1c);
     CHECK_EQ(host_script_dik("DOWN"), 0xd0);
+    CHECK_EQ(host_script_dik("W"), 0x11);
+    CHECK_EQ(host_script_dik("d"), 0x20);
+    CHECK_EQ(host_script_dik("0"), 0x0b);
+    CHECK_EQ(host_key_mapping_for_dik(0x11).vk, 'W');
     CHECK_EQ(host_script_dik("nonsense"), 0);
     // And the host has to have a real key with that scan code, or the press
     // would go nowhere.

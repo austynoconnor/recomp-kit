@@ -25,6 +25,10 @@ struct Target {
     enum Type { None, Key, Mouse, Wheel, Action } type = None;
     int value = 0;      // Key: scancode; Mouse: 0 left 1 right 2 middle; Wheel: +1 up / -1 down
     std::string action; // Action: "settings" | "system_keyboard" | "edit_layout"
+    // Key only: a second scancode held together with the first ("key:Space+Return"),
+    // for a console button whose action needs one key in races and another in menus.
+    // Last, so Target{type, value, action} initializers keep working.
+    int value2 = 0;
 };
 
 // Every RECOMP_CONTROLS_MAPPED key, defaulted the same as tools/game_config.py's
