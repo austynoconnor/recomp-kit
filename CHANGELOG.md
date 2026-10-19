@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 2026-10-19 16:10 CDT — Claude Opus 5.5 (Fallout: New Vegas): new CMake
+  cache options POP_GEN_OPT (optimization level of the translated code,
+  default 2) and POP_GEN_DEBUG (debug info for it, default ON; OFF adds
+  -g0). A 436-chunk game compiles one job at a time about 3.5 times faster
+  at -O1 without debug info, which is enough for a native build used only
+  to find gaps; shipping and web builds keep the defaults.
 - 2026-10-19 13:38 CDT — Claude Opus 5.5 (Fallout: New Vegas): the pieces a
   2011 Gamebryo game needs. Translator: packed SSE/SSE2 arithmetic, compares
   (CMPcc mnemonics and immediate predicates), min/max/sqrt/reciprocal,

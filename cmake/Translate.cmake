@@ -53,7 +53,15 @@ if(POP_HAVE_GEN)
     target_include_directories(recomp_gen PRIVATE ${_override_dir})
     message(STATUS "Native overrides: ${RECOMP_OVERRIDE_HEADER}")
   endif()
-  pop_optimize(recomp_gen 2)
+  # A very large game (60,000+ functions) takes many hours to compile one job
+  # at a time; a native build used only to find gaps can trade optimization
+  # and debug info for compile time. Shipping builds keep the defaults.
+  set(POP_GEN_OPT 2 CACHE STRING "Optimization level of the translated code")
+  option(POP_GEN_DEBUG "Debug info for the translated code" ON)
+  pop_optimize(recomp_gen ${POP_GEN_OPT})
+  if(NOT POP_GEN_DEBUG)
+    target_compile_options(recomp_gen PRIVATE -g0)
+  endif()
   # A literal jump to another translated function is a tail call in C
   # (CALL_FN; return;). Native compilers turn it into a jump; WebAssembly
   # needs the tail-call feature to, or a loop split across functions grows
