@@ -536,6 +536,27 @@ const Winsock kWinsock[] = {
     {116, "WSACleanup", 0, wsa_ok, false},
     {151, "__WSAFDIsSet", 2, fd_is_set, true},
 };
+// WSOCK32's own numbers where they differ from WS2_32's (10-12 are inet_addr,
+// inet_ntoa and ioctlsocket there), and the WSOCK32 entries the table above
+// leaves to WS2_32 alone. Fallout: New Vegas imports these by ordinal.
+const Winsock kWsock32[] = {
+    {1, "accept", 3, net_down, true},
+    {2, "bind", 3, net_down, true},
+    {3, "closesocket", 1, wsa_ok, true},
+    {4, "connect", 3, net_down, true},
+    {5, "getpeername", 3, net_down, true},
+    {10, "inet_addr", 1, inet_addr_, true},
+    {12, "ioctlsocket", 3, net_down, true},
+    {13, "listen", 2, net_down, true},
+    {16, "recv", 4, net_down, true},
+    {17, "recvfrom", 6, net_down, true},
+    {19, "send", 4, net_down, true},
+    {20, "sendto", 6, net_down, true},
+    {21, "setsockopt", 5, net_down, true},
+    {23, "socket", 3, net_down, true},
+    {101, "WSAAsyncSelect", 4, net_down, true},
+    {111, "WSAGetLastError", 0, wsa_get_last_error, true},
+};
 
 } // namespace
 
@@ -553,6 +574,11 @@ void compat_extra_register() {
             ws.push_back({"WSOCK32.dll", w.name, w.argc, w.fn});
             ws.push_back({"WSOCK32.dll", ord, w.argc, w.fn});
         }
+    }
+    for (const Winsock &w : kWsock32) {
+        names.push_back("ord" + std::to_string(w.ord));
+        ws.push_back({"WSOCK32.dll", w.name, w.argc, w.fn});
+        ws.push_back({"WSOCK32.dll", names.back().c_str(), w.argc, w.fn});
     }
     imports_register(ws.data(), ws.size());
 }

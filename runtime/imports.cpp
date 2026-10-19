@@ -644,12 +644,15 @@ void imports_init() {
     oleaut32_register();
     misc_dlls_register();
     compat_extra_register();
+    compat_2008_register();
+    compat_2011_register();
     comctl32_register();
     media_foundation_register();
     imports_register(g_user32_shims, g_user32_shim_count);
     user32_wide_register();
     user32_vcl_register();
     imports_register(g_misc_shims, g_misc_shim_count);
+    mmio_register();
     imports_register(g_gdi32_shims, g_gdi32_shim_count);
     extern void gdi_model_register();
     gdi_model_register();

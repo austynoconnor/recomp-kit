@@ -45,6 +45,9 @@ void redbook_frame_pump(X86 *c);
 void fmod_register();
 void soundlib_register();
 void galaxy_stub_register();
+void steam_api_register();
+void vorbisfile_register();
+void vorbisfile_reset();
 void bink_register();
 void weanetr_register();
 // Media Foundation: the session, the topology it is given and the file it

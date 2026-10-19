@@ -72,7 +72,7 @@ struct BinkPlayer {
     AVFormatContext *input = nullptr;
     AVIOContext *io = nullptr;
     int file_fd = -1;
-    uint32_t guest_io = 0;     // the game's BINKIO, when it streams the file itself
+    uint32_t guest_io = 0;      // the game's BINKIO, when it streams the file itself
     int64_t guest_position = 0; // bytes consumed from that stream
     int64_t file_start = 0, file_length = 0, file_position = 0;
     AVCodecContext *video = nullptr, *audio = nullptr;
@@ -223,12 +223,15 @@ int64_t seek_guest_io(void *opaque, int64_t offset, int whence) {
     whence &= ~AVSEEK_FORCE;
     if (whence == AVSEEK_SIZE)
         return -1;
-    int64_t target = whence == SEEK_SET ? offset : whence == SEEK_CUR ? p.guest_position + offset : -1;
+    int64_t target = whence == SEEK_SET   ? offset
+                     : whence == SEEK_CUR ? p.guest_position + offset
+                                          : -1;
     if (target < p.guest_position)
         return AVERROR(ESPIPE);
     uint8_t scratch[4096];
     while (p.guest_position < target) {
-        int n = read_guest_io(&p, scratch, (int)std::min<int64_t>(sizeof scratch, target - p.guest_position));
+        int n = read_guest_io(&p, scratch,
+                              (int)std::min<int64_t>(sizeof scratch, target - p.guest_position));
         if (n < 0)
             return n;
     }
@@ -715,6 +718,57 @@ void BinkCopyToBuffer(X86 *c) {
                                 (uint32_t)p->frame->width, (VideoSurfaceType)type);
 }
 
+// BinkCopyToBufferRect(bink, dest, pitch, height, destx, desty, srcx, srcy,
+// srcw, srch, flags): the source rectangle only, placed at destx, desty.
+// Surface types 3 and 5 (BINKSURFACE32, 32A) are both 8888 in memory; the
+// alpha a 32A surface would carry is opaque here, as Bink writes it for a
+// video without an alpha plane.
+void BinkCopyToBufferRect(X86 *c) {
+    g_cpu = c;
+    set_eax(c, 0);
+    BinkPlayer *p = player_for(arg(c, 0));
+    if (!p || !p->have_frame || p->failed)
+        return;
+    uint32_t type = arg(c, 10) & 0xff;
+    bool alpha = type == 5;
+    if (alpha)
+        type = VIDEO_XRGB8888;
+    if (type != VIDEO_RGB565 && type != VIDEO_RGB555 && type != VIDEO_XRGB8888)
+        return;
+    uint32_t fw = (uint32_t)p->frame->width, fh = (uint32_t)p->frame->height;
+    uint32_t sx = arg(c, 6), sy = arg(c, 7), sw = arg(c, 8), sh = arg(c, 9);
+    if (sx >= fw || sy >= fh)
+        return;
+    sw = std::min(sw, fw - sx);
+    sh = std::min(sh, fh - sy);
+    sh = std::min(sh, arg(c, 3));
+    uint64_t bpp = type == VIDEO_XRGB8888 ? 4 : 2;
+    uint64_t pitch = arg(c, 2), xbytes = (uint64_t)arg(c, 4) * bpp, row_bytes = sw * bpp;
+    if (!sw || !sh)
+        return;
+    uint64_t start = (uint64_t)arg(c, 1) + (uint64_t)arg(c, 5) * pitch + xbytes;
+    uint64_t span = (uint64_t)(sh - 1) * pitch + row_bytes;
+    if (!arg(c, 1) || xbytes + row_bytes > pitch || start > UINT32_MAX || span > UINT32_MAX ||
+        !gm_valid((uint32_t)start, (uint32_t)span)) {
+        video_error("copy destination is outside guest memory or pitch");
+        return;
+    }
+    std::vector<uint8_t> row_buf((size_t)fw * bpp);
+    for (uint32_t row = 0; row < sh; ++row) {
+        uint32_t y = sy + row;
+        video_frame_convert_row(row_buf.data(),
+                                p->frame->data[0] + (ptrdiff_t)y * p->frame->linesize[0],
+                                p->frame->data[1] + (ptrdiff_t)(y / 2) * p->frame->linesize[1],
+                                p->frame->data[2] + (ptrdiff_t)(y / 2) * p->frame->linesize[2], fw,
+                                (VideoSurfaceType)type);
+        uint8_t *dst = g_mem + start + (uint64_t)row * pitch;
+        memcpy(dst, row_buf.data() + sx * bpp, (size_t)row_bytes);
+        if (alpha)
+            for (uint32_t x = 0; x < sw; ++x)
+                dst[4 * x + 3] = 0xff;
+    }
+}
+
 void BinkClose(X86 *c) {
     g_cpu = c;
     uint32_t rec = arg(c, 0);
@@ -774,6 +828,9 @@ void BinkService(X86 *c) {
     ret0(c);
 }
 void BinkCopyToBuffer(X86 *c) {
+    ret0(c);
+}
+void BinkCopyToBufferRect(X86 *c) {
     ret0(c);
 }
 #endif
@@ -870,6 +927,7 @@ const ImportShim g_video_shims[] = {
     BINK(NextFrame, 4, BinkNextFrame),
     BINK(Wait, 4, BinkWait),
     BINK(CopyToBuffer, 28, BinkCopyToBuffer),
+    BINK(CopyToBufferRect, 44, BinkCopyToBufferRect),
     BINK(Service, 4, BinkService),
     BINK(GetError, 0, BinkGetError),
     BINK(Close, 4, BinkClose),

@@ -2204,6 +2204,8 @@ static const ImportShim g_d3dx9_exports[] = {
     {"d3dx9_26.dll", "D3DXVec3Normalize", 2, X_D3DXVec3Normalize},
 };
 
+void d3dx9_38_register(const ImportShim *d3dx9_26, size_t count);
+
 void d3dx9_reset() {
     effects().clear();
 }
@@ -2220,4 +2222,5 @@ void d3dx9_register() {
     com_bind(IF_D3DXEFFECT, K_D3DXEFFECT);
     com_set_destructor(K_D3DXEFFECT, fx_destroy);
     imports_register(g_d3dx9_exports, std::size(g_d3dx9_exports));
+    d3dx9_38_register(g_d3dx9_exports, std::size(g_d3dx9_exports));
 }

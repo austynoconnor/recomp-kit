@@ -1255,109 +1255,7 @@ void m_timeEndPeriod(X86 *c) {
     set_eax(c, 0);
 }
 
-// mmio: a thin wrapper over the same case-insensitive file layer as CreateFileA.
-struct MmioFile {
-    FILE *fp = nullptr;
-    std::string path;
-    bool writable = false;
-};
-std::map<uint32_t, MmioFile> &mmios() {
-    static std::map<uint32_t, MmioFile> m;
-    return m;
-}
-uint32_t g_next_mmio = 0x00040004;
-
-void m_mmioOpenA(X86 *c) {
-    std::string name = gm_str(arg(c, 0), 260);
-    uint32_t pinfo = arg(c, 1), flags = arg(c, 2);
-    bool write = (flags & 0x00000001) != 0;     // MMIO_WRITE
-    bool readwrite = (flags & 0x00000002) != 0; // MMIO_READWRITE
-    bool create = (flags & 0x00001000) != 0;    // MMIO_CREATE
-
-    std::string host = win32_host_path(name, write || readwrite || create);
-    if (host.empty()) {
-        LOGV("mmioOpenA(%s): not found", name.c_str());
-        if (pinfo)
-            wr32(pinfo + 4, 258); // MMIOINFO.wErrorRet = MMIOERR_FILENOTFOUND
-        set_eax(c, 0);
-        return;
-    }
-    const char *mode = create      ? (readwrite ? "w+b" : "wb")
-                       : readwrite ? "r+b"
-                       : write     ? "r+b"
-                                   : "rb";
-    FILE *fp = fopen(host.c_str(), mode);
-    if (!fp) {
-        LOGV("mmioOpenA(%s, mode %s): open failed", name.c_str(), mode);
-        if (pinfo)
-            wr32(pinfo + 4, 262); // MMIOERR_CANNOTOPEN
-        set_eax(c, 0);
-        return;
-    }
-    if (create || write || readwrite)
-        win32_invalidate_dir_cache();
-    uint32_t h = g_next_mmio;
-    g_next_mmio += 4;
-    mmios()[h] = MmioFile{fp, host, write || readwrite || create};
-    set_eax(c, h);
-}
-
-void m_mmioWrite(X86 *c) {
-    auto it = mmios().find(arg(c, 0));
-    uint32_t buf = arg(c, 1), n = arg(c, 2);
-    if (it == mmios().end() || !it->second.writable || !gm_valid(buf, n)) {
-        set_eax(c, 0xffffffffu);
-        return;
-    }
-    set_eax(c, (uint32_t)fwrite(g_mem + buf, 1, n, it->second.fp));
-}
-
-void m_mmioFlush(X86 *c) {
-    auto it = mmios().find(arg(c, 0));
-    if (it != mmios().end())
-        fflush(it->second.fp);
-    set_eax(c, 0);
-}
-
-void m_mmioRead(X86 *c) {
-    auto it = mmios().find(arg(c, 0));
-    uint32_t buf = arg(c, 1), n = arg(c, 2);
-    if (it == mmios().end() || !gm_valid(buf, n)) {
-        set_eax(c, 0xffffffffu);
-        return;
-    }
-    size_t got = fread(g_mem + buf, 1, n, it->second.fp);
-    set_eax(c, (uint32_t)got);
-}
-
-void m_mmioSeek(X86 *c) {
-    auto it = mmios().find(arg(c, 0));
-    int32_t off = (int32_t)arg(c, 1);
-    uint32_t origin = arg(c, 2);
-    if (it == mmios().end()) {
-        set_eax(c, 0xffffffffu);
-        return;
-    }
-    int whence = origin == 1 ? SEEK_CUR : origin == 2 ? SEEK_END : SEEK_SET;
-    if (fseek(it->second.fp, off, whence) != 0) {
-        set_eax(c, 0xffffffffu);
-        return;
-    }
-    set_eax(c, (uint32_t)ftell(it->second.fp));
-}
-
-void m_mmioClose(X86 *c) {
-    auto it = mmios().find(arg(c, 0));
-    if (it != mmios().end()) {
-        fclose(it->second.fp);
-        mmios().erase(it);
-    }
-    set_eax(c, 0);
-}
-
-void m_mmioSetBuffer(X86 *c) {
-    set_eax(c, 0);
-} // MMSYSERR_NOERROR
+// mmio lives in mmio.cpp.
 
 // ---------------------------------------------------------------------------
 // MIDI out.
@@ -2185,14 +2083,7 @@ const ImportShim g_misc_shims[] = {
     {"WINMM.dll", "timeKillEvent", 1, m_timeKillEvent},
     {"WINMM.dll", "timeBeginPeriod", 1, m_timeBeginPeriod},
     {"WINMM.dll", "timeEndPeriod", 1, m_timeEndPeriod},
-    {"WINMM.dll", "mmioOpenA", 3, m_mmioOpenA},
-    {"WINMM.dll", "mmioRead", 3, m_mmioRead},
-    {"WINMM.dll", "mmioSeek", 3, m_mmioSeek},
-    {"WINMM.dll", "mmioClose", 2, m_mmioClose},
-    {"WINMM.dll", "mmioSetBuffer", 4, m_mmioSetBuffer},
     // Not imported by this EXE, but mmio is only coherent with both halves.
-    {"WINMM.dll", "mmioWrite", 3, m_mmioWrite},
-    {"WINMM.dll", "mmioFlush", 2, m_mmioFlush},
     {"WINMM.dll", "midiOutGetNumDevs", 0, m_midiOutGetNumDevs},
     {"WINMM.dll", "auxGetNumDevs", 0, m_auxGetNumDevs},
     {"WINMM.dll", "midiOutGetDevCapsA", 3, m_midiOutGetDevCapsA},

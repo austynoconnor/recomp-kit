@@ -615,6 +615,8 @@ void dx_register_shims() {
     fmod_register();
     soundlib_register();
     galaxy_stub_register();
+    steam_api_register();
+    vorbisfile_register();
     bink_register();
     weanetr_register();
     mf_register();
@@ -647,6 +649,7 @@ void dx_reset() {
     dshow_reset();
     dinput_reset();
     bink_reset();
+    vorbisfile_reset();
     mf_reset();
     audio_channels().clear();
     com_reset();

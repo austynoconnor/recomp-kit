@@ -1044,6 +1044,46 @@ void k_GetFileSize(X86 *c) {
     set_eax(c, (uint32_t)st.size);
 }
 
+// SetFilePointerEx(handle, LARGE_INTEGER distance, PLARGE_INTEGER new, method):
+// the distance is passed by value, two stack dwords, so the call has five.
+void k_SetFilePointerEx(X86 *c) {
+    HObj *o = handle_get(arg(c, 0), H_FILE);
+    int64_t dist = (int64_t)((uint64_t)arg(c, 1) | ((uint64_t)arg(c, 2) << 32));
+    uint32_t out = arg(c, 3), method = arg(c, 4);
+    if (!o) {
+        set_last_error(ERROR_INVALID_HANDLE_);
+        set_eax(c, 0);
+        return;
+    }
+    int whence = method == 1 ? OS_SEEK_CUR : method == 2 ? OS_SEEK_END : OS_SEEK_SET;
+    int64_t pos = os_fd_seek(o->fd, dist, whence);
+    if (pos < 0) {
+        set_last_error(131); // ERROR_NEGATIVE_SEEK
+        set_eax(c, 0);
+        return;
+    }
+    if (out && gm_valid(out, 8)) {
+        wr32(out, (uint32_t)pos);
+        wr32(out + 4, (uint32_t)((uint64_t)pos >> 32));
+    }
+    set_eax(c, 1);
+}
+
+// GetFileSizeEx(handle, PLARGE_INTEGER size).
+void k_GetFileSizeEx(X86 *c) {
+    HObj *o = handle_get(arg(c, 0), H_FILE);
+    uint32_t out = arg(c, 1);
+    OsStat st{};
+    if (!o || !out || !gm_valid(out, 8) || os_fd_stat(o->fd, &st) != 0) {
+        set_last_error(ERROR_INVALID_HANDLE_);
+        set_eax(c, 0);
+        return;
+    }
+    wr32(out, (uint32_t)st.size);
+    wr32(out + 4, (uint32_t)(st.size >> 32));
+    set_eax(c, 1);
+}
+
 void k_CloseHandle(X86 *c) {
     uint32_t h = arg(c, 0);
     HObj *o = handle_any(h);
@@ -1574,14 +1614,14 @@ void k_GetSystemInfo(X86 *c) {
         return;
     }
     memset(g_mem + p, 0, 36);
-    wr32(p + 0, 0);           // wProcessorArchitecture = INTEL, wReserved
-    wr32(p + 4, 4096);        // dwPageSize
-    wr32(p + 8, IMAGE_BASE);  // lpMinimumApplicationAddress
+    wr32(p + 0, 0);                     // wProcessorArchitecture = INTEL, wReserved
+    wr32(p + 4, 4096);                  // dwPageSize
+    wr32(p + 8, IMAGE_BASE);            // lpMinimumApplicationAddress
     wr32(p + 12, heap_highest_limit()); // lpMaximumApplicationAddress
-    wr32(p + 16, 1);          // dwActiveProcessorMask
-    wr32(p + 20, 1);          // dwNumberOfProcessors
-    wr32(p + 24, 586);        // dwProcessorType = PROCESSOR_INTEL_PENTIUM
-    wr32(p + 28, 4096);       // dwAllocationGranularity is 65536 on Win32
+    wr32(p + 16, 1);                    // dwActiveProcessorMask
+    wr32(p + 20, 1);                    // dwNumberOfProcessors
+    wr32(p + 24, 586);                  // dwProcessorType = PROCESSOR_INTEL_PENTIUM
+    wr32(p + 28, 4096);                 // dwAllocationGranularity is 65536 on Win32
     wr32(p + 28, 65536);
     wr32(p + 32, (5 << 8) | 6); // wProcessorLevel / wProcessorRevision
     set_eax(c, 0);
@@ -3111,8 +3151,8 @@ void sched_note_import(X86 *c, uint32_t idx) {
         return;
     // The caller holds the baton, so no other guest thread changes the list.
     for (GuestThread *t : threads())
-        LOGW("[sched] thread %zu id %u%s%s%s%s: %llu imports, last %s from %08x%s", t->index,
-             t->id, t->is_main ? " main" : "", t->finished ? " finished" : "",
+        LOGW("[sched] thread %zu id %u%s%s%s%s: %llu imports, last %s from %08x%s", t->index, t->id,
+             t->is_main ? " main" : "", t->finished ? " finished" : "",
              t->blocked ? " blocked on " : "", t->blocked ? wait_kind_name(t->wait_kind) : "",
              (unsigned long long)t->import_calls,
              t->last_import == 0xffffffffu ? "-" : imports_trampoline_desc(t->last_import),
@@ -5315,6 +5355,8 @@ const ImportShim g_kernel32_shims[] = {
     {"KERNEL32.dll", "WriteFile", 5, k_WriteFile},
     {"KERNEL32.dll", "SetFilePointer", 4, k_SetFilePointer},
     {"KERNEL32.dll", "GetFileSize", 2, k_GetFileSize},
+    {"KERNEL32.dll", "GetFileSizeEx", 2, k_GetFileSizeEx},
+    {"KERNEL32.dll", "SetFilePointerEx", 5, k_SetFilePointerEx},
     {"KERNEL32.dll", "CloseHandle", 1, k_CloseHandle},
     {"KERNEL32.dll", "FlushFileBuffers", 1, k_FlushFileBuffers},
     {"KERNEL32.dll", "SetEndOfFile", 1, k_SetEndOfFile},

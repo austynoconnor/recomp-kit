@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- 2026-10-19 13:38 CDT — Claude Opus 5.5 (Fallout: New Vegas): the pieces a
+  2011 Gamebryo game needs. Translator: packed SSE/SSE2 arithmetic, compares
+  (CMPcc mnemonics and immediate predicates), min/max/sqrt/reciprocal,
+  unpacks, MOVHLPS/MOVLHPS, mask moves, int/float conversions, byte shifts
+  and the XMM forms of the MMX integer ops (Havok uses packed SSE without a
+  CPUID test); a new unicorn-checked insns case covers them. The translator
+  keeps translated bodies zlib-compressed and interns operand strings, so a
+  63,000-function game translates in about 1.5 GB instead of running a
+  shared PC out of memory. Runtime: a complete in-memory mmio (open, read,
+  write, seek, RIFF descend/ascend/create), GetPrivateProfileString/Int and
+  WritePrivateProfileString in ANSI with a per-file cache (the game reads
+  its INI over a thousand times at start-up), SetFilePointerEx and
+  GetFileSizeEx, WSOCK32 by ordinal, compat_2008 (from giggity-bully, less
+  its EndDialog and TranslateAcceleratorA, which had overridden the real
+  ones) and compat_2011 (critical sections with spin count,
+  EnumDisplayDevicesA, CommandLineToArgvW, FormatMessageA and other small
+  calls). DX: d3dx9_38 (DDS loading for 2D/cube/volume textures, image
+  info, matrix and plane helpers), libvorbisfile decoded by stb_vorbis
+  1.22, BinkCopyToBufferRect, XINPUT1_3 by ordinal, and an offline
+  GalaxyWrp/steam_api (SteamAPI_Init reports no client).
 - 2026-10-16 00:45 CDT — Claude Opus 5.5 (perf pass): QueryPerformanceCounter
   counts a microsecond clock (new host_micros: starts at host_millis() and
   advances by the monotonic clock, performance.now() in a browser) instead

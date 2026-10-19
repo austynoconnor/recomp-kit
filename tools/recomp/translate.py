@@ -24,6 +24,7 @@ import re
 import struct
 import sys
 import time
+import zlib
 from collections import defaultdict
 from pathlib import Path
 from bisect import bisect_right
@@ -655,6 +656,64 @@ def operand_size(ops, hint=None):
 LINE_RE = re.compile(r"^([0-9a-f]{8})  (\S+)(?: (.*))?$")
 
 
+class PackedBodies(object):
+    """Translated bodies by address, each kept zlib-compressed.
+
+    A body is a list of C lines; a whole large game's worth of them as Python
+    strings is several gigabytes, which a shared machine does not have. C
+    compresses about tenfold, and each body is read back only for the few
+    passes that rewrite or scan it. A body round-trips exactly: lines are
+    joined on a NUL, which C source never contains."""
+
+    def __init__(self):
+        self._d = {}
+
+    @staticmethod
+    def _pack(lines):
+        if not lines:
+            return None
+        return zlib.compress("\0".join(lines).encode("utf-8"), 1)
+
+    @staticmethod
+    def _unpack(blob):
+        if blob is None:
+            return []
+        return zlib.decompress(blob).decode("utf-8").split("\0")
+
+    def __setitem__(self, addr, lines):
+        assert not any("\0" in l for l in lines)
+        self._d[addr] = self._pack(lines)
+
+    def __getitem__(self, addr):
+        return self._unpack(self._d[addr])
+
+    def get(self, addr, default=None):
+        if addr not in self._d:
+            return default
+        return self._unpack(self._d[addr])
+
+    def __delitem__(self, addr):
+        del self._d[addr]
+
+    def __contains__(self, addr):
+        return addr in self._d
+
+    def __iter__(self):
+        return iter(list(self._d))
+
+    def __len__(self):
+        return len(self._d)
+
+    def keys(self):
+        return list(self._d)
+
+    def items(self):
+        return [(a, self._unpack(b)) for a, b in self._d.items()]
+
+    def keep_only(self, addrs):
+        self._d = {a: b for a, b in self._d.items() if a in addrs}
+
+
 class Insn(object):
     __slots__ = ("addr", "mnem", "rep", "ops", "text", "raw")
 
@@ -692,8 +751,10 @@ def parse_listing_text(text):
             if "." in mnem:
                 mnem, rep = mnem.split(".", 1)
             opstr = m.group(3) or ""
-            ops = [o for o in (x.strip() for x in opstr.split(",")) if o]
-            insns.append(Insn(addr, mnem, rep, ops, line))
+            # Operand spellings repeat across millions of instructions in a
+            # large game; one shared string each keeps the listing in memory.
+            ops = [sys.intern(o) for o in (x.strip() for x in opstr.split(",")) if o]
+            insns.append(Insn(addr, sys.intern(mnem), rep, ops, line))
     insns.sort(key=lambda i: i.addr)
     return insns
 
@@ -3476,6 +3537,10 @@ class Translator(object):
                              for i in range(1 if single else 2, 4))
             return L
 
+        sse_packed = self.emit_sse_packed(ins, m, ops)
+        if sse_packed is not None:
+            return sse_packed
+
         if m in ("MOVUPS", "MOVAPS", "MOVDQU", "MOVDQA", "MOVQ", "MOVD", "PSHUFD"):
             def lane(op, i):
                 if op.kind == "xmm":
@@ -3767,6 +3832,236 @@ class Translator(object):
         if op.size in (16, 32, 64):
             return "(int%d_t)rd%d(%s)" % (op.size, op.size, addr_expr(op))
         raise TranslateError("bad x87 integer size %r" % op.size)
+
+    def emit_sse_packed(self, ins, m, ops):
+        """Packed single and double arithmetic, compares, conversions, masks
+        and the XMM forms of the MMX integer set, or None for anything else.
+
+        Fallout: New Vegas runs Havok's vector maths (MULPS, SHUFPS, ADDPS,
+        RSQRTSS, CMPLEPS ...) whatever CPUID says; Havok's PC build has no
+        x87 path. Every form reads all of its source lanes before it writes a
+        destination lane, because the destination is commonly a source too.
+        Floats are host floats in the same IEEE format and rounding mode; the
+        reciprocal estimates (RCPPS, RSQRTSS ...) return the exact value,
+        which is inside the hardware's error bound."""
+        L = []
+        if not ops or ops[0].kind not in ("xmm", "mem", "reg"):
+            return None
+        has_xmm = any(o.kind == "xmm" for o in ops)
+
+        def lane(op, i):
+            if op.kind == "xmm":
+                return "c->xmm[%d][%d]" % (op.reg, i)
+            return "rd32(%s + %du)" % (addr_expr(op), 4 * i)
+
+        def put(op, i, value):
+            if op.kind == "xmm":
+                return "c->xmm[%d][%d] = %s;" % (op.reg, i, value)
+            return "wr32(%s + %du, %s);" % (addr_expr(op), 4 * i, value)
+
+        def read_lanes(prefix, op, n=4):
+            return ["uint32_t %s%d_ = %s;" % (prefix, i, lane(op, i)) for i in range(n)]
+
+        f = lambda p, i: "recomp_u2f(%s%d_)" % (p, i)
+        u = lambda value: "recomp_f2u(%s)" % value
+        dbl = lambda p, i: "recomp_u2d(%s%d_, %s%d_)" % (p, 2 * i, p, 2 * i + 1)
+
+        def put_double(op, i, value):
+            return ["{ uint64_t q_ = recomp_d2u(%s); %s %s }"
+                    % (value, put(op, 2 * i, "(uint32_t)q_"), put(op, 2 * i + 1, "(uint32_t)(q_ >> 32)"))]
+
+        PS_MATH = {"ADDPS": "+", "SUBPS": "-", "MULPS": "*", "DIVPS": "/"}
+        PD_MATH = {"ADDPD": "+", "SUBPD": "-", "MULPD": "*", "DIVPD": "/"}
+        CMP_PRED = {"EQ": 0, "LT": 1, "LE": 2, "UNORD": 3, "NEQ": 4, "NLT": 5, "NLE": 6, "ORD": 7}
+
+        # CMPccPS / CMPccSS / CMPccPD / CMPccSD, spelled with the predicate in
+        # the mnemonic or as the CMPPS-style third operand.
+        cmp = re.match(r"^CMP(EQ|LT|LE|UNORD|NEQ|NLT|NLE|ORD)?(PS|SS|PD|SD)$", m)
+        if cmp and has_xmm and (cmp.group(1) or len(ops) == 3):
+            pred = CMP_PRED[cmp.group(1)] if cmp.group(1) else parse_imm(ins.ops[2]) & 7
+            form = cmp.group(2)
+            dst, src = ops[0], ops[1]
+            if form in ("PS", "SS"):
+                n = 4 if form == "PS" else 1
+                L.extend(read_lanes("d", dst, n))
+                L.extend(read_lanes("s", src, n))
+                L.extend(put(dst, i, "recomp_sse_cmpf(%s, %s, %d)" % (f("d", i), f("s", i), pred))
+                         for i in range(n))
+                return L
+            n = 2 if form == "PD" else 1
+            L.extend(read_lanes("d", dst, 2 * n))
+            L.extend(read_lanes("s", src, 2 * n))
+            for i in range(n):
+                L.append("{ uint32_t k_ = recomp_sse_cmpd(%s, %s, %d); %s %s }"
+                         % (dbl("d", i), dbl("s", i), pred, put(dst, 2 * i, "k_"),
+                            put(dst, 2 * i + 1, "k_")))
+            return L
+
+        if m in PS_MATH or m in ("MINPS", "MAXPS", "SQRTPS", "RSQRTPS", "RCPPS"):
+            dst, src = ops[0], ops[1]
+            L.extend(read_lanes("d", dst))
+            L.extend(read_lanes("s", src))
+            for i in range(4):
+                if m in PS_MATH:
+                    v = "%s %s %s" % (f("d", i), PS_MATH[m], f("s", i))
+                elif m == "MINPS":
+                    v = "recomp_sse_minf(%s, %s)" % (f("d", i), f("s", i))
+                elif m == "MAXPS":
+                    v = "recomp_sse_maxf(%s, %s)" % (f("d", i), f("s", i))
+                elif m == "SQRTPS":
+                    v = "recomp_sse_sqrtf(%s)" % f("s", i)
+                elif m == "RSQRTPS":
+                    v = "recomp_sse_rsqrtf(%s)" % f("s", i)
+                else:
+                    v = "recomp_sse_rcpf(%s)" % f("s", i)
+                L.append(put(dst, i, u(v)))
+            return L
+        if m in ("RSQRTSS", "RCPSS"):
+            dst, src = ops[0], ops[1]
+            L.extend(read_lanes("s", src, 1))
+            fn = "recomp_sse_rsqrtf" if m == "RSQRTSS" else "recomp_sse_rcpf"
+            L.append(put(dst, 0, u("%s(%s)" % (fn, f("s", 0)))))
+            return L
+        if m in PD_MATH or m in ("MINPD", "MAXPD", "SQRTPD"):
+            dst, src = ops[0], ops[1]
+            L.extend(read_lanes("d", dst))
+            L.extend(read_lanes("s", src))
+            for i in range(2):
+                if m in PD_MATH:
+                    v = "%s %s %s" % (dbl("d", i), PD_MATH[m], dbl("s", i))
+                elif m == "MINPD":
+                    v = "recomp_sse_mind(%s, %s)" % (dbl("d", i), dbl("s", i))
+                elif m == "MAXPD":
+                    v = "recomp_sse_maxd(%s, %s)" % (dbl("d", i), dbl("s", i))
+                else:
+                    v = "recomp_sse_sqrt(%s)" % dbl("s", i)
+                L.extend(put_double(dst, i, v))
+            return L
+        if m in ("UNPCKLPS", "UNPCKHPS", "MOVHLPS", "MOVLHPS"):
+            dst, src = ops[0], ops[1]
+            L.extend(read_lanes("d", dst))
+            L.extend(read_lanes("s", src))
+            order = {"UNPCKLPS": ("d0_", "s0_", "d1_", "s1_"),
+                     "UNPCKHPS": ("d2_", "s2_", "d3_", "s3_"),
+                     "MOVHLPS": ("s2_", "s3_", "d2_", "d3_"),
+                     "MOVLHPS": ("d0_", "d1_", "s0_", "s1_")}[m]
+            L.extend(put(dst, i, v) for i, v in enumerate(order))
+            return L
+        if m in ("MOVNTPS", "MOVNTDQ", "MOVNTPD", "LDDQU"):
+            dst, src = ops[0], ops[1]
+            L.extend(read_lanes("s", src))
+            L.extend(put(dst, i, "s%d_" % i) for i in range(4))
+            return L
+        if m == "MOVMSKPS":
+            src = ops[1]
+            L.extend(read_lanes("s", src))
+            L.append(write_op(ops[0], 32, "(s0_ >> 31) | ((s1_ >> 31) << 1) | ((s2_ >> 31) << 2) | ((s3_ >> 31) << 3)"))
+            return L
+        if m == "MOVMSKPD":
+            src = ops[1]
+            L.extend(read_lanes("s", src))
+            L.append(write_op(ops[0], 32, "(s1_ >> 31) | ((s3_ >> 31) << 1)"))
+            return L
+        if m == "PMOVMSKB" and has_xmm:
+            src = ops[1]
+            L.extend(read_lanes("s", src))
+            L.append("{ uint32_t k_ = 0; for (int b_ = 0; b_ < 16; ++b_) { uint32_t w_ = b_ < 4 ? s0_ : b_ < 8 ? s1_ : b_ < 12 ? s2_ : s3_; k_ |= ((w_ >> (8 * (b_ & 3) + 7)) & 1u) << b_; } %s }"
+                     % write_op(ops[0], 32, "k_"))
+            return L
+        if m in ("CVTDQ2PS", "CVTPS2DQ", "CVTTPS2DQ"):
+            dst, src = ops[0], ops[1]
+            L.extend(read_lanes("s", src))
+            for i in range(4):
+                if m == "CVTDQ2PS":
+                    v = u("(float)(int32_t)s%d_" % i)
+                elif m == "CVTPS2DQ":
+                    v = "recomp_sse_cvtf2i(%s)" % f("s", i)
+                else:
+                    v = "recomp_sse_cvttf2i(%s)" % f("s", i)
+                L.append(put(dst, i, v))
+            return L
+        if m == "CVTDQ2PD":
+            dst, src = ops[0], ops[1]
+            L.extend(read_lanes("s", src, 2))
+            for i in range(2):
+                L.extend(put_double(dst, i, "(double)(int32_t)s%d_" % i))
+            return L
+        if m in ("CVTPS2PD", "CVTPD2PS"):
+            dst, src = ops[0], ops[1]
+            L.extend(read_lanes("s", src, 4 if m == "CVTPD2PS" else 2))
+            if m == "CVTPS2PD":
+                for i in range(2):
+                    L.extend(put_double(dst, i, "(double)%s" % f("s", i)))
+            else:
+                for i in range(2):
+                    L.append(put(dst, i, u("(float)%s" % dbl("s", i))))
+                L.extend(put(dst, i, "0u") for i in (2, 3))
+            return L
+        if m in ("CVTSS2SI", "CVTSD2SI"):
+            src = ops[1]
+            if m == "CVTSS2SI":
+                L.extend(read_lanes("s", src, 1))
+                L.append(write_op(ops[0], 32, "recomp_sse_cvtf2i(%s)" % f("s", 0)))
+            else:
+                L.extend(read_lanes("s", src, 2))
+                L.append(write_op(ops[0], 32, "recomp_sse_cvtd2i(%s)" % dbl("s", 0)))
+            return L
+        if m in ("PEXTRW", "PINSRW") and has_xmm:
+            sel = parse_imm(ins.ops[2]) & 7
+            word, shift = sel >> 1, 16 * (sel & 1)
+            if m == "PEXTRW":
+                L.append(write_op(ops[0], 32, "(%s >> %d) & 0xffffu" % (lane(ops[1], word), shift)))
+            else:
+                v = read_op(ops[1], 32) if ops[1].kind != "mem" else "(uint32_t)rd16(%s)" % addr_expr(ops[1])
+                L.append("{ uint32_t v_ = (%s) & 0xffffu; %s }"
+                         % (v, put(ops[0], word, "(%s & ~(0xffffu << %d)) | (v_ << %d)"
+                                   % (lane(ops[0], word), shift, shift))))
+            return L
+        if m in ("PSRLDQ", "PSLLDQ") and has_xmm:
+            n = parse_imm(ins.ops[1]) & 0xff
+            dst = ops[0]
+            L.append("{ uint8_t b_[16], r_[16]; memcpy(b_, c->xmm[%d], 16); "
+                     "for (int i_ = 0; i_ < 16; ++i_) { int j_ = i_ %s %d; r_[i_] = j_ >= 0 && j_ < 16 ? b_[j_] : 0; } "
+                     "memcpy(c->xmm[%d], r_, 16); }" % (dst.reg, "+" if m == "PSRLDQ" else "-", n, dst.reg))
+            return L
+        # The MMX integer set on XMM registers: each 64-bit half is an MMX
+        # register's worth, except for the unpacks and packs, which cross.
+        if has_xmm and (m in MMX_BINARY or m in MMX_SHIFT or m in ("PAVGW", "PAVGB", "PMAXSW", "PMINSW", "PMAXUB", "PMINUB")):
+            dst, src = ops[0], ops[1]
+            if dst.kind != "xmm":
+                return None
+            L.extend(read_lanes("d", dst))
+            if src.kind == "imm":
+                L.append("uint64_t sl_ = (uint64_t)0x%xu, sh_ = sl_;" % (src.imm & 0xff))
+            else:
+                L.extend(read_lanes("s", src))
+                L.append("uint64_t sl_ = s0_ | ((uint64_t)s1_ << 32), sh_ = s2_ | ((uint64_t)s3_ << 32);")
+            L.append("uint64_t dl_ = d0_ | ((uint64_t)d1_ << 32), dh_ = d2_ | ((uint64_t)d3_ << 32);")
+            if m in MMX_SHIFT:
+                fn_, bits = MMX_SHIFT[m]
+                lo = "%s(dl_, sl_, %du)" % (fn_, bits)
+                hi = "%s(dh_, sl_, %du)" % (fn_, bits)
+            elif m in ("PAVGW", "PAVGB", "PMAXSW", "PMINSW", "PMAXUB", "PMINUB"):
+                fn_ = "recomp_" + m.lower()
+                lo, hi = "%s(dl_, sl_)" % fn_, "%s(dh_, sh_)" % fn_
+            else:
+                fn_, bits = MMX_BINARY[m]
+                if fn_ == "mmx_punpckl":
+                    lo, hi = "mmx_punpckl(dl_, sl_, %du)" % bits, "mmx_punpckh(dl_, sl_, %du)" % bits
+                elif fn_ == "mmx_punpckh":
+                    lo, hi = "mmx_punpckl(dh_, sh_, %du)" % bits, "mmx_punpckh(dh_, sh_, %du)" % bits
+                elif fn_.startswith("mmx_pack"):
+                    lo, hi = "%s(dl_, dh_)" % fn_, "%s(sl_, sh_)" % fn_
+                elif bits:
+                    lo, hi = "%s(dl_, sl_, %du)" % (fn_, bits), "%s(dh_, sh_, %du)" % (fn_, bits)
+                else:
+                    lo, hi = "%s(dl_, sl_)" % fn_, "%s(dh_, sh_)" % fn_
+            L.append("{ uint64_t lo_ = %s, hi_ = %s; c->xmm[%d][0] = (uint32_t)lo_; "
+                     "c->xmm[%d][1] = (uint32_t)(lo_ >> 32); c->xmm[%d][2] = (uint32_t)hi_; "
+                     "c->xmm[%d][3] = (uint32_t)(hi_ >> 32); }"
+                     % (lo, hi, dst.reg, dst.reg, dst.reg, dst.reg))
+            return L
+        return None
 
     def emit_mmx(self, ins, m):
         """MMX on the eight MMn registers, through runtime/x86.h's helpers."""
@@ -5452,7 +5747,7 @@ def main():
     for t, fn in extra.items():
         entries_by_fn[fn.addr].add(t)
 
-    bodies = {}
+    bodies = PackedBodies()
     for fn in parsed:
         if fn.addr in [a for a, _ in failures]:
             continue
@@ -5717,7 +6012,7 @@ def main():
         # transfers into recomp_call and recomp_jump below.
         seeds = {int(a, 16) for a in args.only} if args.only else set(discovered)
         ok = [fn for fn in ok if fn.addr in seeds]
-        bodies = {a: b for a, b in bodies.items() if a in seeds}
+        bodies.keep_only(seeds)
         extra = {t: f for t, f in extra.items() if f.addr in seeds}
     entry_names = sorted(set([fn.addr for fn in ok])
                          | set(t for t, f in extra.items() if f.addr in bodies))

@@ -387,6 +387,181 @@ static inline float recomp_sse_sqrtf(float v) {
     return sqrtf(v);
 }
 
+/* Packed SSE (translate.py emit_sse_packed). A lane is a dword; these move
+ * it between its bits and a host float or double without aliasing. */
+static inline float recomp_u2f(uint32_t bits) {
+    float v;
+    memcpy(&v, &bits, 4);
+    return v;
+}
+static inline uint32_t recomp_f2u(float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, 4);
+    return bits;
+}
+static inline double recomp_u2d(uint32_t lo, uint32_t hi) {
+    uint64_t bits = (uint64_t)lo | ((uint64_t)hi << 32);
+    double v;
+    memcpy(&v, &bits, 8);
+    return v;
+}
+static inline uint64_t recomp_d2u(double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, 8);
+    return bits;
+}
+/* MINPS/MAXPS return the second operand when either is a NaN or both are
+ * zero, as the hardware does. */
+static inline float recomp_sse_minf(float a, float b) {
+    return a < b ? a : b;
+}
+static inline float recomp_sse_maxf(float a, float b) {
+    return a > b ? a : b;
+}
+static inline double recomp_sse_mind(double a, double b) {
+    return a < b ? a : b;
+}
+static inline double recomp_sse_maxd(double a, double b) {
+    return a > b ? a : b;
+}
+/* RSQRTPS/RCPPS are estimates within 1.5 * 2^-12; the exact value is one
+ * of the answers the hardware may give. */
+static inline float recomp_sse_rsqrtf(float v) {
+    return 1.0f / sqrtf(v);
+}
+static inline float recomp_sse_rcpf(float v) {
+    return 1.0f / v;
+}
+/* CMPccPS predicates 0-7: EQ, LT, LE, UNORD, NEQ, NLT, NLE, ORD. All true
+ * gives a lane of ones. */
+static inline uint32_t recomp_sse_cmpf(float a, float b, int pred) {
+    int r;
+    switch (pred & 7) {
+    case 0:
+        r = a == b;
+        break;
+    case 1:
+        r = a < b;
+        break;
+    case 2:
+        r = a <= b;
+        break;
+    case 3:
+        r = a != a || b != b;
+        break;
+    case 4:
+        r = !(a == b);
+        break;
+    case 5:
+        r = !(a < b);
+        break;
+    case 6:
+        r = !(a <= b);
+        break;
+    default:
+        r = a == a && b == b;
+        break;
+    }
+    return r ? 0xffffffffu : 0u;
+}
+static inline uint32_t recomp_sse_cmpd(double a, double b, int pred) {
+    int r;
+    switch (pred & 7) {
+    case 0:
+        r = a == b;
+        break;
+    case 1:
+        r = a < b;
+        break;
+    case 2:
+        r = a <= b;
+        break;
+    case 3:
+        r = a != a || b != b;
+        break;
+    case 4:
+        r = !(a == b);
+        break;
+    case 5:
+        r = !(a < b);
+        break;
+    case 6:
+        r = !(a <= b);
+        break;
+    default:
+        r = a == a && b == b;
+        break;
+    }
+    return r ? 0xffffffffu : 0u;
+}
+/* CVTPS2DQ/CVTSS2SI round to nearest even (MXCSR's reset mode, which no
+ * translated code changes); the truncating forms chop. A NaN or a value out
+ * of range is the "integer indefinite", 0x80000000. */
+static inline uint32_t recomp_sse_cvtf2i(float v) {
+    if (!(v >= -2147483648.0f && v < 2147483648.0f))
+        return 0x80000000u;
+    return (uint32_t)(int32_t)rintf(v);
+}
+static inline uint32_t recomp_sse_cvttf2i(float v) {
+    if (!(v > -2147483649.0f && v < 2147483648.0f))
+        return 0x80000000u;
+    return (uint32_t)(int32_t)v;
+}
+static inline uint32_t recomp_sse_cvtd2i(double v) {
+    if (!(v > -2147483648.5 && v < 2147483647.5))
+        return 0x80000000u;
+    return (uint32_t)(int32_t)rint(v);
+}
+/* The SSE integer extensions on one 64-bit half. */
+static inline uint64_t recomp_pavgw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; ++i) {
+        uint32_t x = (uint32_t)(a >> (16 * i)) & 0xffffu, y = (uint32_t)(b >> (16 * i)) & 0xffffu;
+        r |= (uint64_t)((x + y + 1) >> 1) << (16 * i);
+    }
+    return r;
+}
+static inline uint64_t recomp_pavgb(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 8; ++i) {
+        uint32_t x = (uint32_t)(a >> (8 * i)) & 0xffu, y = (uint32_t)(b >> (8 * i)) & 0xffu;
+        r |= (uint64_t)((x + y + 1) >> 1) << (8 * i);
+    }
+    return r;
+}
+static inline uint64_t recomp_pmaxsw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; ++i) {
+        int16_t x = (int16_t)(a >> (16 * i)), y = (int16_t)(b >> (16 * i));
+        r |= (uint64_t)(uint16_t)(x > y ? x : y) << (16 * i);
+    }
+    return r;
+}
+static inline uint64_t recomp_pminsw(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; ++i) {
+        int16_t x = (int16_t)(a >> (16 * i)), y = (int16_t)(b >> (16 * i));
+        r |= (uint64_t)(uint16_t)(x < y ? x : y) << (16 * i);
+    }
+    return r;
+}
+static inline uint64_t recomp_pmaxub(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 8; ++i) {
+        uint8_t x = (uint8_t)(a >> (8 * i)), y = (uint8_t)(b >> (8 * i));
+        r |= (uint64_t)(x > y ? x : y) << (8 * i);
+    }
+    return r;
+}
+static inline uint64_t recomp_pminub(uint64_t a, uint64_t b) {
+    uint64_t r = 0;
+    for (int i = 0; i < 8; ++i) {
+        uint8_t x = (uint8_t)(a >> (8 * i)), y = (uint8_t)(b >> (8 * i));
+        r |= (uint64_t)(x < y ? x : y) << (8 * i);
+    }
+    return r;
+}
+
 /* COMISD/UCOMISD and their single-precision forms: the one place SSE writes
  * the guest's flags. Unordered - either operand a NaN - sets ZF, PF and CF
  * together, and the rest of EFLAGS is cleared either way. The difference
