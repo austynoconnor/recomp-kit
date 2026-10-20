@@ -13,6 +13,10 @@ void mem_shutdown();
 // of 16 and every block is at least 16-byte aligned; `align` may request more
 // (VirtualAlloc uses 4096). `zero` clears the usable bytes.
 uint32_t heap_alloc(uint32_t size, bool zero = false, uint32_t align = 16);
+// Allocates exactly [addr, addr + size) when that whole range is free heap,
+// as VirtualAlloc does for a caller that names its base; 0 otherwise. `addr`
+// must be 16-byte aligned.
+uint32_t heap_alloc_at(uint32_t addr, uint32_t size, bool zero = false);
 // Grows or shrinks in place when possible, otherwise allocates and copies.
 // Returns the new address or 0 (in which case the old block is untouched).
 uint32_t heap_realloc(uint32_t addr, uint32_t new_size, bool zero = false);

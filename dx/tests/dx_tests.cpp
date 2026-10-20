@@ -3597,6 +3597,15 @@ static void test_dshow_filtergraph_renderfile() {
     if (graph)
         call_method(graph, 2);
     CHECK_EQ(com_live_count(), live);
+
+    // Fallout: New Vegas asks for IFilterGraph {56A8689F-...} instead.
+    memcpy(g_mem + iid, quartz(0x9f).data(), 16);
+    CHECK_EQ(call_shim(cocreate, {clsid, 0, 1, iid, ppv}), S_OK_);
+    graph = rd32(ppv);
+    CHECK(graph != 0);
+    if (graph)
+        call_method(graph, 2);
+    CHECK_EQ(com_live_count(), live);
     g_queue_enabled = false;
     remove(file.c_str());
     os_rmdir(dir);

@@ -522,7 +522,22 @@ static void fatal_case(const char *which) {
         invoke(&c, "RtlUnwind", {reg, 0, 0, 0});
         recomp_jump(&c, LANDING);
     }
-    invoke(&c, "RaiseException", {0x12345678, 0, 0, 0});
+    // ExceptionContinueExecution is fatal only for a noncontinuable raise.
+    invoke(&c, "RaiseException", {0x12345678, !strcmp(which, "continue") ? 1u : 0u, 0, 0});
+}
+
+// A handler that answers a continuable software raise with
+// ExceptionContinueExecution resumes the code after RaiseException, as MSVC's
+// SetThreadName raise (0x406d1388) relies on.
+static void continuable_raise_continues() {
+    X86 c;
+    loader_init_context(&c);
+    uint32_t reg = c.r[R_ESP] - 32;
+    c.r[R_ESP] = reg;
+    registration(&c, reg, 0xffffffff, handler_continue);
+    c.r[R_ESI] = 0x5151;
+    invoke(&c, "RaiseException", {0x406d1388, 0, 0, 0});
+    CHECK(c.r[R_ESI] == 0x5151);
 }
 
 static void teardown() {
@@ -676,6 +691,7 @@ int main(int argc, char **argv) {
     cleanup_landing(false, true);
     cleanup_landing(true);
     teardown();
+    continuable_raise_continues();
     char exe[4096];
     CHECK(os_exe_path(exe, sizeof exe) == 0);
     chain_diagnostics(exe);

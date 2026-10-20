@@ -1148,6 +1148,22 @@ static void test_memory_shims_2(X86 *c) {
           "the first MEM_COMMIT of a reservation zeroes it");
     call_import(c, "KERNEL32.dll", "VirtualFree", {v3, 0, 0x8000});
 
+    // A named base is reserved exactly there (rounded down to 64 KB) or not
+    // at all: callers probe address space this way.
+    uint32_t named = 0x0d010000u;
+    uint32_t v5 =
+        call_import(c, "KERNEL32.dll", "VirtualAlloc", {named + 0x1234, 0x10000, 0x2000, 4});
+    check(v5 == named, "VirtualAlloc at a free named base reserves exactly there: %08x", v5);
+    check(call_import(c, "KERNEL32.dll", "VirtualAlloc", {named + 0x20000, 0x10000, 0x2000, 4}) ==
+              named + 0x20000,
+          "a second named base beside it is reserved exactly too");
+    check(call_import(c, "KERNEL32.dll", "VirtualAlloc", {named, 0x10000, 0x2000, 4}) == 0,
+          "MEM_RESERVE over a range already reserved fails");
+    check(call_import(c, "KERNEL32.dll", "VirtualAlloc", {0x00500000u, 0x10000, 0x2000, 4}) == 0,
+          "a named base outside the heap fails, as an occupied range does on Windows");
+    call_import(c, "KERNEL32.dll", "VirtualFree", {named, 0, 0x8000});
+    call_import(c, "KERNEL32.dll", "VirtualFree", {named + 0x20000, 0, 0x8000});
+
     // A release of an interior pointer must fail and must leave the region
     // tracked, so a later decommit of the real base still works.
     uint32_t v4 = call_import(c, "KERNEL32.dll", "VirtualAlloc", {0, 8192, 0x1000, 4});

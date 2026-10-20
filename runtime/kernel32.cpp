@@ -738,6 +738,15 @@ void k_VirtualAlloc(X86 *c) {
 
     if (addr) {
         auto it = vm_find(addr);
+        if (it != vm_regions().end() && (type & 0x2000)) {
+            // MEM_RESERVE over a range already reserved fails on Windows; a
+            // caller probing for free address space relies on that.
+            LOGV("VirtualAlloc(%08x, %08x, %x) from %08x: already reserved", addr, size, type,
+                 rd32(c->r[R_ESP]));
+            set_last_error(487); // ERROR_INVALID_ADDRESS
+            set_eax(c, 0);
+            return;
+        }
         if (it != vm_regions().end()) {
             if (type & 0x1000) { // MEM_COMMIT
                 if (!it->second.committed) {
@@ -750,15 +759,42 @@ void k_VirtualAlloc(X86 *c) {
             set_eax(c, addr);
             return;
         }
-        LOGV("VirtualAlloc: ignoring requested base %08x, no region there", addr);
+        // A named base is a reservation at exactly that place, rounded down
+        // to the 64 KB allocation granularity, or a failure, as on Windows.
+        // Callers probe for free address space this way: Fallout: New
+        // Vegas's memory pools try each 16 MB boundary in turn and find their
+        // pool again from an address's top byte, so a block placed anywhere
+        // else is lost to them.
+        uint32_t want = addr & ~0xffffu;
+        uint32_t span = ((addr + size + 4095u) & ~4095u) - want;
+        uint32_t base = heap_alloc_at(want, span ? span : 4096, true);
+        if (!base) {
+            LOGV("VirtualAlloc(%08x, %08x, %x) from %08x: that range is not free", addr, size, type,
+                 rd32(c->r[R_ESP]));
+            set_last_error(487); // ERROR_INVALID_ADDRESS
+            set_eax(c, 0);
+            return;
+        }
+        VmRegion r;
+        r.size = span ? span : 4096;
+        r.committed = (type & 0x1000) != 0;
+        vm_regions()[base] = r;
+        LOGV("VirtualAlloc(%08x, %08x, %x) from %08x -> %08x", addr, size, type, rd32(c->r[R_ESP]),
+             base);
+        set_eax(c, base);
+        return;
     }
 
     uint32_t base = heap_alloc(pages, true, 4096);
     if (!base) {
+        LOGW("VirtualAlloc(%08x, %08x, %x) from %08x: no room for %u MB in the guest heap", addr,
+             size, type, rd32(c->r[R_ESP]), pages >> 20);
         set_last_error(ERROR_NOT_ENOUGH_MEMORY_);
         set_eax(c, 0);
         return;
     }
+    LOGV("VirtualAlloc(%08x, %08x, %x) from %08x -> %08x", addr, size, type, rd32(c->r[R_ESP]),
+         base);
     VmRegion r;
     r.size = pages;
     r.committed = (type & 0x1000) != 0;
@@ -2192,7 +2228,14 @@ struct GuestThread {
     bool has_deadline = false;
     double deadline = 0.0;    // monotonic seconds
     uint32_t wait_result = 0; // what the wait returns once released
-    double last_yield = 0.0;  // for the bounded scheduling checkpoint
+    // When a signal (not a timeout) released this thread, the order it was
+    // released in; 0 once it has had the baton. See sched_next_runnable_locked.
+    uint64_t woken = 0;
+    // How long this thread may run before the checkpoint makes it yield: the
+    // length of the turn that ran before its own, within bounds (see
+    // record_handoff_locked).
+    double slice = 0.001;
+    double last_yield = 0.0; // for the bounded scheduling checkpoint
     // The last import this thread called and where from, for
     // RECOMP_SCHED_REPORT (sched_note_import).
     uint32_t last_import = 0xffffffffu, last_ret = 0;
@@ -2225,7 +2268,8 @@ std::vector<GuestThread *> &threads() {
 
 std::mutex g_sched_m;
 std::condition_variable_any g_sched_cv;
-size_t g_baton = 0; // index of the thread allowed to run
+size_t g_baton = 0;      // index of the thread allowed to run
+uint64_t g_wake_seq = 0; // orders the signal releases (GuestThread::woken)
 // Read by the host from the very thread that sets it, so a plain bool is the
 // whole of it: no other thread looks.
 bool g_in_idle_slice = false;
@@ -2567,9 +2611,21 @@ struct Handoff {
 Handoff g_handoffs[16];
 uint32_t g_handoff_count = 0;
 
+// Also sets the slice of the thread taking the baton to the length of the
+// turn that just ended, between 1 ms and 50 ms. A thread whose turns are long
+// because they are spent inside one shim (the CPU rasterizer drawing a
+// loading screen) cannot be cut short, so the others get turns as long as
+// its own instead of 1 ms each: with a 1 ms slice Fallout: New Vegas's main
+// thread loaded behind its loading screen at a tenth of its speed.
 void record_handoff_locked(size_t from, size_t to, const char *why) {
     g_handoffs[g_handoff_count % 16] = Handoff{from, to, why};
     ++g_handoff_count;
+    static double turn_began = 0.0;
+    double now = sched_now();
+    double held = turn_began > 0.0 ? now - turn_began : 0.0;
+    turn_began = now;
+    if (to < threads().size())
+        threads()[to]->slice = held < 0.001 ? 0.001 : (held > 0.050 ? 0.050 : held);
 }
 
 const char *wait_kind_name(WaitKind k) {
@@ -2765,6 +2821,7 @@ bool sched_satisfy_locked(GuestThread *t) {
     t->wait_kind = W_NONE;
     t->wait_n = 0;
     t->has_deadline = false;
+    t->woken = ++g_wake_seq;
     return true;
 }
 
@@ -2802,12 +2859,35 @@ void sched_expire_locked() {
 }
 
 // Caller holds g_sched_m.  The next runnable thread after `from`, or NO_THREAD.
+//
+// A thread a signal has just released goes first, earliest released first,
+// as Windows boosts a thread woken from a wait on an event, semaphore or
+// mutex above one that is only busy. A request handed to a worker thread is
+// then answered before a busy thread (a loading screen drawing frames) takes
+// another full turn: Fallout: New Vegas reads its files through a worker it
+// wakes with a semaphore and then waits on, and plain round robin gave every
+// read a few loading-screen frames.
 size_t sched_next_runnable_locked(size_t from) {
     size_t n = threads().size();
+    size_t boosted = NO_THREAD;
+    if (from < n)
+        threads()[from]->woken = 0; // it is running: whatever woke it has been answered
+    for (size_t i = 0; i < n; ++i) {
+        GuestThread *t = threads()[i];
+        if (i != from && t->woken && thread_runnable(t) &&
+            (boosted == NO_THREAD || t->woken < threads()[boosted]->woken))
+            boosted = i;
+    }
+    if (boosted != NO_THREAD) {
+        threads()[boosted]->woken = 0;
+        return boosted;
+    }
     for (size_t k = 1; k <= n; ++k) {
         size_t i = (from + k) % n;
-        if (thread_runnable(threads()[i]))
+        if (thread_runnable(threads()[i])) {
+            threads()[i]->woken = 0;
             return i;
+        }
     }
     return NO_THREAD;
 }
@@ -2967,8 +3047,11 @@ uint32_t guest_block(const char *why) {
         g_sched_m.unlock();
         return 0x102;
     }
-    me->last_yield = sched_now();
     sched_run_others_locked(me->index, why);
+    // A full slice from when it runs again, not from when it stopped: a
+    // slice measured from before the wait has already expired, and the
+    // thread would give the baton straight back at its next import.
+    me->last_yield = sched_now();
     uint32_t r = me->wait_result;
     g_sched_m.unlock();
     if (g_exit_requested)
@@ -2994,7 +3077,6 @@ bool guest_yield() {
         g_sched_m.unlock();
         return false;
     }
-    me->last_yield = sched_now();
     sched_expire_locked();
     size_t next = sched_next_runnable_locked(me->index);
     bool moved = next != NO_THREAD && next != me->index;
@@ -3005,6 +3087,11 @@ bool guest_yield() {
         while (g_baton != me->index)
             sched_wait_locked(me->index, 0.0, HOST_IDLE_BATON_SLICE);
     }
+    // The next slice starts now (see guest_block). Measured from the yield,
+    // a thread that waited behind a long one (a loading screen drawn by the
+    // CPU rasterizer) came back with its slice spent and ran one import per
+    // turn: Fallout: New Vegas's main thread got 1% of the time.
+    me->last_yield = sched_now();
     g_sched_m.unlock();
     if (moved && g_exit_requested)
         thread_finish_exit_process();
@@ -3018,7 +3105,8 @@ bool guest_yield() {
 // call: the frame limiter spins on GetTickCount and would otherwise starve the
 // DirectInput service threads indefinitely, expired 200 ms waits and all.  Any
 // call into the runtime is a checkpoint, and a thread yields at most once per
-// millisecond so the check costs a clock read on the hot path.
+// slice (GuestThread::slice: at least a millisecond, longer after a long
+// turn) so the check costs a clock read on the hot path.
 const double SCHED_SLICE_SECONDS = 0.001;
 
 } // namespace
@@ -3231,7 +3319,7 @@ void sched_checkpoint() {
         else if (gap > SCHED_SLICE_SECONDS / 5 && t_stride > 1)
             t_stride /= 2;
         GuestThread *me = threads()[t_self];
-        if (at - me->last_yield < SCHED_SLICE_SECONDS)
+        if (at - me->last_yield < me->slice)
             return;
         me->last_yield = at;
         guest_yield();
@@ -3240,7 +3328,7 @@ void sched_checkpoint() {
 #endif
     GuestThread *me = threads()[t_self];
     double now = sched_now();
-    if (now - me->last_yield < SCHED_SLICE_SECONDS)
+    if (now - me->last_yield < me->slice)
         return;
     me->last_yield = now;
     guest_yield();
@@ -3383,17 +3471,28 @@ void sched_leave_critsec(uint32_t cs) {
     wr32(cs + CS_OFF_LOCK_COUNT, rec ? rec - 1 : 0xffffffffu);
     if (!rec) {
         wr32(cs + CS_OFF_OWNER, 0);
-        // Wake the parked threads only when one of them waits on this
-        // section. The C runtime locks and unlocks a stream around every
-        // fread and getc, so an unconditional notify woke every timed waiter
-        // (audio and input workers) thousands of times a second; in Crazy
-        // Taxi that made loading an archive several times slower, and slower
-        // still in the browser.
-        for (GuestThread *t : threads())
+        // A thread waiting on this section is handed it now, the next one
+        // after this thread in turn. Merely freeing it let a thread that
+        // takes the section again before its slice ends keep it forever:
+        // Fallout: New Vegas's loading screen thread holds the model-loading
+        // section across each frame it draws and takes it straight back, and
+        // the main thread waiting on it never ran again.
+        //
+        // Only when one waits on this section: the C runtime locks and
+        // unlocks a stream around every fread and getc, so waking the parked
+        // threads unconditionally woke every timed waiter (audio and input
+        // workers) thousands of times a second; in Crazy Taxi that made
+        // loading an archive several times slower, and slower still in the
+        // browser.
+        size_t n = threads().size();
+        for (size_t k = 1; k <= n; ++k) {
+            GuestThread *t = threads()[(me->index + k) % n];
             if (t->blocked && t->wait_kind == W_CRITSEC && t->wait_cs == cs) {
+                sched_satisfy_locked(t);
                 g_sched_cv.notify_all();
                 break;
             }
+        }
     }
     g_sched_m.unlock();
 }

@@ -46,6 +46,7 @@ uint64_t g_kind_mask[IF_COUNT] = {0}; // bit per ComKind
 void (*g_dtor[64])(ComObj *) = {nullptr};
 ComObj *(*g_ref_owner[64])(ComObj *) = {nullptr};
 ComQiHook g_qi_hook[64] = {nullptr};
+ComQiResolve g_qi_resolve[64] = {nullptr};
 const char *g_iface_name[IF_COUNT] = {nullptr};
 
 struct IidEntry {
@@ -704,6 +705,11 @@ void com_set_qi_hook(ComKind kind, ComQiHook hook) {
         g_qi_hook[kind] = hook;
 }
 
+void com_set_qi_resolver(ComKind kind, ComQiResolve resolve) {
+    if ((size_t)kind < 64)
+        g_qi_resolve[kind] = resolve;
+}
+
 // ---------------------------------------------------------------------------
 // IUnknown
 // ---------------------------------------------------------------------------
@@ -721,7 +727,16 @@ void com_QueryInterface(X86 *c) {
     }
     wr32(out, 0);
 
-    ComIface want = com_iface_for_iid(riid);
+    ComIface want = IF_NONE;
+    bool decided = false;
+    if ((size_t)o->kind < 64 && g_qi_resolve[o->kind] && riid && gm_valid(riid, 16))
+        decided = g_qi_resolve[o->kind](o, com_iface_of(arg(c, 0)), gm_ptr(riid), &want);
+    if (!decided)
+        want = com_iface_for_iid(riid);
+    if (decided && want == IF_NONE) {
+        com_ret(c, E_NOINTERFACE);
+        return;
+    }
     if (want == IF_NONE) {
         // IID_IUnknown is not in the table: any interface satisfies it, and
         // the object's own primary view is the canonical answer.

@@ -440,6 +440,30 @@ uint32_t heap_alloc(uint32_t size, bool zero, uint32_t align) {
     return 0;
 }
 
+uint32_t heap_alloc_at(uint32_t addr, uint32_t size, bool zero) {
+    if (!g_blocks || (addr & 15) || !size_is_sane(size))
+        return 0;
+    uint32_t need = align_up(size ? size : 1, 16);
+    auto it = g_blocks->upper_bound(addr);
+    if (it == g_blocks->begin())
+        return 0;
+    --it;
+    uint32_t start = it->first, len = it->second.size;
+    if (it->second.used || addr < start || addr - start > len || need > len - (addr - start))
+        return 0; // in use, or not inside one free block
+    uint32_t pad = addr - start, tail = len - pad - need;
+    drop_block(it);
+    if (pad)
+        put_block(start, pad, 0, false);
+    put_block(addr, need, size, true);
+    if (tail)
+        put_block(addr + need, tail, 0, false);
+    if (zero)
+        memset(g_mem + addr, 0, need);
+    ++g_total_allocs;
+    return addr;
+}
+
 bool heap_owns(uint32_t addr) {
     if (!g_blocks)
         return false;

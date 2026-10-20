@@ -60,6 +60,26 @@ static const uint8_t IID_IDirect3D9_[16] =
     IID_BYTES(0x81bdcbca, 0x64d4, 0x426d, 0xae, 0x8d, 0xad, 0x01, 0x47, 0xf4, 0x27, 0x5c);
 static const uint8_t IID_IDirect3DDevice9_[16] =
     IID_BYTES(0xd0223b96, 0xbf7a, 0x43fd, 0x92, 0xbd, 0xa4, 0x3b, 0x0d, 0x82, 0xb9, 0xeb);
+// The resources' own interfaces, from d3d9.h. Gamebryo asks a texture for
+// IDirect3DTexture9 to learn whether it is a plain or a cube texture.
+static const uint8_t IID_IDirect3DResource9_[16] =
+    IID_BYTES(0x05eec05d, 0x8f7d, 0x4362, 0xb9, 0x99, 0xd1, 0xba, 0xf3, 0x57, 0xc7, 0x04);
+static const uint8_t IID_IDirect3DBaseTexture9_[16] =
+    IID_BYTES(0x580ca87e, 0x1d3c, 0x4d54, 0x99, 0x1d, 0xb7, 0xd3, 0xe3, 0xc2, 0x98, 0xce);
+static const uint8_t IID_IDirect3DTexture9_[16] =
+    IID_BYTES(0x85c31227, 0x3de5, 0x4f00, 0x9b, 0x3a, 0xf1, 0x1a, 0xc3, 0x8c, 0x18, 0xb5);
+static const uint8_t IID_IDirect3DCubeTexture9_[16] =
+    IID_BYTES(0xfff32f81, 0xd953, 0x473a, 0x92, 0x23, 0x93, 0xd6, 0x52, 0xab, 0xa9, 0x3f);
+static const uint8_t IID_IDirect3DVolumeTexture9_[16] =
+    IID_BYTES(0x2518526c, 0xe789, 0x4111, 0xa7, 0xb9, 0x47, 0xef, 0x32, 0x8d, 0x13, 0xe6);
+static const uint8_t IID_IDirect3DSurface9_[16] =
+    IID_BYTES(0x0cfbaf3a, 0x9ff6, 0x429a, 0x99, 0xb3, 0xa2, 0x79, 0x6a, 0xf8, 0xb8, 0x9b);
+static const uint8_t IID_IDirect3DVolume9_[16] =
+    IID_BYTES(0x24f416e6, 0x1f67, 0x4aa7, 0xb8, 0x8e, 0xd3, 0x3f, 0x6f, 0x31, 0x28, 0xa1);
+static const uint8_t IID_IDirect3DVertexBuffer9_[16] =
+    IID_BYTES(0xb64bb1b5, 0xfd70, 0x4df6, 0xbf, 0x91, 0x19, 0xd0, 0xa1, 0x24, 0x55, 0xe3);
+static const uint8_t IID_IDirect3DIndexBuffer9_[16] =
+    IID_BYTES(0x7c9dd65e, 0xd3f7, 0x4529, 0xac, 0xee, 0x78, 0x58, 0x30, 0xac, 0xde, 0x35);
 
 #define MAKE_D3DHRESULT(code) (0x88760000u | (uint32_t)(code))
 static const uint32_t D3D_OK9 = 0u;
@@ -4006,6 +4026,29 @@ void d3d9_reset() {
     g_scratch_size = 0;
 }
 
+// IDirect3DTexture9 and IDirect3DCubeTexture9 share one object kind; which
+// the object is decides which of the two it answers. The base interfaces are
+// prefixes of every resource vtable, so they are answered with the view the
+// caller already holds.
+static bool resource9_qi(ComObj *self, ComIface asked_on, const uint8_t iid[16], ComIface *want) {
+    bool base = memcmp(iid, IID_IDirect3DResource9_, 16) == 0;
+    bool texture = memcmp(iid, IID_IDirect3DTexture9_, 16) == 0;
+    bool cube = memcmp(iid, IID_IDirect3DCubeTexture9_, 16) == 0;
+    if (self->kind == K_D3D9TEXTURE || self->kind == K_D3D9VOLTEX)
+        base = base || memcmp(iid, IID_IDirect3DBaseTexture9_, 16) == 0;
+    if (base) {
+        *want = asked_on;
+        return true;
+    }
+    if (self->kind == K_D3D9TEXTURE && (texture || cube)) {
+        bool is_cube = self->caps != 0;
+        *want = texture ? (is_cube ? IF_NONE : IF_D3DTEXTURE9)
+                        : (is_cube ? IF_D3DCUBETEXTURE9 : IF_NONE);
+        return true;
+    }
+    return false;
+}
+
 void d3d9_register() {
     static bool done = false;
     if (done)
@@ -4056,5 +4099,14 @@ void d3d9_register() {
     com_set_destructor(K_D3D9TEXTURE, d3d9_texture_destroy);
     com_set_ref_owner(K_D3D9SURFACE, level_owner);
     com_set_destructor(K_D3D9QUERY, query_destroy);
+    com_register_iid(IF_D3DTEXTURE9, IID_IDirect3DTexture9_);
+    com_register_iid(IF_D3DCUBETEXTURE9, IID_IDirect3DCubeTexture9_);
+    com_register_iid(IF_D3DVOLUMETEXTURE9, IID_IDirect3DVolumeTexture9_);
+    com_register_iid(IF_D3DSURFACE9, IID_IDirect3DSurface9_);
+    com_register_iid(IF_D3DVOLUME9, IID_IDirect3DVolume9_);
+    com_register_iid(IF_D3DVERTEXBUFFER9, IID_IDirect3DVertexBuffer9_);
+    com_register_iid(IF_D3DINDEXBUFFER9, IID_IDirect3DIndexBuffer9_);
+    for (ComKind k : {K_D3D9TEXTURE, K_D3D9VOLTEX, K_D3D9SURFACE, K_D3D9VOLUME, K_D3D9VB, K_D3D9IB})
+        com_set_qi_resolver(k, resource9_qi);
     imports_register(g_d3d9_exports, std::size(g_d3d9_exports));
 }

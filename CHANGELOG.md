@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- 2026-10-19 22:15 CDT — Claude Opus 5.5 (Fallout: New Vegas reaches its
+  main menu natively). Scheduler: a thread a signal has just released runs
+  before busy ones, earliest released first, as Windows boosts a woken
+  thread; a thread's slice starts when it gets the baton back, not when it
+  gave it up (it came back with the slice spent and ran one import per
+  turn); a slice is as long as the turn before it, 1 to 50 ms, so a thread
+  stuck in one long shim (the CPU rasterizer drawing a loading screen) no
+  longer leaves the others 1 ms each; LeaveCriticalSection hands the section
+  to the next thread waiting on it instead of freeing it for whoever takes
+  it first (New Vegas's loading-screen thread re-took its section every
+  frame and the main thread never got it). VirtualAlloc with a base address
+  reserves exactly there, 64 KB aligned, when nothing is there, and fails
+  with ERROR_INVALID_ADDRESS (487) when the range is taken or a reservation
+  overlaps one; it had ignored the base, and New Vegas's pools find their
+  block by address >> 24 (new heap_alloc_at). Direct3D 9: QueryInterface on
+  resources answers IDirect3DResource9, IDirect3DBaseTexture9 and each
+  resource's own interface through a new per-kind resolver
+  (com_set_qi_resolver). DirectShow: IID_IFilterGraph corrected to
+  {56A8689F-...}; it was 56A8687F, and CoCreateInstance(CLSID_FilterGraph,
+  IID_IFilterGraph) failed.
 - 2026-10-19 19:10 CDT — Claude Opus 5.5 (Fallout: New Vegas, first native
   runs): an SEH handler that returns ExceptionContinueExecution for a
   continuable software raise now resumes after the RaiseException call with

@@ -486,6 +486,17 @@ ComIface com_iface_for_iid(uint32_t guest_guid_addr);
 typedef ComObj *(*ComQiHook)(ComObj *self, ComIface want);
 void com_set_qi_hook(ComKind kind, ComQiHook hook);
 
+// A kind may also decide which interface an IID names on one of its objects,
+// before the IID table is consulted: one Direct3D 9 texture object answers
+// IDirect3DTexture9 or IDirect3DCubeTexture9 depending on what it is, and its
+// base interfaces (IDirect3DBaseTexture9, IDirect3DResource9) are its own
+// view. `asked_on` is the interface of the pointer QueryInterface was called
+// through. Return true with *want set to answer (IF_NONE refuses with
+// E_NOINTERFACE), or false to fall back to the table.
+typedef bool (*ComQiResolve)(ComObj *self, ComIface asked_on, const uint8_t iid[16],
+                             ComIface *want);
+void com_set_qi_resolver(ComKind kind, ComQiResolve resolve);
+
 // ---------------------------------------------------------------------------
 // COM classes: what ole32's CoCreateInstance can make. A module registers the
 // CLSID it serves with a constructor and the interface a request for
