@@ -168,7 +168,7 @@ void finish_dispatch(SehDispatch *d) {
     release_dispatch(d);
 }
 
-uint32_t call_handler(X86 *c, uint32_t reg, SehDispatch *d) {
+uint32_t call_handler(X86 *c, uint32_t reg, SehDispatch *d, bool may_continue = false) {
     uint32_t handler = rd32(reg + 4);
     if (!handler || !gm_valid(handler, 1))
         invalid_chain(c, reg, handler, "invalid handler");
@@ -176,6 +176,8 @@ uint32_t call_handler(X86 *c, uint32_t reg, SehDispatch *d) {
          rd32(d->record + 4));
     uint32_t args[] = {d->record, reg, d->context, 0};
     uint32_t disposition = guest_call(c, handler, args, 4);
+    if (disposition == 0 && may_continue)
+        return disposition;
     if (disposition == 0) {
         LOGW("ExceptionContinueExecution requested; not supported (record=%08x code=%08x "
              "registration=%08x handler=%08x)",
@@ -445,7 +447,19 @@ int recomp_seh_raise(X86 *c, uint32_t code, uint32_t flags, uint32_t nargs, uint
     for (uint32_t reg = chain_head(c); reg != END_CHAIN;) {
         walk.visit(c, reg, 0);
         uint32_t next = rd32(reg);
-        call_handler(c, reg, d);
+        // ExceptionContinueExecution from a software raise resumes after the
+        // RaiseException call, with the integer registers the handler left in
+        // the CONTEXT. MSVC names a debugger's threads this way (0x406d1388)
+        // and its filter continues when no debugger is there to take it.
+        if (call_handler(c, reg, d, (flags & 1u) == 0) == 0) {
+            *c = saved;
+            const int regs[] = {R_EDI, R_ESI, R_EBX, R_EDX, R_ECX, R_EAX, R_EBP};
+            for (uint32_t i = 0; i < 7; ++i)
+                c->r[regs[i]] = rd32(d->context + 0x9c + i * 4);
+            LOGV("SEH: code %08x continues after its raise (registration=%08x)", code, reg);
+            finish_dispatch(d);
+            return 1;
+        }
         reg = next;
     }
     *c = saved; // retain the original raise's registers for the existing diagnostics

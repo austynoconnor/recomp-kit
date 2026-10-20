@@ -972,7 +972,12 @@ void s_SHGetSpecialFolderPathA(X86 *c) {
 void s_ShellExecuteA(X86 *c) {
     LOGW("ShellExecuteA(\"%s\", \"%s\"): nothing is launched from the runtime",
          gm_str(arg(c, 1), 64).c_str(), gm_str(arg(c, 2), 260).c_str());
-    set_eax(c, 2); // ERROR_FILE_NOT_FOUND: the shell did not start anything
+    // 0 ("out of memory or resources") is a failure both to code that tests
+    // for a result above 32 and to code that tests for any non-zero result:
+    // Fallout: New Vegas starts its launcher on first run and quits if the
+    // call returned anything at all, and plays on with default settings when
+    // it returned 0.
+    set_eax(c, 0);
 }
 
 void o_CoInitialize(X86 *c) {
@@ -2040,6 +2045,7 @@ const ImportShim g_misc_shims[] = {
     {"SHELL32.dll", "ShellExecuteA", 6, s_ShellExecuteA},
     {"SHELL32.dll", "SHGetSpecialFolderPathA", 4, s_SHGetSpecialFolderPathA},
     {"SHFOLDER.dll", "SHGetFolderPathA", 5, s_SHGetFolderPathA},
+    {"SHELL32.dll", "SHGetFolderPathA", 5, s_SHGetFolderPathA},
     // ole32
     {"ole32.dll", "CoInitialize", 1, o_CoInitialize},
     {"ole32.dll", "OleInitialize", 1, o_CoInitialize},

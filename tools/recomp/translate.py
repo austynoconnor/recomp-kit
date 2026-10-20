@@ -18,6 +18,7 @@ are enabled by the native host, never by the baseline/differential build.
 """
 
 import argparse
+import gc
 import json
 import os
 import re
@@ -715,14 +716,23 @@ class PackedBodies(object):
 
 
 class Insn(object):
-    __slots__ = ("addr", "mnem", "rep", "ops", "text", "raw")
+    # The listing line is not kept: millions of unique strings are a large
+    # part of a big game's memory, and the line is exactly its parts again.
+    __slots__ = ("addr", "mnem", "rep", "ops")
 
-    def __init__(self, addr, mnem, rep, opstrs, raw):
+    def __init__(self, addr, mnem, rep, opstrs, raw=None):
         self.addr = addr
         self.mnem = mnem
         self.rep = rep
         self.ops = opstrs
-        self.raw = raw
+
+    @property
+    def raw(self):
+        """The listing line, "<addr>  <MNEM[.rep]> <op>,<op>", as Ghidra prints it."""
+        text = self.mnem + ("." + self.rep if self.rep else "")
+        if self.ops:
+            text += " " + ",".join(self.ops)
+        return "%08x  %s" % (self.addr, text)
 
     def __repr__(self):
         return "%08x %s %s" % (self.addr, self.mnem, ",".join(self.ops))
@@ -1476,8 +1486,11 @@ class Image(object):
     def _size_word(self, nbytes, mnem):
         if mnem.startswith("F") and mnem not in self.X87_INT:
             return {4: "float", 8: "double", 10: "extended double"}.get(nbytes)
+        # 16 bytes is an SSE operand, which Ghidra's listings call xmmword:
+        # code recovered from the PE (a CRT initializer storing a vector
+        # constant, say) must read exactly as a listed function would.
         return {1: "byte", 2: "word", 4: "dword", 8: "qword",
-                10: "extended double"}.get(nbytes)
+                10: "extended double", 16: "xmmword"}.get(nbytes)
 
     def _op_text(self, ci, op, mnem):
         import capstone.x86_const as X
@@ -4568,6 +4581,11 @@ def main():
         fn = Function(addr, name, nbytes, insns)
         fn.measure(image)
         parsed.append(fn)
+    # Millions of parsed instructions live to the end and hold no cycles the
+    # collector needs to find; leaving them out of its passes saves both the
+    # time and the page-ins of walking them again and again.
+    gc.collect()
+    gc.freeze()
 
     # A listing that ends on a CALL was cut there because the callee never
     # returns; recovery from the PE must stop at those calls too, or it walks

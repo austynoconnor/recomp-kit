@@ -28,7 +28,8 @@ void recomp_seh_reset(X86 *c);
 /* A callback return abandons frames/landings created at this call depth. */
 void recomp_seh_callback_leave(X86 *c, uint32_t depth);
 /* Returns zero for an exhausted chain; kernel32 retains its abort diagnostics.
- * A nonzero return is possible only through the test-only unhandled hook. */
+ * Nonzero when a handler continued execution (the caller returns from the
+ * raise) or the test-only unhandled hook took the exception. */
 int recomp_seh_raise(X86 *c, uint32_t code, uint32_t flags, uint32_t nargs, uint32_t args);
 void recomp_seh_unwind(X86 *c, uint32_t target, uint32_t target_ip, uint32_t record,
                        uint32_t retval);

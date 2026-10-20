@@ -33,6 +33,7 @@
 #include <atomic>
 #include <deque>
 #include <map>
+#include <set>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -664,7 +665,20 @@ void k_HeapReAlloc(X86 *c) {
     set_eax(c, heap_realloc(ptr, size, (flags & 8) != 0));
 }
 void k_HeapFree(X86 *c) {
-    set_eax(c, heap_free(arg(c, 2)) ? 1 : 0);
+    uint32_t ptr = arg(c, 2);
+    if (ptr && !heap_owns(ptr)) {
+        // Name the caller once per site: a pointer the heap never handed out
+        // is a guest allocator mix-up worth finding, not one worth a line per
+        // call.
+        static std::set<uint32_t> *seen = new std::set<uint32_t>();
+        uint32_t from = rd32(c->r[R_ESP]);
+        if (seen->insert(from).second)
+            LOGW("HeapFree(%08x, %08x): not from this heap, called from %08x", arg(c, 0), ptr,
+                 from);
+        set_eax(c, 0);
+        return;
+    }
+    set_eax(c, heap_free(ptr) ? 1 : 0);
 }
 void k_HeapSize(X86 *c) {
     uint32_t sz = heap_size(arg(c, 2));
@@ -4047,7 +4061,7 @@ void k_RaiseException(X86 *c) {
              rd32(c->r[R_ESP]), frames.c_str());
     }
     if (recomp_seh_raise(c, arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3)))
-        return; // only the testing runtime can return from an unhandled raise
+        return; // a handler continued execution (or the testing runtime intercepted it)
     LOGW("RaiseException(code=%08x flags=%08x nargs=%u args=%08x) at ESP=%08x: "
          "unhandled, aborting",
          arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3), c->r[R_ESP]);

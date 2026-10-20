@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 2026-10-19 19:10 CDT — Claude Opus 5.5 (Fallout: New Vegas, first native
+  runs): an SEH handler that returns ExceptionContinueExecution for a
+  continuable software raise now resumes after the RaiseException call with
+  the integer registers from its CONTEXT, instead of aborting; MSVC's
+  SetThreadName raise (0x406d1388) depends on it. ShellExecuteA returns 0,
+  a failure to every kind of check: the game starts its launcher on first
+  run and quit when the call returned anything at all. SHGetFolderPathA/W
+  are registered under SHELL32 as well as SHFOLDER. HeapFree of a pointer
+  the heap never handed out names its caller once per site. Translator:
+  16-byte memory operands recovered from the PE read as xmmword, which had
+  dropped 50 recovered functions, among them the CRT initializers that set
+  up Havok's vector constants; the listing line is rebuilt from its parts
+  instead of being stored, and the parsed listing is frozen out of the
+  collector's passes (a 63,000-function game now peaks at 2.4 GB).
 - 2026-10-19 16:10 CDT — Claude Opus 5.5 (Fallout: New Vegas): new CMake
   cache options POP_GEN_OPT (optimization level of the translated code,
   default 2) and POP_GEN_DEBUG (debug info for it, default ON; OFF adds
